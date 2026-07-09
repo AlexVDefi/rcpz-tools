@@ -7,6 +7,27 @@ import { THREE, loadMesh, loadTexture, layoutIconScene } from '../renderWorker/r
 const ipc = window.ipc;
 const $ = (id) => document.getElementById(id);
 
+// --- boot overlay -------------------------------------------------------------
+// The overlay is in the markup, so it is painted before this module even finishes
+// loading. Main drives its text; we take it down once the first icon has rendered.
+function bootMsg(msg) { const el = $('bootMsg'); if (el) el.textContent = msg; }
+function showBoot(msg) {
+  const b = $('boot');
+  if (!b) return;
+  b.classList.remove('hide', 'error');
+  bootMsg(msg || 'Working…');
+}
+function hideBoot() { const b = $('boot'); if (b) b.classList.add('hide'); }
+function bootError(msg) {
+  const b = $('boot');
+  if (!b) return;
+  b.classList.remove('hide');
+  b.classList.add('error');
+  bootMsg(msg);
+}
+ipc.on('boot-status', (_e, msg) => bootMsg(msg));
+ipc.on('boot-error', (_e, msg) => bootError(msg));
+
 // --- persistent renderer for the big viewport ---
 const view = $('view');
 const renderer = new THREE.WebGLRenderer({ canvas: view, alpha: true, antialias: true, preserveDrawingBuffer: true });
@@ -566,6 +587,7 @@ async function chooseGameDir() {
   const res = await ipc.invoke('choose-game-dir');
   if (!res || res.canceled) return;
   if (res.error) { status(res.error, false); return; }
+  showBoot('Re-indexing assets…');
   setGameDirBadge(res.gameDir);
   icons = res.icons;
   const sel = $('iconSelect');
@@ -573,8 +595,9 @@ async function chooseGameDir() {
   sel.innerHTML = '';
   for (const it of icons) { const o = document.createElement('option'); o.value = it.icon; o.textContent = it.icon; sel.appendChild(o); }
   if ([...sel.options].some((o) => o.value === keep)) sel.value = keep;
-  status('game folder set; assets re-resolved');
   await loadIcon(sel.value || (icons[0] && icons[0].icon));
+  hideBoot();
+  status('game folder set; assets re-resolved');
 }
 
 /** Point the UI at a different mod folder. */
@@ -582,6 +605,7 @@ async function openMod() {
   const res = await ipc.invoke('open-mod');
   if (!res || res.canceled) return;
   if (res.error) { status(res.error, false); return; }
+  showBoot('Reading mod…');
   DEFAULTS = res.defaults; MEDIA_DIR = res.mediaDir; icons = res.icons;
   $('modLabel').textContent = res.modPath;
   const sel = $('iconSelect');
@@ -591,10 +615,11 @@ async function openMod() {
   $('buildStatus').textContent = '';
   if (icons.length) { sel.selectedIndex = 0; await loadIcon(icons[0].icon); }
   else { curSlots = []; buildAttachUI(); status('no renderable icons in that mod', false); }
+  hideBoot();
 }
 
-// --- boot ---
-(async function boot() {
+// --- boot (main signals when the mod is picked and indexed) ---
+async function boot() {
   const data = await ipc.invoke('get-data');
   DEFAULTS = data.defaults; MEDIA_DIR = data.mediaDir; icons = data.icons;
   $('modLabel').textContent = data.modPath;
@@ -610,7 +635,12 @@ async function openMod() {
     let idx = 0;
     if (data.startIcon) { const i = icons.findIndex((it) => it.icon === data.startIcon); if (i >= 0) idx = i; }
     sel.selectedIndex = idx;
+    bootMsg(`Loading ${icons[idx].icon}…`);
     await loadIcon(icons[idx].icon);
+    await updateOutput();          // don't drop the overlay before pixels exist
   } else status('no renderable icons found for this mod', false);
+  hideBoot();
   setTimeout(() => ipc.send('ui-ready'), 300); // signal for debug capture
-})();
+}
+
+ipc.on('boot-ready', () => { boot().catch((e) => bootError(String(e && e.message || e))); });

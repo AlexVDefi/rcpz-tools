@@ -99,6 +99,22 @@
     .status { min-height: 16px; color: var(--good); font-size: 12px; }
     .hint { color: #75757f; font-size: 11px; margin-top: 6px; }
 
+    /* ---------- boot overlay ----------
+       Rendered straight from markup, so it is on screen long before three.js has
+       been parsed out of the asar. Hidden once the first icon has rendered. */
+    .boot { position: fixed; inset: 0; z-index: 50; background: var(--bg);
+      display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px;
+      transition: opacity .25s ease; }
+    .boot.hide { opacity: 0; pointer-events: none; }
+    .boot .spin { width: 34px; height: 34px; border-radius: 50%;
+      border: 3px solid #33333c; border-top-color: var(--accent2); animation: spin .8s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .boot h1 { margin: 0; font-size: 15px; font-weight: 600; letter-spacing: .01em; }
+    .boot .msg { color: var(--dim); font-size: 12px; min-height: 16px; }
+    .boot .sub { color: #5f5f69; font-size: 11px; max-width: 44ch; text-align: center; }
+    .boot.error .spin { border-top-color: var(--bad); animation: none; }
+    .boot.error .msg { color: var(--bad); }
+
     /* ---------- batch drawer ---------- */
     .backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.5); opacity: 0; pointer-events: none;
       transition: opacity .16s ease; z-index: 10; }
@@ -124,6 +140,13 @@
   </style>
 </head>
 <body>
+  <div class="boot" id="boot">
+    <div class="spin" id="bootSpin"></div>
+    <h1>pz-icon-maker</h1>
+    <div class="msg" id="bootMsg">Starting…</div>
+    <div class="sub">Loading the renderer and indexing the mod's assets. This takes a few seconds the first time.</div>
+  </div>
+
   <header>
     <button id="openMod" title="Choose a different mod folder">Open mod…</button>
     <button id="gameDirBtn" title="Project Zomboid install, used to resolve vanilla assets">Game folder…</button>

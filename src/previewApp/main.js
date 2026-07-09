@@ -90,16 +90,13 @@ function promptForMod(parent) {
 }
 
 app.whenReady().then(() => {
-  if (!modPath) modPath = promptForMod(null);
-  if (!modPath) { console.error('[preview] no mod folder selected'); app.exit(2); return; }
-  try { loadState(); }
-  catch (e) {
-    dialog.showErrorBox('pz-icon-maker', `Could not read that mod folder:\n\n${e.message}`);
-    app.exit(2); return;
-  }
-
+  // Show the window first, painted in the app's own colour. Electron's default is
+  // white, and the renderer needs a moment to parse three.js out of the asar, so
+  // creating the window up front (with a loading overlay in index.html) is what
+  // keeps the first seconds from looking like a hung white screen.
   const win = new BrowserWindow({
-    width: 1320, height: 820, title: 'pz-icon-maker preview',
+    width: 1320, height: 820, title: 'pz-icon-maker',
+    backgroundColor: '#1e1e22',
     webPreferences: { nodeIntegration: true, contextIsolation: false, backgroundThrottling: false },
   });
   win.setMenuBarVisibility(false);
@@ -107,6 +104,30 @@ app.whenReady().then(() => {
   win.webContents.on('console-message', (_e, level, message) => {
     if (level >= 2) console.error('[renderer]', message);
   });
+
+  const say = (msg) => { if (!win.isDestroyed()) win.webContents.send('boot-status', msg); };
+
+  /** Ask for the mod folder (if needed), then index its assets, then let the UI boot. */
+  function startup() {
+    if (!modPath) {
+      say('Choose a mod folder…');
+      modPath = promptForMod(win);
+    }
+    if (!modPath) { console.error('[preview] no mod folder selected'); app.exit(2); return; }
+
+    say(`Reading ${path.basename(modPath)}…`);
+    try { loadState(); }
+    catch (e) {
+      if (!win.isDestroyed()) win.webContents.send('boot-error', e.message);
+      dialog.showErrorBox('pz-icon-maker', `Could not read that mod folder:\n\n${e.message}`);
+      app.exit(2); return;
+    }
+    say('Loading model…');
+    if (!win.isDestroyed()) win.webContents.send('boot-ready');
+  }
+
+  // Wait for the page to paint its overlay before doing any blocking work.
+  win.webContents.once('did-finish-load', () => setImmediate(startup));
   win.loadFile(path.join(__dirname, 'index.html'));
 
   // Optional: capture the window once the UI is ready, then quit. Used by the
