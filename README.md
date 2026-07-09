@@ -7,8 +7,8 @@ camera angle on a transparent background, then writes correctly named `Item_*.pn
 It runs standalone. **No Project Zomboid instance, no Blender, no Python.**
 
 - Interactive UI to preview and tune each icon, with live output at 32/64/128/256/512.
-- Weapon **attachments**: render a bicycle decked out with wheels, chain, pedals, basket
-  and crate, or a sidecar with an animal in it.
+- Weapon **attachments**: render a weapon with any or all of it's attachments, automatically
+  detected from the model/item scripts.
 - Headless CLI to batch-render a whole mod.
 - Renders straight into your mod, or into any folder for posters and promo art.
 
