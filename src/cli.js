@@ -108,8 +108,10 @@ function cmdInit(args) {
 function cmdList(args) {
   const modPath = args._[1];
   if (!modPath) die('usage: pz-icon-maker list <modPath>');
-  const { mediaDir, records, counts } = resolveMod(modPath, modOpts(modPath, args));
-  console.log(`media: ${mediaDir}`);
+  const { mediaDir, layout, records, counts } = resolveMod(modPath, modOpts(modPath, args));
+  if (layout.versionDir) console.log(`version: ${path.basename(layout.versionDir)}`);
+  if (layout.commonDir) console.log(`common : ${layout.commonDir}`);
+  console.log(`media  : ${mediaDir}`);
   console.log(`items=${counts.items} models=${counts.models} renderable=${counts.renderable}`);
   for (const r of dedupeByIcon(records)) {
     const ok = r.meshFile && r.textureFile ? 'OK ' : 'MISS';

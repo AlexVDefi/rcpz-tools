@@ -43,50 +43,91 @@ function listFilesRecursive(dir) {
   return out;
 }
 
-/**
- * Find the mod's `media` directory. Accepts either the media dir itself, a mod
- * root containing media/, or a versioned subdir (e.g. Bicycle/42.13). Searches a
- * couple of levels deep for a directory literally named "media".
- */
-function findMediaDir(modPath) {
-  const abs = path.resolve(modPath);
-  const candidates = [abs, path.join(abs, 'media')];
-  // one level down (e.g. <mod>/42.13/media, <mod>/common/media)
-  try {
-    for (const e of fs.readdirSync(abs, { withFileTypes: true })) {
-      if (e.isDirectory()) candidates.push(path.join(abs, e.name, 'media'));
-    }
-  } catch { /* ignore */ }
-  for (const c of candidates) {
-    if (path.basename(c).toLowerCase() === 'media' && isDir(c)) return c;
+function isDir(p) { try { return fs.statSync(p).isDirectory(); } catch { return false; } }
+function isFile(p) { try { return fs.statSync(p).isFile(); } catch { return false; } }
+
+/** A version-named mod subdirectory: "42", "42.13", "41.78". */
+const VERSION_DIR = /^\d+(\.\d+)*$/;
+
+/** Compare "42.13" > "42.12" > "42" numerically, segment by segment. */
+function compareVersionNames(a, b) {
+  const pa = a.split('.').map(Number), pb = b.split('.').map(Number);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const d = (pa[i] || 0) - (pb[i] || 0);
+    if (d) return d;
   }
-  // maybe abs already IS media's parent with unusual name
-  return null;
+  return 0;
 }
 
-function isDir(p) { try { return fs.statSync(p).isDirectory(); } catch { return false; } }
+/** Version-named subdirectories of `abs` that actually ship a media/ folder. */
+function versionDirsOf(abs) {
+  let entries = [];
+  try { entries = fs.readdirSync(abs, { withFileTypes: true }); } catch { return []; }
+  return entries
+    .filter((e) => e.isDirectory() && VERSION_DIR.test(e.name) && isDir(path.join(abs, e.name, 'media')))
+    .map((e) => e.name)
+    .sort(compareVersionNames);
+}
 
 /**
- * All directories of this mod that contain a `media/` dir (a B42 mod may ship both
- * `<mod>/42/media` and `<mod>/common/media`). The dir holding the primary media/
- * comes first; these become the highest-priority VFS layers.
+ * Work out which directories make up a mod, the way the game does.
+ *
+ * A Build 42 mod root holds `common/` plus one or more version directories
+ * (`42`, `42.13`, ...), with `mod.info` inside the version directory. The game
+ * picks the highest version directory that its build supports, then reads
+ * `common/media` first and the version's `media` second, so the version
+ * directory overrides `common`. Older mods are flat: `<mod>/mod.info` + `<mod>/media`.
+ *
+ * Accepts the mod root (preferred, so `common/` is picked up), a version
+ * directory, or any directory that simply contains `media/` (e.g. a game install).
+ * Only `common` and version-named directories are ever considered, so unrelated
+ * siblings -- stray `media/` folders, symlinks to a game install -- are ignored.
+ *
+ * @returns {{roots: string[], versionDir: string|null, commonDir: string|null}}
+ *          `roots` are directories containing `media/`, highest priority first.
  */
-function collectModRoots(modPath, primaryMediaDir) {
-  const roots = [path.dirname(primaryMediaDir)];
+function resolveModLayout(modPath) {
   const abs = path.resolve(modPath);
-  const seen = new Set(roots.map((r) => r.toLowerCase()));
-  for (const base of [abs, path.dirname(primaryMediaDir)]) {
-    let entries = [];
-    try { entries = fs.readdirSync(base, { withFileTypes: true }); } catch { /* ignore */ }
-    for (const e of entries) {
-      if (!e.isDirectory()) continue;
-      const cand = path.join(base, e.name);
-      if (isDir(path.join(cand, 'media')) && !seen.has(cand.toLowerCase())) {
-        seen.add(cand.toLowerCase()); roots.push(cand);
-      }
-    }
+  const roots = [];
+  let versionDir = null, commonDir = null;
+
+  const addCommon = (base) => {
+    const c = path.join(base, 'common');
+    if (isDir(path.join(c, 'media'))) { commonDir = c; return true; }
+    return false;
+  };
+
+  const versions = versionDirsOf(abs);
+  if (versions.length) {
+    // `abs` is a mod root: newest version wins, common sits underneath it
+    versionDir = path.join(abs, versions[versions.length - 1]);
+    roots.push(versionDir);
+    if (addCommon(abs)) roots.push(commonDir);
+    return { roots, versionDir, commonDir };
   }
-  return roots;
+
+  if (isDir(path.join(abs, 'media'))) {
+    roots.push(abs);
+    // `abs` may itself be a version dir -- pick up its sibling common/
+    if (isFile(path.join(abs, 'mod.info')) && VERSION_DIR.test(path.basename(abs))) {
+      if (addCommon(path.dirname(abs))) roots.push(commonDir);
+      versionDir = abs;
+    }
+    return { roots, versionDir, commonDir };
+  }
+
+  // last resort: a bare `common/` with no version dir
+  if (addCommon(abs)) roots.push(commonDir);
+  return { roots, versionDir, commonDir };
+}
+
+/** Back-compat: the primary media dir (the one icons are written into). */
+function findMediaDir(modPath) {
+  const { roots } = resolveModLayout(modPath);
+  if (!roots.length) return null;
+  // prefer a root that already has textures/, else the highest-priority one
+  const withTextures = roots.find((r) => isDir(path.join(r, 'media', 'textures')));
+  return path.join(withTextures || roots[0], 'media');
 }
 
 /**
@@ -102,24 +143,36 @@ function collectModRoots(modPath, primaryMediaDir) {
  * @param {{modelFieldPriority?: string[], extraRoots?: string[]}} [opts]
  */
 function resolveMod(modPath, opts = {}) {
+  const layout = resolveModLayout(modPath);
+  if (!layout.roots.length) throw new Error(`Could not find a media/ directory under: ${modPath}`);
   const mediaDir = findMediaDir(modPath);
-  if (!mediaDir) throw new Error(`Could not find a media/ directory under: ${modPath}`);
 
-  const scriptsDir = path.join(mediaDir, 'scripts');
-  const modRoots = collectModRoots(modPath, mediaDir);
-  const extraRoots = (opts.extraRoots || []).map((r) => path.resolve(r)).filter(isDir);
-  const vfs = buildVfs([...modRoots, ...extraRoots]);
+  // Extra roots get the same treatment, so a cross-mod root can be given as the
+  // mod's parent folder and still contribute both its version dir and common/.
+  const extraRoots = [];
+  for (const r of (opts.extraRoots || [])) {
+    const e = resolveModLayout(r);
+    extraRoots.push(...(e.roots.length ? e.roots : [path.resolve(r)].filter(isDir)));
+  }
+  const vfs = buildVfs([...layout.roots, ...extraRoots]);
 
-  // Parse every script file, collecting item + model blocks globally.
+  // Parse scripts from every mod root, highest priority first: a version dir's
+  // definition of an item or model wins over the same name in common/.
   const items = [];
+  const seenItems = new Set();
   const models = new Map(); // lowercased model name -> {name, mesh, texture, scale, file}
-  const scriptFiles = listFilesRecursive(scriptsDir).filter((f) => f.toLowerCase().endsWith('.txt'));
+  const scriptFiles = layout.roots
+    .flatMap((r) => listFilesRecursive(path.join(r, 'media', 'scripts')))
+    .filter((f) => f.toLowerCase().endsWith('.txt'));
   for (const file of scriptFiles) {
     let text;
     try { text = fs.readFileSync(file, 'utf8'); } catch { continue; }
     const blocks = parseScriptText(text);
     walkBlocks(blocks, (b) => {
       if (b.type === 'item') {
+        const key = b.name.toLowerCase();
+        if (seenItems.has(key)) return;   // version dir already defined it
+        seenItems.add(key);
         items.push({ name: b.name, block: b, file });
       } else if (b.type === 'model') {
         const key = b.name.toLowerCase();
@@ -191,7 +244,7 @@ function resolveMod(modPath, opts = {}) {
     records.push(rec);
   }
 
-  return { mediaDir, roots: vfs.roots, records, unresolved, models, vfs, counts: {
+  return { mediaDir, layout, roots: vfs.roots, records, unresolved, models, vfs, counts: {
     items: items.length, models: models.size,
     renderable: records.filter((r) => r.meshFile && r.textureFile && r.icon).length,
   } };
@@ -246,6 +299,6 @@ function buildAttachmentSlots(rec, models, vfs) {
 }
 
 module.exports = {
-  resolveMod, findMediaDir, buildAttachmentSlots,
+  resolveMod, findMediaDir, resolveModLayout, buildAttachmentSlots,
   parseModelWeaponPart, parseVec3, stripModule, MODEL_FIELD_PRIORITY_DEFAULT,
 };

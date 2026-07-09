@@ -53,6 +53,23 @@ Lookups are case-insensitive. Search order is the mod's own media roots first, t
 Project Zomboid install, so a mod always overrides vanilla. Nothing is matched by filename
 alone, so two same-named meshes in different folders never collide.
 
+### Which folder to point at
+
+Point at the **mod folder** -- the one that holds `common/` and the version directories:
+
+```
+MyMod/
+  common/media/...        assets shared by every build
+  42.13/mod.info
+  42.13/media/...         assets for this build; overrides common/
+```
+
+Exactly like the game, the tool picks the highest version directory and reads `common/`
+underneath it, so assets in either place are found. A version directory (`MyMod/42.13`)
+also works and still picks up its sibling `common/`. Only `common` and version-named
+directories are ever considered, so unrelated siblings are ignored. `list` prints which
+version directory it chose.
+
 Supported meshes: `.fbx`, `.glb`, and `.x` (converted automatically via a bundled
 [assimp](https://github.com/assimp/assimp)).
 
@@ -71,8 +88,12 @@ locations; if exactly one install is found it uses it and says so, otherwise it 
 set it. Missing assets are always reported with the exact path expected, e.g.
 `no texture media/textures/body/horsemod/horse_thoroughbredbay.png`.
 
-Assets from other mods (a cross-mod part, say) can be resolved by adding their folder to
-`defaults.extraRoots` in the config.
+Assets from another mod (a cross-mod part, say) resolve by adding that mod's folder to
+`defaults.extraRoots` in the config -- again, its top-level folder:
+
+```json
+{ "defaults": { "extraRoots": ["C:/mods/HorseMod"] } }
+```
 
 ## The UI
 
