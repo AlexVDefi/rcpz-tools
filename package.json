@@ -17,6 +17,7 @@
     "postinstall": "node scripts/vendor-three.js"
   },
   "dependencies": {
+    "gifenc": "^1.0.3",
     "koffi": "^2.9.0",
     "sharp": "^0.33.5",
     "three": "^0.169.0"

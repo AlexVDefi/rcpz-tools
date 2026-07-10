@@ -24,9 +24,15 @@ function dataDir() {
   return PACKAGED ? path.join(os.homedir(), '.pz-icon-maker') : TOOL_ROOT;
 }
 
+const ROLE_SCRIPT = {
+  worker: ['renderWorker', 'main.js'],
+  preview: ['previewApp', 'main.js'],
+  character: ['characterApp', 'main.js'],
+};
+
 /**
  * Build [command, args] to run one of our roles.
- * @param {'worker'|'preview'} role
+ * @param {'worker'|'preview'|'character'} role
  * @param {string[]} extra role arguments
  */
 function roleCommand(role, extra) {
@@ -34,10 +40,8 @@ function roleCommand(role, extra) {
     return [process.execPath, [`--pzicon-${role}`, ...extra]];
   }
   const electron = require('electron'); // dev: resolves to the electron binary path
-  const script = role === 'worker'
-    ? path.join(__dirname, 'renderWorker', 'main.js')
-    : path.join(__dirname, 'previewApp', 'main.js');
-  return [electron, [script, ...extra]];
+  const parts = ROLE_SCRIPT[role] || ROLE_SCRIPT.preview;
+  return [electron, [path.join(__dirname, ...parts), ...extra]];
 }
 
 /**

@@ -352,6 +352,7 @@ function wire() {
   $('outBg').addEventListener('input', applyOutBg); // viewing aid; no re-render needed
   $('openMod').addEventListener('click', openMod);
   $('gameDirBtn').addEventListener('click', chooseGameDir);
+  $('charBtn').addEventListener('click', () => window.ipc.invoke('open-character'));
 
   for (const t of document.querySelectorAll('.tab')) t.addEventListener('click', () => showTab(t.dataset.tab));
 

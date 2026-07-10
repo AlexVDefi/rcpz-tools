@@ -14,6 +14,7 @@ const { ensureLoadable } = require('../convert');
 const { renderIconPng } = require('../post');
 const { resolveAttachments } = require('../attachments');
 const { resolveGameDir, setGameDir } = require('../settings');
+const { spawnRole } = require('../runtime');
 
 function argVal(flag) {
   const i = process.argv.indexOf(flag);
@@ -145,6 +146,15 @@ app.whenReady().then(() => {
 
   // --- IPC ---
   ipcMain.handle('get-game-dir', () => gameDir || null);
+
+  // open the character viewer on the same mod, as a detached sibling process
+  ipcMain.handle('open-character', () => {
+    const extra = ['--mod', path.resolve(modPath)];
+    if (gameDir) extra.push('--game-dir', gameDir);
+    const child = spawnRole('character', extra, { detached: true, stdio: 'ignore' });
+    child.unref();
+    return { ok: true };
+  });
 
   /** Pick the Project Zomboid install and remember it. */
   ipcMain.handle('choose-game-dir', () => {

@@ -76,7 +76,11 @@ function fixSource(src) {
   return { file: tmp, tmp };
 }
 
-function convertXtoGlb(src, dst) {
+// assimp preserves meshes, skins and animations through a glb2 export regardless
+// of these mesh-processing flags, so the same converter serves both static item
+// meshes and skinned/animated character assets. The lone-';' fix in fixSource
+// only rewrites malformed text .x files; binary .x and .fbx pass through untouched.
+function convertViaAssimp(src, dst) {
   const a = loadAssimp();
   const { file, tmp } = fixSource(src);
   try {
@@ -92,22 +96,42 @@ function convertXtoGlb(src, dst) {
   }
 }
 
+/** Cached assimp conversion to glb, keyed by source path + format + mtime. */
+function convertCached(src, srcFormat) {
+  const abs = path.resolve(src);
+  const stat = fs.statSync(abs);
+  const key = `${path.basename(abs, path.extname(abs))}_${srcFormat}_${Math.round(stat.mtimeMs)}.glb`;
+  const dst = path.join(CACHE_DIR, key);
+  if (fs.existsSync(dst)) return dst;
+  convertViaAssimp(abs, dst);
+  return dst;
+}
+
 /**
  * Ensure a mesh is loadable by three.js. `.glb`/`.fbx` pass through; `.x` is
  * converted to `.glb` (cached). Returns { meshFile, meshFormat }.
+ * Used by the icon path, which loads .fbx item meshes with three's FBXLoader.
  */
 function ensureLoadable(meshFile, meshFormat) {
   if (meshFormat !== 'x') return { meshFile, meshFormat };
-
-  const src = path.resolve(meshFile);
-  const stat = fs.statSync(src);
-  const key = `${path.basename(src, path.extname(src))}_${Math.round(stat.mtimeMs)}.glb`;
-  const dst = path.join(CACHE_DIR, key);
-  if (fs.existsSync(dst)) return { meshFile: dst, meshFormat: 'glb' };
-
-  try { convertXtoGlb(src, dst); }
+  try { return { meshFile: convertCached(meshFile, 'x'), meshFormat: 'glb' }; }
   catch (e) { throw new Error(`.x -> .glb failed for ${meshFile}: ${e.message}`); }
-  return { meshFile: dst, meshFormat: 'glb' };
 }
 
-module.exports = { ensureLoadable, findAssimpDll };
+/**
+ * Ensure an asset is available as glb for the character path, which loads
+ * everything (body, clothing, animation clips) through three's GLTFLoader for one
+ * consistent import convention. `.glb`/`.gltf` pass through; `.x` and `.fbx` are
+ * converted (cached). Returns { file, format:'glb'|'gltf' }.
+ */
+function ensureGlb(srcFile, srcFormat) {
+  const fmt = String(srcFormat).toLowerCase();
+  if (fmt === 'glb' || fmt === 'gltf') return { file: srcFile, format: fmt };
+  if (fmt === 'x' || fmt === 'fbx') {
+    try { return { file: convertCached(srcFile, fmt), format: 'glb' }; }
+    catch (e) { throw new Error(`${fmt} -> glb failed for ${srcFile}: ${e.message}`); }
+  }
+  throw new Error(`cannot convert to glb: unsupported format "${srcFormat}" (${srcFile})`);
+}
+
+module.exports = { ensureLoadable, ensureGlb, findAssimpDll };
