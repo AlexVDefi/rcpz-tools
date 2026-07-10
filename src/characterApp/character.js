@@ -86,8 +86,14 @@ async function loadClip(id) {
   rigs.setClip(currentClip);
   playing = true;
   setTransportUI();
+  const label = r.name + (norm.best ? '' : ' (fbx, best-effort)');
   const nameEl = document.getElementById('clipName');
-  if (nameEl) nameEl.textContent = r.name + (norm.best ? '' : ' (fbx, best-effort)');
+  if (nameEl) nameEl.textContent = label;
+  const np = document.getElementById('nowPlaying');
+  if (np) np.textContent = label;
+  // keep the clip list highlight in sync (a clip may be chosen from the browser)
+  const list = document.getElementById('clipList');
+  if (list) for (const el of list.querySelectorAll('.item[data-id]')) el.classList.toggle('sel', el.dataset.id === id);
 }
 
 function updateScrub() {
@@ -232,7 +238,7 @@ function detachStatic(name) {
 const held = new Map(); // name -> { obj, prop }
 
 async function equipHeld(name) {
-  if (held.has(name)) { unequipHeld(name); markHeldUI(); return; }
+  if (held.has(name)) { unequipHeld(name); return; }
   const body = rigs.bodyRig();
   if (!body) return;
   const r = await ipcRenderer.invoke('resolve-item', name);
@@ -260,12 +266,14 @@ async function equipHeld(name) {
   holder.add(obj);
   bone.add(holder);
   held.set(name, { obj: holder, prop: r.prop });
+  markHeldUI();
 }
 
 function unequipHeld(name) {
   const h = held.get(name);
   if (h && h.obj.parent) h.obj.parent.remove(h.obj);
   held.delete(name);
+  markHeldUI();
 }
 
 /** Re-resolve + re-equip everything (used after a gender/body change). */
@@ -342,15 +350,26 @@ async function applyPart(kind, name, color, hatCategory) {
 const applyHair = () => applyPart('hair', currentHair, hairColor, currentHatCategory());
 const applyBeard = () => applyPart('beard', currentBeard, beardColor);
 
+// ---------- tabs ----------
+function bindTabs() {
+  const tabs = [...document.querySelectorAll('.tab')];
+  const panes = [...document.querySelectorAll('.pane')];
+  for (const t of tabs) {
+    t.onclick = () => {
+      for (const x of tabs) x.classList.toggle('active', x === t);
+      for (const p of panes) p.classList.toggle('active', p.dataset.tab === t.dataset.tab);
+    };
+  }
+}
+
 // ---------- controls ----------
 function bindControls(data) {
-  const genderSel = document.getElementById('gender');
   const toneRow = document.getElementById('tones');
   const clipInfo = document.getElementById('clipInfo');
 
-  genderSel.value = data.gender;
-  genderSel.onchange = async () => {
-    const r = await ipcRenderer.invoke('set-appearance', { gender: genderSel.value });
+  async function changeGender(g) {
+    for (const b of document.querySelectorAll('#genderSeg button')) b.classList.toggle('active', b.dataset.g === g);
+    const r = await ipcRenderer.invoke('set-appearance', { gender: g });
     if (r.error) return fail(new Error(r.error));
     await loadBody(r.body);   // different mesh; orphans hats + gendered cloth rigs
     renderTones(r.body);
@@ -359,7 +378,11 @@ function bindControls(data) {
     await applyHair();
     await reequipAll();       // re-attach hats + re-resolve gendered clothing meshes
     await recompositeBody();
-  };
+  }
+  for (const b of document.querySelectorAll('#genderSeg button')) {
+    b.classList.toggle('active', b.dataset.g === data.gender);
+    b.onclick = () => changeGender(b.dataset.g);
+  }
 
   function renderTones(body) {
     toneRow.innerHTML = '';
@@ -382,6 +405,7 @@ function bindControls(data) {
 
   clipInfo.textContent = `${data.clipCount} clips (${data.modClipCount} from this mod)`;
 
+  bindTabs();
   bindHairBeard();
   bindClothing();
   bindHeld();
@@ -482,7 +506,7 @@ async function bindClothing() {
     list.innerHTML = '';
     for (const c of rows.slice(0, 400)) {
       const el = document.createElement('div');
-      el.className = 'clip' + (c.isMod ? ' mod' : '') + (equipped.has(c.name) ? ' sel' : '');
+      el.className = 'item' + (c.isMod ? ' mod' : '') + (equipped.has(c.name) ? ' sel' : '');
       el.dataset.name = c.name;
       el.textContent = c.name;
       el.title = `${c.kind} / ${c.location}${c.isMod ? ' (mod)' : ''}`;
@@ -491,7 +515,7 @@ async function bindClothing() {
     }
     if (rows.length > 400) {
       const more = document.createElement('div');
-      more.className = 'clip more';
+      more.className = 'item more';
       more.textContent = `+${rows.length - 400} more, refine search…`;
       list.appendChild(more);
     }
@@ -501,28 +525,32 @@ async function bindClothing() {
   render();
 }
 
+const clothingLoc = (name) => { const c = allClothing.find((x) => x.name === name); return c ? c.location : ''; };
+
 function markClothingUI() {
   const list = document.getElementById('clothList');
-  if (list) for (const el of list.querySelectorAll('.clip[data-name]')) el.classList.toggle('sel', equipped.has(el.dataset.name));
+  if (list) for (const el of list.querySelectorAll('.item[data-name]')) el.classList.toggle('sel', equipped.has(el.dataset.name));
   const worn = document.getElementById('wornList');
+  const count = document.getElementById('wornCount');
+  if (count) count.textContent = equipped.size ? `(${equipped.size})` : '';
   if (!worn) return;
   worn.innerHTML = '';
   for (const [name, e] of equipped) {
     const chip = document.createElement('span');
     chip.className = 'chip';
-    const label = document.createElement('span');
-    label.textContent = name;
-    label.title = 'click to remove';
-    label.onclick = () => unequipClothing(name);
-    chip.appendChild(label);
-    // tint swatch (RGB multiply)
+    const nm = document.createElement('span');
+    nm.className = 'nm'; nm.textContent = name; nm.title = name;
+    const tag = document.createElement('span');
+    tag.className = 'tag'; tag.textContent = clothingLoc(name);
     const col = document.createElement('input');
-    col.type = 'color';
-    col.className = 'chipcol';
+    col.type = 'color'; col.className = 'chipcol';
     col.value = e.tint ? rgbToHex(e.tint) : '#ffffff';
     col.title = 'recolour (tint)';
     col.oninput = () => setItemTint(name, hexToRgb(col.value));
-    chip.appendChild(col);
+    const rm = document.createElement('span');
+    rm.className = 'rm'; rm.textContent = '×'; rm.title = 'remove';
+    rm.onclick = () => unequipClothing(name);
+    chip.append(nm, tag, col, rm);
     worn.appendChild(chip);
   }
 }
@@ -539,7 +567,7 @@ async function bindHeld() {
     list.innerHTML = '';
     for (const c of rows.slice(0, 400)) {
       const el = document.createElement('div');
-      el.className = 'clip' + (held.has(c.name) ? ' sel' : '');
+      el.className = 'item' + (held.has(c.name) ? ' sel' : '');
       el.dataset.name = c.name;
       el.textContent = c.name;
       el.title = c.prop === 'Bip01_Prop1' ? 'primary hand' : 'secondary hand';
@@ -548,7 +576,7 @@ async function bindHeld() {
     }
     if (rows.length > 400) {
       const more = document.createElement('div');
-      more.className = 'clip more';
+      more.className = 'item more';
       more.textContent = `+${rows.length - 400} more, refine search…`;
       list.appendChild(more);
     }
@@ -559,18 +587,23 @@ async function bindHeld() {
 
 function markHeldUI() {
   const list = document.getElementById('itemList');
-  if (list) for (const el of list.querySelectorAll('.clip[data-name]')) el.classList.toggle('sel', held.has(el.dataset.name));
+  if (list) for (const el of list.querySelectorAll('.item[data-name]')) el.classList.toggle('sel', held.has(el.dataset.name));
   const worn = document.getElementById('heldList');
+  const count = document.getElementById('heldCount');
+  if (count) count.textContent = held.size ? `(${held.size})` : '';
   if (!worn) return;
   worn.innerHTML = '';
-  for (const name of held.keys()) {
+  for (const [name, h] of held) {
     const chip = document.createElement('span');
     chip.className = 'chip';
-    const label = document.createElement('span');
-    label.textContent = name;
-    label.title = 'click to remove';
-    label.onclick = () => { unequipHeld(name); markHeldUI(); };
-    chip.appendChild(label);
+    const nm = document.createElement('span');
+    nm.className = 'nm'; nm.textContent = name; nm.title = name;
+    const tag = document.createElement('span');
+    tag.className = 'tag'; tag.textContent = h.prop === 'Bip01_Prop1' ? 'primary' : 'secondary';
+    const rm = document.createElement('span');
+    rm.className = 'rm'; rm.textContent = '×'; rm.title = 'remove';
+    rm.onclick = () => { unequipHeld(name); markHeldUI(); };
+    chip.append(nm, tag, rm);
     worn.appendChild(chip);
   }
 }
@@ -855,7 +888,8 @@ async function bindClipList() {
     // cap the rendered rows; the full browser grid is a later phase
     for (const c of rows.slice(0, 400)) {
       const el = document.createElement('div');
-      el.className = 'clip' + (c.isMod ? ' mod' : '') + (c.best ? '' : ' fbx');
+      el.className = 'item' + (c.isMod ? ' mod' : '') + (c.best ? '' : ' fbx');
+      el.dataset.id = c.id;
       el.textContent = c.name;
       el.title = `${c.actor} / ${c.format}${c.isMod ? ' (mod)' : ''}`;
       el.onclick = () => { markSelected(el); loadClip(c.id); };
@@ -863,14 +897,14 @@ async function bindClipList() {
     }
     if (rows.length > 400) {
       const more = document.createElement('div');
-      more.className = 'clip more';
+      more.className = 'item more';
       more.textContent = `+${rows.length - 400} more, refine search…`;
       list.appendChild(more);
     }
   }
   function markSelected(el) {
-    for (const e of list.querySelectorAll('.clip.sel')) e.classList.remove('sel');
-    el.classList.add('sel');
+    for (const e of list.querySelectorAll('.item.sel')) e.classList.remove('sel');
+    if (el) el.classList.add('sel');
   }
   search.oninput = () => render(search.value);
   render('');
@@ -912,6 +946,8 @@ function bindTransport() {
     currentClip = null; playing = false;
     rigs.setClip(null);
     document.getElementById('clipName').textContent = '(bind pose)';
+    const np = document.getElementById('nowPlaying'); if (np) np.textContent = '(bind pose)';
+    const list = document.getElementById('clipList'); if (list) for (const el of list.querySelectorAll('.item.sel')) el.classList.remove('sel');
     setTransportUI();
   };
 }
@@ -924,6 +960,7 @@ ipcRenderer.on('test-appearance', async (_e, opts) => {
   if (opts.items) { for (const n of String(opts.items).split(',')) { if (n.trim()) await equipHeld(n.trim()); } }
   if (opts.cam) setCamMode(opts.cam);
   if (opts.facing != null && opts.facing !== '') rigs.setFacing(Number(opts.facing) * Math.PI / 180);
+  if (opts.tab) { const t = document.querySelector(`.tab[data-tab="${opts.tab}"]`); if (t) t.click(); }
   if (opts.zoomHead || opts.zoomBone) {
     const body = rigs.bodyRig();
     const b = body && body.root.getObjectByName(opts.zoomBone || 'Bip01_Head');

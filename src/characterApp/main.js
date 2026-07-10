@@ -105,8 +105,8 @@ app.whenReady().then(() => {
       const clothing = process.env.PZICON_CLOTHING;
       const items = process.env.PZICON_ITEMS;
       const zoomBone = process.env.PZICON_ZOOMBONE;
-      const cam = process.env.PZICON_CAM, facing = process.env.PZICON_FACING;
-      if (hair || beard || clothing || items || zoomBone || cam || facing) { win.webContents.send('test-appearance', { hair, beard, clothing, items, cam, facing, zoomHead: !!process.env.PZICON_ZOOMHEAD, zoomBone, zoomRadius: Number(process.env.PZICON_ZOOMR) || undefined }); await once('test-appearance-done'); }
+      const cam = process.env.PZICON_CAM, facing = process.env.PZICON_FACING, tab = process.env.PZICON_TAB;
+      if (hair || beard || clothing || items || zoomBone || cam || facing || tab) { win.webContents.send('test-appearance', { hair, beard, clothing, items, cam, facing, tab, zoomHead: !!process.env.PZICON_ZOOMHEAD, zoomBone, zoomRadius: Number(process.env.PZICON_ZOOMR) || undefined }); await once('test-appearance-done'); }
       if (autoClip) { win.webContents.send('test-play', autoClip); await once('test-play-done'); }
       if (process.env.PZICON_BROWSE) { win.webContents.send('test-browse', process.env.PZICON_BROWSE_FILTER || ''); await once('test-browse-done'); }
       if (process.env.PZICON_EXPORT_DIR) {
