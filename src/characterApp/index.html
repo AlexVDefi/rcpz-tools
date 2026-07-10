@@ -263,6 +263,15 @@
             <div class="hint">Drag to orbit, scroll to zoom.</div>
           </div>
           <div class="sec">
+            <h4>Lighting <button id="ltReset" style="margin-left:auto;font-size:11px;padding:2px 8px">Reset</button></h4>
+            <div class="row"><label>ambient</label><input type="range" id="ltAmbient" class="grow" min="0" max="1.2" step="0.02"><span class="val" id="ltAmbientV"></span></div>
+            <div class="row"><label>key light</label><input type="range" id="ltKey" class="grow" min="0" max="1.2" step="0.02"><span class="val" id="ltKeyV"></span></div>
+            <div class="row"><label>key dir X</label><input type="range" id="ltX" class="grow" min="-3" max="3" step="0.05"><span class="val" id="ltXV"></span></div>
+            <div class="row"><label>key dir Y</label><input type="range" id="ltY" class="grow" min="-3" max="3" step="0.05"><span class="val" id="ltYV"></span></div>
+            <div class="row"><label>key dir Z</label><input type="range" id="ltZ" class="grow" min="-3" max="3" step="0.05"><span class="val" id="ltZV"></span></div>
+            <div class="hint">Light is camera-relative: +Z is toward the viewer.</div>
+          </div>
+          <div class="sec">
             <h4>Export</h4>
             <div class="row"><label>size</label>
               <select id="exportSize"><option>256</option><option selected>512</option><option>1024</option></select>

@@ -341,6 +341,21 @@ function wire() {
   for (const [id, idx] of [['keyX', 0], ['keyY', 1], ['keyZ', 2]]) {
     $(id).addEventListener('input', () => { cur.keyDir[idx] = parseFloat($(id).value); $(id + 'V').textContent = cur.keyDir[idx].toFixed(1); markDirty(); scheduleRender(); });
   }
+  // per-slider reset: click a value label to restore that control's default
+  const resets = [
+    ['ambientV', () => { cur.ambient = (DEFAULTS.ambient || [0.6, 0.6, 0.6]).slice(); }],
+    ['keyBrightV', () => { cur.keyColour = (DEFAULTS.keyColour || [0.5, 0.5, 0.5]).slice(); }],
+    ['keyXV', () => { cur.keyDir[0] = (DEFAULTS.keyDir || [0, -2, 5])[0]; }],
+    ['keyYV', () => { cur.keyDir[1] = (DEFAULTS.keyDir || [0, -2, 5])[1]; }],
+    ['keyZV', () => { cur.keyDir[2] = (DEFAULTS.keyDir || [0, -2, 5])[2]; }],
+    ['extraYawV', () => { cur.extraYaw = 0; }], ['extraPitchV', () => { cur.extraPitch = 0; }],
+    ['extraRollV', () => { cur.extraRoll = 0; }], ['paddingV', () => { cur.padding = DEFAULTS.padding ?? 0.03; }],
+  ];
+  for (const [valId, reset] of resets) {
+    const v = $(valId); if (!v) continue;
+    v.style.cursor = 'pointer'; v.title = 'click to reset to default';
+    v.addEventListener('click', () => { reset(); syncControls(); markDirty(); scheduleRender(); });
+  }
   $('iconSelect').addEventListener('change', () => loadIcon($('iconSelect').value));
   $('prevBtn').addEventListener('click', () => step(-1));
   $('nextBtn').addEventListener('click', () => step(1));

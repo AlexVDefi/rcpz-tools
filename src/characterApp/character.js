@@ -44,6 +44,30 @@ scene.add(grid);
 
 const rigs = new RigSet(scene); // body + hair + beard + clothing, animated together
 
+// ---------- lighting (live-adjustable, applied to every character material) ----------
+const light = {
+  ambient: CHAR_LIGHTING.ambient[0],
+  keyBright: CHAR_LIGHTING.keyColour[0],
+  keyDir: CHAR_LIGHTING.keyDir.slice(),
+};
+/** The lighting object new materials are created with. */
+function lightingObj() {
+  return { ambient: [light.ambient, light.ambient, light.ambient], keyDir: light.keyDir.slice(), keyColour: [light.keyBright, light.keyBright, light.keyBright] };
+}
+/** Push the current lighting onto every existing character material. */
+function applyLighting() {
+  const setMat = (o) => {
+    const u = o.material && o.material.uniforms;
+    if (!u) return;
+    if (u.ambient) u.ambient.value.set(light.ambient, light.ambient, light.ambient);
+    if (u.keyColour) u.keyColour.value.set(light.keyBright, light.keyBright, light.keyBright);
+    if (u.keyDir) u.keyDir.value.set(light.keyDir[0], light.keyDir[1], light.keyDir[2]);
+  };
+  for (const rig of rigs.rigs) rig.root.traverse(setMat);
+  for (const s of statics.values()) s.obj.traverse(setMat);
+  for (const h of held.values()) h.obj.traverse(setMat);
+}
+
 // ---------- animation state ----------
 const clock = new THREE.Clock();
 let currentClip = null;    // { clip, rootRotationX, best, name, format } or null
@@ -215,7 +239,7 @@ async function attachStatic(name, r) {
 
   const obj = (await loadGlb(r.meshFile)).scene;
   const tex = r.texture ? await loadTexture(r.texture, false) : getWhiteTex();
-  const mat = makeMaterial(tex, CHAR_LIGHTING, true);
+  const mat = makeMaterial(tex, lightingObj(), true);
   obj.traverse((o) => {
     if (o.isMesh) {
       if (!o.geometry.getAttribute('normal')) o.geometry.computeVertexNormals();
@@ -251,7 +275,7 @@ async function equipHeld(name) {
 
   const obj = (await loadGlb(r.meshFile)).scene;
   const tex = r.texture ? await loadTexture(r.texture, true) : getWhiteTex();
-  const mat = makeMaterial(tex, CHAR_LIGHTING, true);
+  const mat = makeMaterial(tex, lightingObj(), true);
   obj.traverse((o) => {
     if (o.isMesh) {
       if (!o.geometry.getAttribute('normal')) o.geometry.computeVertexNormals();
@@ -294,7 +318,7 @@ async function reequipAll() {
 async function loadSkinnedRoot(meshFile, texture, tint) {
   const glb = await loadGlb(meshFile);
   const root = glb.scene;
-  const mat = makeSkinnedMaterial(texture);
+  const mat = makeSkinnedMaterial(texture, lightingObj());
   if (tint) mat.uniforms.tint.value.set(tint[0], tint[1], tint[2]);
   root.traverse((o) => {
     if (o.isMesh) {
@@ -413,6 +437,7 @@ function bindControls(data) {
   bindBrowser();
   bindExport();
   bindView();
+  bindLighting();
   bindTransport();
 
   document.getElementById('openMod').onclick = async () => {
@@ -646,6 +671,29 @@ function bindView() {
     };
     compass.appendChild(b);
   }
+}
+
+// ---------- lighting controls ----------
+// Each slider's value label is clickable to reset that one slider to its default;
+// the section "Reset" button restores them all.
+function bindLighting() {
+  const rows = [
+    ['ltAmbient', CHAR_LIGHTING.ambient[0], (v) => light.ambient = v, () => light.ambient],
+    ['ltKey', CHAR_LIGHTING.keyColour[0], (v) => light.keyBright = v, () => light.keyBright],
+    ['ltX', CHAR_LIGHTING.keyDir[0], (v) => light.keyDir[0] = v, () => light.keyDir[0]],
+    ['ltY', CHAR_LIGHTING.keyDir[1], (v) => light.keyDir[1] = v, () => light.keyDir[1]],
+    ['ltZ', CHAR_LIGHTING.keyDir[2], (v) => light.keyDir[2] = v, () => light.keyDir[2]],
+  ];
+  const sync = (id, get) => { const el = document.getElementById(id), v = document.getElementById(id + 'V'); if (el) el.value = get(); if (v) v.textContent = (+get()).toFixed(2); };
+  for (const [id, def, set, get] of rows) {
+    const el = document.getElementById(id), v = document.getElementById(id + 'V');
+    if (!el) continue;
+    sync(id, get);
+    el.oninput = () => { set(Number(el.value)); sync(id, get); applyLighting(); };
+    if (v) { v.style.cursor = 'pointer'; v.title = `reset (default ${def.toFixed(2)})`; v.onclick = () => { set(def); sync(id, get); applyLighting(); }; }
+  }
+  const rst = document.getElementById('ltReset');
+  if (rst) rst.onclick = () => { for (const [id, def, set, get] of rows) { set(def); sync(id, get); } applyLighting(); };
 }
 
 // ---------- export ----------
@@ -961,6 +1009,7 @@ ipcRenderer.on('test-appearance', async (_e, opts) => {
   if (opts.cam) setCamMode(opts.cam);
   if (opts.facing != null && opts.facing !== '') rigs.setFacing(Number(opts.facing) * Math.PI / 180);
   if (opts.tab) { const t = document.querySelector(`.tab[data-tab="${opts.tab}"]`); if (t) t.click(); }
+  if (opts.ambient != null && opts.ambient !== '') { light.ambient = Number(opts.ambient); applyLighting(); const el = document.getElementById('ltAmbient'); if (el) el.value = light.ambient; }
   if (opts.zoomHead || opts.zoomBone) {
     const body = rigs.bodyRig();
     const b = body && body.root.getObjectByName(opts.zoomBone || 'Bip01_Head');
