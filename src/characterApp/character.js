@@ -279,9 +279,14 @@ async function equipHeld(name, prop) {
   const bone = body.root.getObjectByName(targetProp);
   if (!bone) return fail(new Error(`hand bone not found: ${targetProp}`));
 
-  // Use the model's attachment for the chosen hand; else the other hand's (offsets
-  // are small grip tweaks), else identity.
-  const att = (r.attachments && (r.attachments[targetProp] || r.attachments[otherProp(targetProp)])) || null;
+  // Use ONLY the model's attachment for the CHOSEN prop; else identity. This is
+  // exactly what the engine does (ModelManager.addEquippedModelInstance leaves
+  // attachmentNameSelf null, so transformToParent resolves the target bone name
+  // and, finding no matching attachment, applies none). The two props are mirrored
+  // hand frames with independently-authored rotations, so borrowing the other
+  // hand's attachment twists the weapon (axe head toward the player); the prop
+  // bone's own animated transform already provides the grip orientation.
+  const att = (r.attachments && r.attachments[targetProp]) || null;
 
   const obj = (await loadGlb(r.meshFile)).scene;
   const tex = r.texture ? await loadTexture(r.texture, true) : getWhiteTex();
