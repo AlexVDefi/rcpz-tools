@@ -114,9 +114,13 @@
     /* animation browser overlay */
     .browser { position: fixed; inset: 0; z-index: 40; background: rgba(20,20,26,0.98);
       display: flex; flex-direction: column; }
-    .browserbar { display: flex; align-items: center; gap: 10px; padding: 10px 14px;
-      background: var(--panel); border-bottom: 1px solid var(--line); }
-    .browserbar #browserSearch { width: 280px; }
+    .browsertop { background: var(--panel); border-bottom: 1px solid var(--line); }
+    .browserbar { display: flex; align-items: center; gap: 10px; padding: 10px 14px; }
+    .browserbar #browserSearch { width: 260px; }
+    .browserbar select { background: #2f2f37; color: var(--fg); border: 1px solid var(--line2); border-radius: 5px; padding: 4px 6px; }
+    .cats { display: flex; gap: 6px; padding: 0 14px 10px; overflow-x: auto; }
+    .catchip { flex: none; font-size: 11px; padding: 4px 10px; border-radius: 12px; }
+    .catchip.active { background: var(--accent); border-color: var(--accent2); }
     .grid { flex: 1; overflow-y: auto; padding: 12px;
       display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
       grid-auto-rows: 148px; gap: 8px; align-content: start; }
@@ -157,13 +161,17 @@
   </header>
 
   <div class="browser" id="browser" style="display:none">
-    <div class="browserbar">
-      <strong>Animation browser</strong>
-      <input type="text" id="browserSearch" placeholder="search animations…">
-      <span class="hint" id="browserCount"></span>
-      <span style="flex:1"></span>
-      <span class="hint">hover to preview, click to play</span>
-      <button id="browserClose">Close</button>
+    <div class="browsertop">
+      <div class="browserbar">
+        <strong>Animation browser</strong>
+        <input type="text" id="browserSearch" placeholder="search animations…">
+        <label class="hint">actor <select id="browserActor"><option value="player">Player</option><option value="zombie">Zombie</option><option value="kate">Kate</option></select></label>
+        <span class="hint" id="browserCount"></span>
+        <span style="flex:1"></span>
+        <span class="hint">hover to preview, click to play</span>
+        <button id="browserClose">Close</button>
+      </div>
+      <div class="cats" id="browserCats"></div>
     </div>
     <div class="grid" id="grid"></div>
   </div>
@@ -230,9 +238,15 @@
             <div class="worn" id="heldList"></div>
           </div>
           <div class="picker">
+            <div class="row"><label>add to</label>
+              <div class="seg" id="handSeg">
+                <button data-p="Bip01_Prop1" class="active">Primary</button>
+                <button data-p="Bip01_Prop2">Secondary</button>
+              </div>
+            </div>
             <input type="text" id="itemSearch" placeholder="search items / weapons…">
             <div class="list" id="itemList"></div>
-            <div class="hint">Weapons/tools attach to the matching hand and follow the animation.</div>
+            <div class="hint">Adds to the chosen hand; click a chip's hand tag to switch it.</div>
           </div>
         </div>
 

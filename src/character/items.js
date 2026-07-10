@@ -27,18 +27,19 @@ function listHeldItems(vfs) {
       let blocks; try { blocks = parseScriptText(text); } catch { continue; }
       walkBlocks(blocks, (b) => {
         if (b.type !== 'model' || items.has(b.name.toLowerCase())) return;
-        let propName = null, att = null;
+        // collect EVERY hand attachment the model declares, so the user can pick a hand
+        const attachments = {};
+        let firstProp = null;
         for (const c of b.children) {
           if (c.type === 'attachment' && PROP_BONES.has(c.name)) {
-            propName = c.name;
-            att = { offset: parseVec3(prop(c, 'offset')), rotate: parseVec3(prop(c, 'rotate')), scale: parseFloat(prop(c, 'scale')) || 1 };
-            break;
+            attachments[c.name] = { offset: parseVec3(prop(c, 'offset')), rotate: parseVec3(prop(c, 'rotate')), scale: parseFloat(prop(c, 'scale')) || 1 };
+            if (!firstProp) firstProp = c.name;
           }
         }
-        if (!propName || !prop(b, 'mesh')) return;
+        if (!firstProp || !prop(b, 'mesh')) return;
         items.set(b.name.toLowerCase(), {
           name: b.name, mesh: prop(b, 'mesh'), texture: prop(b, 'texture'),
-          scale: parseFloat(prop(b, 'scale')) || 1, prop: propName, attachment: att,
+          scale: parseFloat(prop(b, 'scale')) || 1, prop: firstProp, attachments,
         });
       });
     }
@@ -54,7 +55,7 @@ function resolveHeldItem(vfs, item) {
   const texture = (item.texture && resolveTexture(vfs, item.texture)) || resolveTexture(vfs, item.mesh) || null;
   return {
     name: item.name, meshFile: glb.file, texture,
-    prop: item.prop, attachment: item.attachment, scale: item.scale,
+    prop: item.prop, attachments: item.attachments, scale: item.scale,
   };
 }
 

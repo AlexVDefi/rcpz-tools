@@ -14,8 +14,10 @@ export class ThumbRenderer {
     const key = new THREE.DirectionalLight(0xffffff, 1.4);
     key.position.set(0.4, 1.2, 1.6);
     this.scene.add(key);
-    // frame the whole body (feet ~0 to head ~1.0) with a little margin
-    this.camera = new THREE.OrthographicCamera(-0.62, 0.62, 1.12, -0.12, 0.01, 100);
+    // Frame the whole body centred: a vertically SYMMETRIC frustum around the
+    // look-at (body centre ~y=0.5), square so the 112x112 target isn't stretched.
+    // Visible world Y = 0.5 +/- 0.68 = [-0.18, 1.18], so the 0..1.0 body is centred.
+    this.camera = new THREE.OrthographicCamera(-0.68, 0.68, 0.68, -0.68, 0.01, 100);
     this.camera.position.set(0, 0.5, 6);
     this.camera.lookAt(0, 0.5, 0);
 

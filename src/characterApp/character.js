@@ -261,17 +261,27 @@ function detachStatic(name) {
 // partMatrix, the same maths the icon path uses for weapon parts).
 const held = new Map(); // name -> { obj, prop }
 
-async function equipHeld(name) {
+// Which hand new items go into. Default primary (Bip01_Prop1) -- the right hand,
+// where weapons belong; the model's declared prop is only a fallback.
+let handTarget = 'Bip01_Prop1';
+const otherProp = (p) => (p === 'Bip01_Prop1' ? 'Bip01_Prop2' : 'Bip01_Prop1');
+
+async function equipHeld(name, prop) {
   if (held.has(name)) { unequipHeld(name); return; }
   const body = rigs.bodyRig();
   if (!body) return;
   const r = await ipcRenderer.invoke('resolve-item', name);
   if (r.error) return fail(new Error(r.error));
 
+  const targetProp = prop || handTarget;
   // Prop1/Prop2 are attachment nodes in the graph, not skinning bones; the clip
   // animates them by name so a held item follows the hand.
-  const bone = body.root.getObjectByName(r.prop);
-  if (!bone) return fail(new Error(`hand bone not found: ${r.prop}`));
+  const bone = body.root.getObjectByName(targetProp);
+  if (!bone) return fail(new Error(`hand bone not found: ${targetProp}`));
+
+  // Use the model's attachment for the chosen hand; else the other hand's (offsets
+  // are small grip tweaks), else identity.
+  const att = (r.attachments && (r.attachments[targetProp] || r.attachments[otherProp(targetProp)])) || null;
 
   const obj = (await loadGlb(r.meshFile)).scene;
   const tex = r.texture ? await loadTexture(r.texture, true) : getWhiteTex();
@@ -285,12 +295,21 @@ async function equipHeld(name) {
 
   const holder = new THREE.Object3D();
   holder.matrixAutoUpdate = false;
-  holder.matrix.copy(partMatrix(null, r.attachment));
+  holder.matrix.copy(partMatrix(null, att));
   if (r.scale && r.scale !== 1) obj.scale.setScalar(r.scale);
   holder.add(obj);
   bone.add(holder);
-  held.set(name, { obj: holder, prop: r.prop });
+  held.set(name, { obj: holder, prop: targetProp });
   markHeldUI();
+}
+
+/** Move an already-held item to the other hand. */
+async function switchHand(name) {
+  const h = held.get(name);
+  if (!h) return;
+  const to = otherProp(h.prop);
+  unequipHeld(name);
+  await equipHeld(name, to);
 }
 
 function unequipHeld(name) {
@@ -306,10 +325,11 @@ async function reequipAll() {
   for (const n of names) { const e = equipped.get(n); if (e.kind === 'mesh') rigs.removeKind('cloth:' + n); else if (e.kind === 'static') detachStatic(n); }
   equipped.clear();
   for (const n of names) await equipClothing(n);
-  // held items are parented to the old body's bones; re-attach to the new body
-  const heldNames = [...held.keys()];
-  for (const n of heldNames) unequipHeld(n);
-  for (const n of heldNames) await equipHeld(n);
+  // held items are parented to the old body's bones; re-attach to the new body,
+  // preserving whichever hand each was in
+  const heldEntries = [...held.entries()].map(([n, h]) => [n, h.prop]);
+  for (const [n] of heldEntries) unequipHeld(n);
+  for (const [n, p] of heldEntries) await equipHeld(n, p);
   markHeldUI();
 }
 
@@ -586,6 +606,10 @@ async function bindHeld() {
   allHeld = await ipcRenderer.invoke('list-items');
   const search = document.getElementById('itemSearch');
   const list = document.getElementById('itemList');
+  for (const b of document.querySelectorAll('#handSeg button')) {
+    b.classList.toggle('active', b.dataset.p === handTarget);
+    b.onclick = () => { handTarget = b.dataset.p; for (const x of document.querySelectorAll('#handSeg button')) x.classList.toggle('active', x === b); };
+  }
   function render() {
     const f = (search.value || '').toLowerCase();
     const rows = allHeld.filter((c) => !f || c.name.toLowerCase().includes(f));
@@ -595,7 +619,7 @@ async function bindHeld() {
       el.className = 'item' + (held.has(c.name) ? ' sel' : '');
       el.dataset.name = c.name;
       el.textContent = c.name;
-      el.title = c.prop === 'Bip01_Prop1' ? 'primary hand' : 'secondary hand';
+      el.title = c.name;
       el.onclick = async () => { await equipHeld(c.name); markHeldUI(); };
       list.appendChild(el);
     }
@@ -624,7 +648,10 @@ function markHeldUI() {
     const nm = document.createElement('span');
     nm.className = 'nm'; nm.textContent = name; nm.title = name;
     const tag = document.createElement('span');
-    tag.className = 'tag'; tag.textContent = h.prop === 'Bip01_Prop1' ? 'primary' : 'secondary';
+    tag.className = 'tag hand'; tag.textContent = h.prop === 'Bip01_Prop1' ? 'primary' : 'secondary';
+    tag.title = 'click to switch hand';
+    tag.style.cursor = 'pointer';
+    tag.onclick = () => switchHand(name);
     const rm = document.createElement('span');
     rm.className = 'rm'; rm.textContent = '×'; rm.title = 'remove';
     rm.onclick = () => { unequipHeld(name); markHeldUI(); };
@@ -880,12 +907,52 @@ function stopHover(cell) {
   pumpThumbs(); // resume any queued static thumbnails
 }
 
-function populateGrid(filter) {
+// Actors that remain after the data-layer filter, grouped for the browser.
+function actorGroup(actor) {
+  const a = String(actor).toLowerCase();
+  if (a === 'zombie') return 'zombie';
+  if (a === 'kate') return 'kate';
+  return 'player'; // bob
+}
+
+// Clip categories by ordered keyword (first match wins). Order matters: e.g. Aim
+// before Idle so "IdleAim1Hand" is Aim. "Action" is the catch-all.
+const CLIP_CATEGORIES = [
+  ['Aim', /aim/i],
+  ['Attack', /attack/i],
+  ['Reload', /reload|equip|unequip|rack|chamber|holster/i],
+  ['Vehicle', /bicycle|vehicle|drive|passenger|mount|dismount|pedal/i],
+  ['Sneak', /sneak|stealth/i],
+  ['Run', /run/i],
+  ['Walk', /walk/i],
+  ['Sit', /sit|seated/i],
+  ['Fishing', /fish/i],
+  ['Climb', /climb|va[lu]+ltover|vault|hop|fence|window/i],
+  ['Fall', /fall|death|die|suicide|landing|knock|collapse|trip/i],
+  ['React', /react|bite|defend|\bhit\b|stagger|hurt|pain/i],
+  ['Emote', /emote|signal|wave|surrender|clap|dance|bow|salute/i],
+  ['Farming', /milk|forage|dig|plant|harvest|shovel/i],
+  ['Carry', /carry|lift|drag/i],
+  ['Turn', /turn/i],
+  ['Idle', /idle/i],
+];
+function categoryOf(name) {
+  for (const [label, re] of CLIP_CATEGORIES) if (re.test(name)) return label;
+  return 'Action';
+}
+
+let browserActor = 'player';
+let browserCategory = 'all';
+
+function populateGrid() {
   const grid = document.getElementById('grid');
   grid.innerHTML = '';
   thumbQueue = [];
-  const f = (filter || '').toLowerCase();
-  const rows = allClips.filter((c) => !f || c.name.toLowerCase().includes(f) || c.actor.toLowerCase().includes(f));
+  const f = (document.getElementById('browserSearch').value || '').toLowerCase();
+  const rows = allClips.filter((c) =>
+    actorGroup(c.actor) === browserActor &&
+    (browserCategory === 'all' || categoryOf(c.name) === browserCategory) &&
+    (!f || c.name.toLowerCase().includes(f)));
   document.getElementById('browserCount').textContent = `${rows.length} clips`;
   for (const c of rows) {
     const cell = document.createElement('div');
@@ -902,11 +969,31 @@ function populateGrid(filter) {
   }
 }
 
+// Category chips for the current actor, only non-empty, with counts.
+function buildCategoryChips() {
+  const strip = document.getElementById('browserCats');
+  if (!strip) return;
+  const counts = {};
+  let total = 0;
+  for (const c of allClips) if (actorGroup(c.actor) === browserActor) { counts[categoryOf(c.name)] = (counts[categoryOf(c.name)] || 0) + 1; total++; }
+  const order = [...CLIP_CATEGORIES.map((x) => x[0]), 'Action'].filter((c) => counts[c]);
+  strip.innerHTML = '';
+  const mk = (label, val, count) => {
+    const b = document.createElement('button');
+    b.className = 'catchip' + (browserCategory === val ? ' active' : '');
+    b.textContent = `${label} ${count}`;
+    b.onclick = () => { browserCategory = val; for (const x of strip.querySelectorAll('.catchip')) x.classList.toggle('active', x === b); populateGrid(); };
+    strip.appendChild(b);
+  };
+  mk('All', 'all', total);
+  for (const c of order) mk(c, c, counts[c]);
+}
+
 async function openBrowser() {
   document.getElementById('browser').style.display = 'flex';
   await ensureThumbs();
-  const search = document.getElementById('browserSearch');
-  populateGrid(search.value);
+  buildCategoryChips();
+  populateGrid();
 }
 function closeBrowser() {
   if (hoverCell) stopHover(hoverCell);
@@ -919,7 +1006,9 @@ function bindBrowser() {
   document.getElementById('browserClose').onclick = closeBrowser;
   const search = document.getElementById('browserSearch');
   let deb = null;
-  search.oninput = () => { if (deb) clearTimeout(deb); deb = setTimeout(() => populateGrid(search.value), 150); };
+  search.oninput = () => { if (deb) clearTimeout(deb); deb = setTimeout(populateGrid, 150); };
+  const actor = document.getElementById('browserActor');
+  if (actor) actor.onchange = () => { browserActor = actor.value; browserCategory = 'all'; buildCategoryChips(); populateGrid(); };
 }
 
 // ---------- clip list ----------

@@ -38,13 +38,20 @@ function resolveBody(vfs, { gender = 'male', skin } = {}) {
  * The clip library for the animation browser, mod clips marked and sorted first.
  * Returns light metadata only (no conversion) so listing 2209 clips stays instant.
  */
+// Only these actors use the human Bip01 skeleton and retarget to the player body;
+// animal clips (Cow, Deer, Chicken, ...) have their own skeletons and would just
+// render as the static bind pose, so they are never loaded.
+const HUMAN_ACTORS = new Set(['bob', 'kate', 'zombie']);
+
 function listClips(vfs, modRootDirs = []) {
-  const clips = listAnims(vfs, modRootDirs).map((a) => ({
-    id: a.key, name: a.clip, actor: a.actor, format: a.format,
-    isMod: a.isMod, file: a.file,
-    // FBX clips are best-effort (authored in a different root frame); flag them
-    best: a.format === 'x' || a.format === 'glb' || a.format === 'gltf',
-  }));
+  const clips = listAnims(vfs, modRootDirs)
+    .filter((a) => HUMAN_ACTORS.has(String(a.actor).toLowerCase()))
+    .map((a) => ({
+      id: a.key, name: a.clip, actor: a.actor, format: a.format,
+      isMod: a.isMod, file: a.file,
+      // FBX clips are best-effort (authored in a different root frame); flag them
+      best: a.format === 'x' || a.format === 'glb' || a.format === 'gltf',
+    }));
   clips.sort((a, b) =>
     (b.isMod - a.isMod) ||
     a.actor.localeCompare(b.actor) ||
