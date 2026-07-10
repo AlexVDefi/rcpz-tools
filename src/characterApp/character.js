@@ -2,7 +2,7 @@
 // shader with the chosen skin texture, and lets the user orbit it. Gender and
 // skin-tone changes re-resolve the body in the main process and reload.
 
-import { THREE, makeSkinnedMaterial, makeMaterial, partMatrix, loadGlb, makeOrbit, loadTexture } from './charCore.js';
+import { THREE, makeSkinnedMaterial, makeMaterial, CHAR_LIGHTING, partMatrix, loadGlb, makeOrbit, loadTexture } from './charCore.js';
 import { normaliseClip } from './anim.js';
 import { RigSet } from './rigset.js';
 import { ThumbRenderer } from './thumbs.js';
@@ -215,7 +215,7 @@ async function attachStatic(name, r) {
 
   const obj = (await loadGlb(r.meshFile)).scene;
   const tex = r.texture ? await loadTexture(r.texture, false) : getWhiteTex();
-  const mat = makeMaterial(tex, {}, true);
+  const mat = makeMaterial(tex, CHAR_LIGHTING, true);
   obj.traverse((o) => {
     if (o.isMesh) {
       if (!o.geometry.getAttribute('normal')) o.geometry.computeVertexNormals();
@@ -251,7 +251,7 @@ async function equipHeld(name) {
 
   const obj = (await loadGlb(r.meshFile)).scene;
   const tex = r.texture ? await loadTexture(r.texture, true) : getWhiteTex();
-  const mat = makeMaterial(tex, {}, true);
+  const mat = makeMaterial(tex, CHAR_LIGHTING, true);
   obj.traverse((o) => {
     if (o.isMesh) {
       if (!o.geometry.getAttribute('normal')) o.geometry.computeVertexNormals();

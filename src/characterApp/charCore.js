@@ -28,10 +28,17 @@ export const SKIN_VERT = /* glsl */`
   }
 `;
 
-export function makeSkinnedMaterial(texture, lighting = {}, doubleSide = true) {
-  const ambient = lighting.ambient ?? [0.55, 0.55, 0.55];
-  const keyDir = lighting.keyDir ?? [0.4, 1.2, 1.6];
-  const keyColour = lighting.keyColour ?? [0.55, 0.55, 0.55];
+// Character lighting is CAMERA-RELATIVE (the FRAG lights a view-space normal against
+// this fixed view-space direction). Keep it dominated by +Z (the camera direction)
+// so whatever faces the viewer stays lit at any orbit/iso angle, with only a gentle
+// top bias for form -- an up-heavy key would light the top of the head and let the
+// forward-facing centre of the face fall into shadow when the view is tilted.
+export const CHAR_LIGHTING = { ambient: [0.55, 0.55, 0.55], keyDir: [0.12, 0.28, 1.0], keyColour: [0.5, 0.5, 0.5] };
+
+export function makeSkinnedMaterial(texture, lighting = CHAR_LIGHTING, doubleSide = true) {
+  const ambient = lighting.ambient ?? CHAR_LIGHTING.ambient;
+  const keyDir = lighting.keyDir ?? CHAR_LIGHTING.keyDir;
+  const keyColour = lighting.keyColour ?? CHAR_LIGHTING.keyColour;
   const mat = new THREE.ShaderMaterial({
     uniforms: {
       map: { value: texture },
