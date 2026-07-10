@@ -405,10 +405,22 @@ function bindControls(data) {
     const r = await ipcRenderer.invoke('choose-game-dir');
     if (r.canceled) return;
     if (r.error) return fail(new Error(r.error));
+    setGameDirBadge(r.gameDir);
     if (r.body) { await loadBody(r.body); renderTones(r.body); }
   };
 
   document.getElementById('iconsBtn').onclick = () => ipcRenderer.invoke('open-icons');
+}
+
+/** Show whether a Project Zomboid install is configured (vanilla assets). */
+function setGameDirBadge(dir) {
+  const b = document.getElementById('gameDirBtn');
+  if (!b) return;
+  b.textContent = dir ? 'Game folder ✓' : 'Game folder …';
+  b.title = dir
+    ? `Project Zomboid: ${dir}\nClick to change.`
+    : 'No Project Zomboid install set. Vanilla bodies, clothing and animations will not resolve. Click to set it.';
+  b.style.borderColor = dir ? '' : '#8a6d3b';
 }
 
 // ---------- hair + beard controls ----------
@@ -970,6 +982,7 @@ async function start() {
   fitCanvas();
   const data = await ipcRenderer.invoke('get-data');
   document.getElementById('modLabel').textContent = data.modPath || '';
+  setGameDirBadge(data.gameDir);
   if (data.error || !data.body) throw new Error(data.error || 'no body resolved (set your Game folder)');
   await loadBody(data.body);
   bindControls(data);
