@@ -11,6 +11,9 @@ It runs standalone. **No Project Zomboid instance, no Blender, no Python.**
   detected from the model/item scripts.
 - Headless CLI to batch-render a whole mod.
 - Renders straight into your mod, or into any folder for posters and promo art.
+- **Character and animation viewer** -- assemble a full character (gender, skin, hair,
+  beard, clothing, held weapons) and play any of the game's ~1,800 animation clips, then
+  export a still, a sprite sheet, or a looping GIF. See [below](#character-and-animation-viewer).
 
 ---
 
@@ -110,6 +113,28 @@ Launch the app, or run `pz-icon-maker preview <modPath>`.
 - **Generate…** — renders this icon or all icons, at every enabled size, either into the
   mod's `media/textures/` as `Item_<icon>.png`, or into any folder as `<icon>_<size>.png`
   for posters and promo art. With a progress bar and a cancel button.
+
+## Character and animation viewer
+
+The **Character…** button at the top of the icon window opens a second mode: a full Project
+Zomboid character you can dress, arm, and animate. It uses the same asset resolution as the
+icon path, so it renders the vanilla body, clothing, and weapons your mod reuses, plus
+anything the mod adds.
+
+- **Build the character** -- pick gender and skin tone; add hair, a beard, and any clothing
+  item (meshed, composite, or a static hat); equip weapons and items in either hand.
+- **Animate** -- browse the game's clips in a searchable grid, grouped into categories (Aim,
+  Attack, Reload, Walk, Sneak, Sit, and more) and by actor (player, Kate, zombie). Hover a
+  thumbnail to preview, click to play. Scrub, loop, and change speed on the transport bar.
+- **Pose the shot** -- orbit freely or snap to the game's isometric camera, turn the
+  character to any facing, and tune the lighting (ambient, key brightness and direction),
+  each slider with a one-click reset.
+- **Export** -- a transparent still, a sprite sheet, or a looping GIF of the current clip
+  (512px, auto-optimised to stay under 1 MB).
+
+Only human and zombie clips are loaded, since animal skeletons do not retarget to the player
+body. Held items follow the hand's prop bone, so a weapon sits and swings the way the game
+holds it.
 
 ## Headless CLI
 

@@ -1,6 +1,6 @@
 {
   "name": "pz-icon-maker",
-  "version": "1.0.2",
+  "version": "1.1.0",
   "description": "Render Project Zomboid 3D item models to inventory icons that match the in-game look.",
   "author": "AlexVDefi",
   "license": "GPL-3.0-or-later",
