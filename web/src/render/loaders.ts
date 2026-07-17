@@ -2,7 +2,15 @@
 import * as THREE from 'three';
 import { GLTFLoader, type GLTF } from 'three/addons/loaders/GLTFLoader.js';
 
-const gltfLoader = new GLTFLoader();
+// assimp's glb export references each material's ORIGINAL texture by bare filename
+// (e.g. "MaleBody02a.png"). We never use those — every mesh's material is replaced with
+// our own PZ-resolved texture right after load — but GLTFLoader.parse still tries to
+// fetch each filename and 404s, spamming the console. Redirect any image request to a
+// 1x1 transparent pixel so parsing stays silent and does no wasted network work.
+const BLANK_PX = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+const manager = new THREE.LoadingManager();
+manager.setURLModifier((url) => (/\.(png|jpe?g|tga|bmp|dds|gif)$/i.test(url) ? BLANK_PX : url));
+const gltfLoader = new GLTFLoader(manager);
 
 /** Parse self-contained glb bytes (from the WASM converter) into a GLTF result. */
 export function glbToGltf(bytes: Uint8Array): Promise<GLTF> {
