@@ -1,190 +1,181 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { resolveBody, resolveClip, listClips } from '@shared/character-core.js';
-import { THREE, makeSkinnedMaterial, CHAR_LIGHTING, makeOrbit } from './render/three-core';
-import { glbToGltf, bytesToTexture } from './render/loaders';
-import { normaliseClip, boneRestMap } from './render/anim';
-import { RigSet } from './render/rigset';
+import { listClips, listClothing, listHeldItems, listHair } from '@shared/character-core.js';
+import { CharacterEngine, type Ctx } from './render/character-engine';
+import { AssetGrid, type GridItem } from './AssetGrid';
 
-interface Ctx { resolver: unknown; converter: unknown; }
-interface Clip { id: string; name: string; actor: string; format: string; isMod: boolean; rel: string; }
+type Tab = 'animate' | 'clothing' | 'held' | 'hair';
+interface Clip { id: string; name: string; actor: string; format: string; isMod: boolean; rel: string }
 
-interface Engine {
-  renderer: THREE.WebGLRenderer;
-  scene: THREE.Scene;
-  camera: THREE.PerspectiveCamera;
-  orbit: ReturnType<typeof makeOrbit>;
-  rigs: RigSet;
-  clock: THREE.Clock;
-  bodyRest: Map<string, THREE.Quaternion>;
-  playing: boolean;
-  speed: number;
-  raf: number;
-  disposed: boolean;
-}
+const firstLetter = (s: string) => (/[a-z]/i.test(s[0]) ? s[0].toUpperCase() : '#');
 
 export function CharacterViewer({ ctx, index }: { ctx: Ctx; index: unknown }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const engineRef = useRef<Engine | null>(null);
+  const engineRef = useRef<CharacterEngine | null>(null);
   const [gender, setGender] = useState<'male' | 'female'>('male');
   const [status, setStatus] = useState('loading body…');
   const [nowPlaying, setNowPlaying] = useState('');
   const [playing, setPlaying] = useState(true);
-  const [filter, setFilter] = useState('');
+  const [tab, setTab] = useState<Tab>('animate');
+  const [clipFilter, setClipFilter] = useState('');
+  const [equipTick, setEquipTick] = useState(0); // bump to re-highlight equipped cards
+  const [busy, setBusy] = useState('');
 
   const clips: Clip[] = useMemo(() => listClips(index), [index]);
-  const shown = useMemo(() => {
-    const f = filter.trim().toLowerCase();
-    const rows = f ? clips.filter((c) => c.name.toLowerCase().includes(f)) : clips;
-    return rows.slice(0, 500);
-  }, [clips, filter]);
+  const clothing = useMemo(() => (listClothing(index) as Array<{ name: string; kind: string; location: string; isMod: boolean }>)
+    .map((c) => ({ ...c, key: c.name, label: c.name, facet: c.location })), [index]);
+  const held = useMemo(() => (listHeldItems(index) as Array<{ name: string }>)
+    .map((h) => ({ ...h, key: h.name, label: h.name, facet: firstLetter(h.name), isMod: false })), [index]);
+  const hairData = useMemo(() => listHair(index) as { hair: { male: { name: string }[]; female: { name: string }[] }; beards: { name: string }[] }, [index]);
 
-  // init three once
+  const shownClips = useMemo(() => {
+    const f = clipFilter.trim().toLowerCase();
+    return (f ? clips.filter((c) => c.name.toLowerCase().includes(f)) : clips).slice(0, 500);
+  }, [clips, clipFilter]);
+
+  // create engine once
   useEffect(() => {
-    const canvas = canvasRef.current!;
-    const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false, preserveDrawingBuffer: true });
-    renderer.setClearColor(0x14141a, 1);
-    const scene = new THREE.Scene();
-    scene.add(new THREE.GridHelper(4, 16, 0x2b2b34, 0x24242c));
-    const camera = new THREE.PerspectiveCamera(35, 1, 0.01, 100);
-    const orbit = makeOrbit(() => camera, canvas);
-    const rigs = new RigSet(scene);
-    const eng: Engine = { renderer, scene, camera, orbit, rigs, clock: new THREE.Clock(), bodyRest: new Map(), playing: true, speed: 1, raf: 0, disposed: false };
+    const eng = new CharacterEngine(canvasRef.current!, ctx);
+    eng.onClipName = setNowPlaying;
     engineRef.current = eng;
+    const onResize = () => eng.fit();
+    window.addEventListener('resize', onResize);
+    return () => { window.removeEventListener('resize', onResize); eng.dispose(); engineRef.current = null; };
+  }, [ctx]);
 
-    const fit = () => {
-      const wrap = canvas.parentElement!;
-      const w = wrap.clientWidth, h = wrap.clientHeight;
-      renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
-      renderer.setSize(w, h, false);
-      camera.aspect = w / h; camera.updateProjectionMatrix();
-      orbit.apply();
-    };
-    fit();
-    window.addEventListener('resize', fit);
-
-    const loop = () => {
-      if (eng.disposed) return;
-      eng.raf = requestAnimationFrame(loop);
-      const dt = eng.clock.getDelta();
-      if (eng.rigs.clip && eng.playing) eng.rigs.update(dt * eng.speed);
-      renderer.render(scene, camera);
-    };
-    loop();
-
-    return () => {
-      eng.disposed = true;
-      cancelAnimationFrame(eng.raf);
-      window.removeEventListener('resize', fit);
-      orbit.dispose();
-      renderer.dispose();
-    };
-  }, []);
-
-  // load / swap body when gender changes
+  // load / swap body on gender change
   useEffect(() => {
     let cancelled = false;
     (async () => {
       const eng = engineRef.current; if (!eng) return;
       setStatus('loading body…');
-      try {
-        const body = await resolveBody(ctx, { gender });
-        if (cancelled || eng.disposed) return;
-        const gltf = await glbToGltf(body.meshGlb);
-        const tex = await bytesToTexture(body.skinTexture, false);
-        const root = gltf.scene;
-        const mat = makeSkinnedMaterial(tex, CHAR_LIGHTING);
-        root.traverse((o) => {
-          const mesh = o as THREE.Mesh;
-          if (mesh.isMesh) {
-            if (!mesh.geometry.getAttribute('normal')) mesh.geometry.computeVertexNormals();
-            mesh.material = mat; mesh.frustumCulled = false;
-          }
-        });
-        eng.bodyRest = boneRestMap(root);
-        const hadBody = !!eng.rigs.bodyRig();
-        eng.rigs.removeKind('body');
-        eng.rigs.add('body', root);
-        root.updateMatrixWorld(true);
-        if (!hadBody) {
-          const box = new THREE.Box3().setFromObject(root);
-          const c = box.getCenter(new THREE.Vector3());
-          const s = box.getSize(new THREE.Vector3());
-          eng.orbit.setTarget(new THREE.Vector3(0, c.y, 0));
-          eng.orbit.state.radius = Math.max(s.y, 1) * 1.9;
-          eng.orbit.apply();
-        }
-        setStatus('');
-      } catch (e) {
-        if (!cancelled) setStatus('body error: ' + (e instanceof Error ? e.message : String(e)));
-      }
+      try { await eng.loadBody(gender); if (!cancelled) { setStatus(''); setEquipTick((t) => t + 1); } }
+      catch (e) { if (!cancelled) setStatus('body error: ' + (e instanceof Error ? e.message : String(e))); }
     })();
     return () => { cancelled = true; };
-  }, [ctx, gender]);
+  }, [gender]);
 
-  async function play(clip: Clip) {
-    const eng = engineRef.current; if (!eng) return;
-    setNowPlaying('loading ' + clip.name + '…');
-    try {
-      const r = await resolveClip(ctx, clip);
-      if (r.error) throw new Error(r.error);
-      const gltf = await glbToGltf(r.glb);
-      if (!gltf.animations?.length) throw new Error('no animation in ' + clip.name);
-      const norm = normaliseClip(gltf.animations[0], clip.format, { clipRest: boneRestMap(gltf.scene), bodyRest: eng.bodyRest });
-      eng.rigs.setLoop(true);
-      eng.rigs.setClip(norm);
-      eng.playing = true; setPlaying(true);
-      const tag = norm.best ? '' : (clip.format === 'fbx' ? ' (fbx, best-effort)' : ` (${clip.format}, retargeted)`);
-      setNowPlaying(clip.name + tag);
-    } catch (e) {
-      setNowPlaying('error: ' + (e instanceof Error ? e.message : String(e)));
-    }
+  async function guard(label: string, fn: () => Promise<unknown>) {
+    setBusy(label);
+    try { await fn(); } catch (e) { setNowPlaying('error: ' + (e instanceof Error ? e.message : String(e))); }
+    finally { setBusy(''); setEquipTick((t) => t + 1); }
   }
 
-  function togglePlay() {
-    const eng = engineRef.current; if (!eng) return;
-    eng.playing = !eng.playing; setPlaying(eng.playing);
-  }
+  const playClip = (c: Clip) => guard('loading ' + c.name, async () => { await engineRef.current!.playClip(c); setPlaying(true); });
+  const toggleCloth = (it: { name: string }) => guard('equipping ' + it.name, () => engineRef.current!.toggleClothing(it));
+  const toggleHeld = (it: { name: string }) => guard('equipping ' + it.name, () => engineRef.current!.toggleHeld(it));
+  const togglePlay = () => { const e = engineRef.current; if (e) setPlaying(e.togglePlay()); };
+
+  const tabs: [Tab, string][] = [['animate', 'Animate'], ['clothing', 'Clothing'], ['held', 'Held'], ['hair', 'Hair']];
 
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: '1fr 320px', gap: 12, height: 'calc(100vh - 160px)', minHeight: 420 }}>
+    <div style={{ display: 'grid', gridTemplateColumns: '1fr 360px', gap: 12, height: 'calc(100vh - 150px)', minHeight: 440 }}>
       <div style={{ position: 'relative', background: '#14141a', border: '1px solid var(--line)', borderRadius: 8, overflow: 'hidden' }}>
         <canvas ref={canvasRef} style={{ width: '100%', height: '100%', display: 'block' }} />
         <div style={{ position: 'absolute', left: 12, top: 12, display: 'flex', gap: 8, alignItems: 'center' }}>
           <div style={{ display: 'flex', border: '1px solid var(--line)', borderRadius: 6, overflow: 'hidden' }}>
             {(['male', 'female'] as const).map((g) => (
               <button key={g} className="secondary" onClick={() => setGender(g)}
-                style={{ borderRadius: 0, background: gender === g ? 'var(--accent)' : 'var(--panel)', color: gender === g ? '#fff' : 'var(--text)' }}>
-                {g}
-              </button>
+                style={{ borderRadius: 0, background: gender === g ? 'var(--accent)' : 'var(--panel)', color: gender === g ? '#fff' : 'var(--text)' }}>{g}</button>
             ))}
           </div>
-          {status && <span style={{ color: 'var(--muted)', background: '#00000088', padding: '4px 8px', borderRadius: 6 }}>{status}</span>}
+          {(status || busy) && <span style={{ color: 'var(--muted)', background: '#00000099', padding: '4px 8px', borderRadius: 6 }}>{status || busy}</span>}
         </div>
         <div style={{ position: 'absolute', left: 12, bottom: 12, right: 12, display: 'flex', gap: 8, alignItems: 'center' }}>
           <button className="secondary" onClick={togglePlay}>{playing ? '❚❚' : '▶'}</button>
-          <span style={{ color: 'var(--muted)', background: '#00000088', padding: '4px 8px', borderRadius: 6, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+          <span style={{ color: 'var(--muted)', background: '#00000099', padding: '4px 8px', borderRadius: 6, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', flex: 1 }}>
             {nowPlaying || 'pick a clip →'}
           </span>
         </div>
       </div>
 
       <div style={{ display: 'flex', flexDirection: 'column', minHeight: 0, background: 'var(--panel)', border: '1px solid var(--line)', borderRadius: 8 }}>
-        <div style={{ padding: 8, borderBottom: '1px solid var(--line)' }}>
-          <input value={filter} onChange={(e) => setFilter(e.target.value)} placeholder={`Search ${clips.length} clips…`}
-            style={{ width: '100%', background: '#14141a', color: 'var(--text)', border: '1px solid var(--line)', borderRadius: 6, padding: '7px 9px' }} />
-        </div>
-        <div style={{ overflow: 'auto', flex: 1 }}>
-          {shown.map((c) => (
-            <div key={c.id} onClick={() => play(c)}
-              style={{ padding: '4px 10px', cursor: 'pointer', fontFamily: 'monospace', fontSize: 12, display: 'flex', gap: 8 }}
-              onMouseEnter={(e) => (e.currentTarget.style.background = '#ffffff10')}
-              onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}>
-              <span style={{ color: c.isMod ? '#8ec77f' : 'var(--muted)', width: 44 }}>{c.actor}</span>
-              <span>{c.name}</span>
-            </div>
+        <div style={{ display: 'flex', borderBottom: '1px solid var(--line)' }}>
+          {tabs.map(([t, label]) => (
+            <button key={t} onClick={() => setTab(t)} className="secondary"
+              style={{ flex: 1, borderRadius: 0, background: tab === t ? 'var(--accent)' : 'transparent', color: tab === t ? '#fff' : 'var(--text)' }}>{label}</button>
           ))}
-          {clips.length > shown.length && <div style={{ padding: 10, color: 'var(--muted)' }}>+{clips.length - shown.length} more — refine search</div>}
         </div>
+
+        <div style={{ flex: 1, minHeight: 0 }}>
+          {tab === 'animate' && (
+            <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+              <div style={{ padding: 8, borderBottom: '1px solid var(--line)' }}>
+                <input value={clipFilter} onChange={(e) => setClipFilter(e.target.value)} placeholder={`Search ${clips.length} clips…`}
+                  style={{ width: '100%', background: '#14141a', color: 'var(--text)', border: '1px solid var(--line)', borderRadius: 6, padding: '7px 9px' }} />
+              </div>
+              <div style={{ overflow: 'auto', flex: 1 }}>
+                {shownClips.map((c) => (
+                  <div key={c.id} onClick={() => playClip(c)}
+                    style={{ padding: '4px 10px', cursor: 'pointer', fontFamily: 'monospace', fontSize: 12, display: 'flex', gap: 8 }}
+                    onMouseEnter={(e) => (e.currentTarget.style.background = '#ffffff10')}
+                    onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}>
+                    <span style={{ color: c.isMod ? '#8ec77f' : 'var(--muted)', width: 44 }}>{c.actor}</span>
+                    <span>{c.name}</span>
+                  </div>
+                ))}
+                {clips.length > shownClips.length && <div style={{ padding: 10, color: 'var(--muted)' }}>+{clips.length - shownClips.length} more — refine search</div>}
+              </div>
+            </div>
+          )}
+
+          {tab === 'clothing' && (
+            <AssetGrid<typeof clothing[number] & GridItem>
+              items={clothing as (typeof clothing[number] & GridItem)[]}
+              facetLabel="locations"
+              active={(it) => { void equipTick; return !!engineRef.current?.isEquipped(it.name); }}
+              onPick={(it) => toggleCloth(it)} />
+          )}
+
+          {tab === 'held' && (
+            <AssetGrid<typeof held[number] & GridItem>
+              items={held as (typeof held[number] & GridItem)[]}
+              facetLabel="letters"
+              active={(it) => { void equipTick; return !!engineRef.current?.isHeld(it.name); }}
+              onPick={(it) => toggleHeld(it)} />
+          )}
+
+          {tab === 'hair' && <HairTab hairData={hairData} gender={gender} engineRef={engineRef} />}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function HairTab({ hairData, gender, engineRef }: {
+  hairData: { hair: { male: { name: string }[]; female: { name: string }[] }; beards: { name: string }[] };
+  gender: 'male' | 'female';
+  engineRef: React.MutableRefObject<CharacterEngine | null>;
+}) {
+  const [hair, setHair] = useState('None');
+  const [beard, setBeard] = useState('None');
+  const [hairColor, setHairColor] = useState('#5a3a20');
+  const [beardColor, setBeardColor] = useState('#5a3a20');
+  const hairList = gender === 'female' ? hairData.hair.female : hairData.hair.male;
+  const hexRgb = (hex: string) => { const n = parseInt(hex.slice(1), 16); return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255]; };
+
+  const apply = (kind: 'hair' | 'beard', name: string, color: string) => {
+    const list = kind === 'beard' ? hairData.beards : hairList;
+    const style = name === 'None' ? { name: 'None' } : list.find((s) => s.name === name) || { name };
+    engineRef.current?.applyPart(kind, style, hexRgb(color)).catch(() => {});
+  };
+
+  const row = { display: 'flex', gap: 8, alignItems: 'center', marginBottom: 12 } as const;
+  const sel = { flex: 1, background: '#14141a', color: 'var(--text)', border: '1px solid var(--line)', borderRadius: 6, padding: '7px 9px' } as const;
+  return (
+    <div style={{ padding: 12 }}>
+      <label style={{ color: 'var(--muted)', fontSize: 12 }}>Hair</label>
+      <div style={row}>
+        <select style={sel} value={hair} onChange={(e) => { setHair(e.target.value); apply('hair', e.target.value, hairColor); }}>
+          <option>None</option>{hairList.map((s) => <option key={s.name}>{s.name}</option>)}
+        </select>
+        <input type="color" value={hairColor} onChange={(e) => { setHairColor(e.target.value); apply('hair', hair, e.target.value); }} />
+      </div>
+      <label style={{ color: 'var(--muted)', fontSize: 12 }}>Beard</label>
+      <div style={row}>
+        <select style={sel} value={beard} onChange={(e) => { setBeard(e.target.value); apply('beard', e.target.value, beardColor); }}>
+          <option>None</option>{hairData.beards.map((s) => <option key={s.name}>{s.name}</option>)}
+        </select>
+        <input type="color" value={beardColor} onChange={(e) => { setBeardColor(e.target.value); apply('beard', beard, e.target.value); }} />
       </div>
     </div>
   );
