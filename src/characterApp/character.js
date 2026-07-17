@@ -3,7 +3,7 @@
 // skin-tone changes re-resolve the body in the main process and reload.
 
 import { THREE, makeSkinnedMaterial, makeMaterial, CHAR_LIGHTING, partMatrix, loadGlb, makeOrbit, loadTexture } from './charCore.js';
-import { normaliseClip } from './anim.js';
+import { normaliseClip, boneRestMap } from './anim.js';
 import { RigSet } from './rigset.js';
 import { ThumbRenderer } from './thumbs.js';
 
@@ -104,13 +104,15 @@ async function loadClip(id) {
   if (r.error) return fail(new Error(r.error));
   const glb = await loadGlb(r.glbFile);
   if (!glb.animations || !glb.animations.length) return fail(new Error(`no animation in ${r.name}`));
-  const norm = normaliseClip(glb.animations[0], r.format);
+  const norm = normaliseClip(glb.animations[0], r.format, { clipRest: boneRestMap(glb.scene), bodyRest: bodyBoneRest });
   currentClip = { clip: norm.clip, rootRotationX: norm.rootRotationX, best: norm.best, name: r.name, format: r.format };
   rigs.setLoop(loopMode);
   rigs.setClip(currentClip);
   playing = true;
   setTransportUI();
-  const label = r.name + (norm.best ? '' : ' (fbx, best-effort)');
+  // .x plays as-is; .glb/.gltf are rest-delta retargeted; .fbx is a coarser upright fix
+  const tag = norm.best ? '' : (r.format === 'fbx' ? ' (fbx, best-effort)' : ` (${r.format}, retargeted)`);
+  const label = r.name + tag;
   const nameEl = document.getElementById('clipName');
   if (nameEl) nameEl.textContent = label;
   const np = document.getElementById('nowPlaying');
@@ -187,7 +189,7 @@ async function equipClothing(name) {
   };
   if (r.kind === 'mesh') {
     const tex = r.texture ? await loadTexture(r.texture, false) : getWhiteTex();
-    const root = await loadSkinnedRoot(r.meshFile, tex);
+    const root = await loadSkinnedRoot(r.meshFile, tex, null, true);
     rigs.add('cloth:' + name, root);
   } else if (r.kind === 'static') {
     await attachStatic(name, r);
@@ -339,10 +341,35 @@ async function reequipAll() {
 }
 
 // ---------- skinned-part loading ----------
-/** Load a glb, apply a skinned material, and return its root ready to add as a rig. */
-async function loadSkinnedRoot(meshFile, texture, tint) {
+// Reconcile a mod clothing/hair rig with the shared body skeleton so it follows the
+// same name-bound clip as the body (the way the engine loads clothing onto the one
+// shared armature -- zombie.core.skinnedmodel.model.jassimp).
+//
+// Blender exports frequently rename the root bones "Bip01.001" / "Dummy01.001"
+// (a numeric suffix from an import name collision). The clip binds tracks by EXACT
+// bone name, so those two roots stay undriven while their correctly-named children
+// move -- the garment then slides/tips off the body (its own inverse-binds are fine;
+// they just never get the root's animated transform). Restoring the base name
+// re-binds them. The garment's other quirks -- a Z-up mesh authored with an Rx+90 on
+// the mesh NODE -- are already handled: three's attached bind mode cancels the mesh
+// node against the bone transforms, matching the engine's raw-vertex skinning.
+//
+// NOTE three's GLTFLoader SANITISES node names into animation-path form, stripping
+// the dot -- "Bip01.001" arrives as "Bip01001" -- so match both forms. Clean exports
+// (vanilla .x, the diaper) have no suffix, making this a no-op for them.
+function normalizeClothingRig(root) {
+  root.traverse((o) => {
+    if (o.name) o.name = o.name.replace(/^(Dummy01|Bip01)(?:\.\d+|\d{2,})$/, '$1');
+  });
+}
+
+/** Load a glb, apply a skinned material, and return its root ready to add as a rig.
+ *  `normalize` reconciles a mod clothing/hair rig's bone names with the shared clip;
+ *  never needed for the vanilla body. */
+async function loadSkinnedRoot(meshFile, texture, tint, normalize = false) {
   const glb = await loadGlb(meshFile);
   const root = glb.scene;
+  if (normalize) normalizeClothingRig(root);
   const mat = makeSkinnedMaterial(texture, lightingObj());
   if (tint) mat.uniforms.tint.value.set(tint[0], tint[1], tint[2]);
   root.traverse((o) => {
@@ -356,10 +383,13 @@ async function loadSkinnedRoot(meshFile, texture, tint) {
 }
 
 let currentBody = null;
+let bodyBoneRest = new Map(); // bone -> body bind-local rotation, for clip rest-delta retargeting
 async function loadBody(body) {
   currentBody = body; // remembered for the thumbnail reference body
   const texture = await loadTexture(body.skinTexture, false);
   const root = await loadSkinnedRoot(body.meshFile, texture);
+  // capture the bind pose now, before rigs.add attaches a mixer that may pose it
+  bodyBoneRest = boneRestMap(root);
   const framing = !rigs.bodyRig();
   rigs.removeKind('body');
   rigs.add('body', root);
@@ -393,7 +423,7 @@ async function applyPart(kind, name, color, hatCategory) {
   if (r.error) return fail(new Error(r.error));
   if (r.none) return; // model-less style (e.g. Bald, or tucked fully under a hat)
   const tex = await loadTexture(r.texture, false);
-  const root = await loadSkinnedRoot(r.meshFile, tex, color);
+  const root = await loadSkinnedRoot(r.meshFile, tex, color, true);
   rigs.add(kind, root);
 }
 const applyHair = () => applyPart('hair', currentHair, hairColor, currentHatCategory());
@@ -412,7 +442,7 @@ function bindTabs() {
 }
 
 // ---------- controls ----------
-function bindControls(data) {
+async function bindControls(data) {
   const toneRow = document.getElementById('tones');
   const clipInfo = document.getElementById('clipInfo');
 
@@ -455,10 +485,13 @@ function bindControls(data) {
   clipInfo.textContent = `${data.clipCount} clips (${data.modClipCount} from this mod)`;
 
   bindTabs();
-  bindHairBeard();
-  bindClothing();
-  bindHeld();
-  bindClipList();
+  await bindHairBeard();
+  await bindClothing();
+  await bindHeld();
+  // await the clip list + default idle so allClips is populated and the character
+  // is settled on its idle BEFORE start() signals ui-ready -- otherwise a headless
+  // test-play can race the default-idle load and either misfires or gets overwritten.
+  await bindClipList();
   bindBrowser();
   bindExport();
   bindView();
@@ -876,7 +909,7 @@ async function genThumb(cell) {
   if (got.file) { cell._img.src = fileUrl(got.file); cell._done = true; return; }
   const glb = await loadGlb(r.glbFile);
   if (!glb.animations || !glb.animations.length) { cell._done = true; return; }
-  thumbs.bind(normaliseClip(glb.animations[0], r.format));
+  thumbs.bind(normaliseClip(glb.animations[0], r.format, { clipRest: boneRestMap(glb.scene), bodyRest: bodyBoneRest }));
   const dataUrl = thumbs.renderAt(0);
   if (dataUrl) { cell._img.src = dataUrl; cell._thumb0 = dataUrl; ipcRenderer.invoke('thumb-put', { key, dataUrl }); }
   cell._done = true;
@@ -891,7 +924,7 @@ function startHover(cell) {
     if (r.error || hoverCell !== cell) return;
     const glb = await loadGlb(r.glbFile);
     if (!glb.animations || !glb.animations.length || hoverCell !== cell) return;
-    thumbs.bind(normaliseClip(glb.animations[0], r.format));
+    thumbs.bind(normaliseClip(glb.animations[0], r.format, { clipRest: boneRestMap(glb.scene), bodyRest: bodyBoneRest }));
     const dur = thumbs.duration();
     let t0 = null;
     const step = (ts) => {
@@ -1100,6 +1133,7 @@ ipcRenderer.on('test-appearance', async (_e, opts) => {
   if (opts.beard) { currentBeard = opts.beard; const s = document.getElementById('beardSel'); if (s) s.value = opts.beard; await applyBeard(); }
   if (opts.clothing) { for (const n of String(opts.clothing).split(',')) { if (n.trim()) await equipClothing(n.trim()); } }
   if (opts.items) { for (const n of String(opts.items).split(',')) { if (n.trim()) await equipHeld(n.trim()); } }
+  if (opts.stop) { currentClip = null; playing = false; rigs.setClip(null); } // view raw bind pose
   if (opts.cam) setCamMode(opts.cam);
   if (opts.facing != null && opts.facing !== '') rigs.setFacing(Number(opts.facing) * Math.PI / 180);
   if (opts.tab) { const t = document.querySelector(`.tab[data-tab="${opts.tab}"]`); if (t) t.click(); }
@@ -1165,7 +1199,7 @@ async function start() {
   setGameDirBadge(data.gameDir);
   if (data.error || !data.body) throw new Error(data.error || 'no body resolved (set your Game folder)');
   await loadBody(data.body);
-  bindControls(data);
+  await bindControls(data);
   hideBoot();
   renderLoop();
   ipcRenderer.send('ui-ready');
