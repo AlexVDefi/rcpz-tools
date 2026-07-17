@@ -30,6 +30,10 @@ const PER_ITEM_KEYS = [
   'attachments',            // { "<slot>": "<partType>" } weapon parts to render attached
 ];
 
+function meshKey(meshName) {
+  return meshName ? String(meshName).replace(/\\/g, '/').toLowerCase() : null;
+}
+
 /**
  * Load icons.config.json for a mod. Search order: explicit --config path, then
  * <modPath>/icons.config.json. Missing config -> defaults only.
@@ -46,15 +50,19 @@ function loadConfig(modPath, explicitPath) {
   return {
     defaults: { ...DEFAULTS, ...(raw.defaults || {}) },
     items: raw.items || {},
+    meshes: raw.meshes || {},
+    configured: raw.configured || {},
     include: raw.include || [],
     exclude: raw.exclude || [],
   };
 }
 
 /** Merge defaults with a single item's overrides. */
-function mergeItemParams(cfg, icon) {
+function mergeItemParams(cfg, icon, meshName) {
   const over = cfg.items[icon] || {};
   const p = { ...cfg.defaults };
+  const shared = cfg.meshes[meshKey(meshName)] || {};
+  for (const k of PER_ITEM_KEYS) if (k in shared) p[k] = shared[k];
   for (const k of PER_ITEM_KEYS) if (k in over) p[k] = over[k];
   return p;
 }
@@ -67,7 +75,7 @@ function mergeItemParams(cfg, icon) {
 function buildStubConfig(icons) {
   const items = {};
   for (const ic of icons) items[ic] = {};
-  return { defaults: { ...DEFAULTS }, items, include: [], exclude: [] };
+  return { defaults: { ...DEFAULTS }, items, meshes: {}, configured: {}, include: [], exclude: [] };
 }
 
-module.exports = { loadConfig, mergeItemParams, buildStubConfig, DEFAULTS };
+module.exports = { loadConfig, mergeItemParams, buildStubConfig, meshKey, PER_ITEM_KEYS, DEFAULTS };

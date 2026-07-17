@@ -42,7 +42,8 @@
     input[type=checkbox], input[type=radio] { accent-color: var(--accent2); }
 
     /* ---------- layout ---------- */
-    main { flex: 1; min-height: 0; display: grid; grid-template-columns: 520px 1fr; gap: 12px; padding: 12px; }
+    main { flex: 1; min-height: 0; display: grid;
+      grid-template-columns: 520px minmax(420px, 1fr) 320px; gap: 12px; padding: 12px; }
     .left { display: flex; flex-direction: column; min-height: 0; gap: 10px; }
     /* The canvas keeps its intrinsic 1:1 ratio: width/height stay `auto` and are
        only clamped by max-width/max-height, so it scales down as a square and is
@@ -100,6 +101,22 @@
     .arow.off label { color: #6d6d78; }
     .status { min-height: 16px; color: var(--good); font-size: 12px; }
     .hint { color: #75757f; font-size: 11px; margin-top: 6px; }
+
+    /* ---------- icon navigator ---------- */
+    .icon-list { display: flex; flex-direction: column; }
+    .icon-group + .icon-group { border-top: 1px solid var(--line); margin-top: 3px; padding-top: 3px; }
+    .icon-row { display: grid; grid-template-columns: 22px minmax(0, 1fr); gap: 4px; align-items: center;
+      padding: 6px 8px; border-radius: 4px; color: #cfcfd6; cursor: pointer; }
+    .icon-row:hover { background: #2f2f36; }
+    .icon-row.selected { background: var(--accent); color: #fff; }
+    .icon-row.variant { padding-left: 28px; color: #aaaab4; }
+    .icon-row.variant.selected { color: #fff; }
+    .icon-row input { width: 13px; height: 13px; margin: 0; justify-self: center; }
+    .icon-row input.inherited { appearance: none; width: 13px; height: 13px; position: relative;
+      border: 1px solid var(--good); border-radius: 3px; background: #2f2f36; }
+    .icon-row input.inherited::after { content: ''; position: absolute; left: 2px; right: 2px; top: 5px;
+      height: 2px; border-radius: 1px; background: var(--good); }
+    .icon-row .icon-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
     /* ---------- boot overlay ----------
        Rendered straight from markup, so it is on screen long before three.js has
@@ -178,10 +195,13 @@
       </div>
     </div>
 
-    <div class="panel">
+    <div class="panel" id="settingsPanel">
       <div class="tabs">
-        <button class="tab active" data-tab="adjust">Adjust</button>
-        <button class="tab" data-tab="attach" id="attachTab">Attachments <span class="badge" id="attachCount"></span></button>
+        <button id="copySettings" title="Copy All Settings" style="margin-right:6px; margin-bottom:6px">Copy</button>
+        <button id="pasteSettings" title="Paste Copied Settings" style="margin-right:6px; margin-bottom:6px" disabled>Paste</button>
+        <button id="applyToMesh" title="Apply Current Settings to All Icons Using This Mesh" style="margin-right:6px; margin-bottom:6px">Apply to Mesh</button>
+        <button id="applyFramingAll" title="Apply Current Framing Settings to All Icons" style="margin-bottom:6px">Apply Framing to All</button>
+        <button class="tab" data-tab="attach" id="attachTab" style="margin-left:auto">Attachments <span class="badge" id="attachCount"></span></button>
       </div>
 
       <div class="tabbody">
@@ -218,6 +238,19 @@
               <button id="applyModel">Apply</button>
             </div>
           </div>
+          <div class="grp">
+            <h3>Texture</h3>
+            <div class="checks">
+              <label><input type="checkbox" id="flipY"> flip Y</label>
+            </div>
+          </div>
+          <div class="grp">
+            <h3>Details</h3>
+            <div class="row"><label>item</label><span id="detailItem"></span></div>
+            <div class="row"><label>icon</label><span id="detailIcon"></span></div>
+            <div class="row"><label>mesh</label><span id="detailMesh"></span></div>
+            <div class="row"><label>texture</label><span id="detailTexture"></span></div>
+          </div>
         </div>
 
         <div class="tabpane" data-tab="attach">
@@ -234,6 +267,15 @@
         <button class="primary" id="saveBtn">Save to config</button>
         <button id="resetBtn">Reset</button>
         <span class="status" id="status"></span>
+      </div>
+    </div>
+
+    <div class="panel" id="iconListPanel">
+      <div class="tabs">
+        <div class="tab active">Icons</div>
+      </div>
+      <div class="tabbody" id="iconListBody">
+        <div class="icon-list" id="iconList"></div>
       </div>
     </div>
   </main>
@@ -255,20 +297,27 @@
       <div class="field">
         <div class="lbl">What</div>
         <label class="opt"><input type="radio" name="scope" id="scopeOne" checked> <span id="scopeOneLbl">This icon</span></label>
+        <label class="opt"><input type="radio" name="scope" id="scopeModified"> <span id="scopeModifiedLbl">All Modified Icons</span></label>
         <label class="opt"><input type="radio" name="scope" id="scopeAll"> <span id="scopeAllLbl">All icons</span></label>
       </div>
 
       <div class="field">
         <div class="lbl">Where</div>
-        <label class="opt">
-          <input type="radio" name="dest" id="destMod" checked> mod textures
-          <span style="margin-left:auto; color:#9aa">icon size</span> <select id="iconSize"></select>
-        </label>
+        <label class="opt"><input type="radio" name="dest" id="destMod" checked> mod textures</label>
         <label class="opt"><input type="radio" name="dest" id="destFolder"> folder</label>
         <div class="opt" style="margin-left:22px">
           <input type="text" id="destPath" placeholder="choose an output folder">
           <button id="browseOut">Browse…</button>
         </div>
+      </div>
+
+      <div class="field">
+        <div class="lbl">Naming</div>
+        <label class="opt">
+          <input type="radio" name="naming" id="namingItem" checked> Item_&lt;icon&gt;.png
+          <span style="margin-left:auto; color:#9aa">icon size</span> <select id="iconSize"></select>
+        </label>
+        <label class="opt"><input type="radio" name="naming" id="namingSized"> &lt;icon&gt;_&lt;size&gt;.png</label>
         <div class="hint" id="destHint"></div>
       </div>
 

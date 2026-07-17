@@ -9,7 +9,7 @@ const fs = require('fs');
 const path = require('path');
 const { resolveMod, buildAttachmentSlots, stripModule } = require('../resolve');
 const { resolveMesh, resolveTexture } = require('../vfs');
-const { loadConfig, mergeItemParams } = require('../config');
+const { loadConfig, mergeItemParams, meshKey, PER_ITEM_KEYS } = require('../config');
 const { ensureLoadable } = require('../convert');
 const { renderIconPng } = require('../post');
 const { resolveAttachments } = require('../attachments');
@@ -56,7 +56,7 @@ function buildTargets(cfg, resolved) {
 function resolveOverride(over, records, models, vfs) {
   if (over.item) {
     const rec = records.find((r) => r.item.toLowerCase() === String(over.item).toLowerCase());
-    if (rec && rec.meshFile && rec.textureFile) return { meshFile: rec.meshFile, meshFormat: rec.meshFormat, textureFile: rec.textureFile, modelName: rec.modelName, rec };
+    if (rec && rec.meshFile && rec.textureFile) return { meshFile: rec.meshFile, meshFormat: rec.meshFormat, textureFile: rec.textureFile, meshName: rec.mesh, modelName: rec.modelName, rec };
     return null;
   }
   if (over.model) {
@@ -65,12 +65,27 @@ function resolveOverride(over, records, models, vfs) {
     const mesh = resolveMesh(vfs, m.mesh);
     const textureFile = m.texture ? resolveTexture(vfs, m.texture) : null;
     if (!mesh || mesh.unsupported || !textureFile) return null;
-    return { meshFile: mesh.file, meshFormat: mesh.format, textureFile, modelName: over.model };
+    return { meshFile: mesh.file, meshFormat: mesh.format, textureFile, meshName: m.mesh, modelName: over.model };
   }
   return null;
 }
 
 let state = null; // { cfg, resolved, targets }
+
+function iconSummaries() {
+  return state.targets.map((t) => {
+    const name = t.rec ? t.rec.mesh : t.meshName;
+    return {
+      icon: t.icon,
+      modelName: t.modelName,
+      baseIcon: t.rec && t.rec.baseIcon ? t.rec.baseIcon : t.icon,
+      variant: t.rec && t.rec.variant ? t.rec.variant : 'base',
+      configured: !!state.cfg.configured[t.icon],
+      inherited: !!state.cfg.meshes[meshKey(name)],
+      meshName: name || null,
+    };
+  });
+}
 
 function loadState() {
   const cfg = loadConfig(modPath, configPath);
@@ -96,7 +111,7 @@ app.whenReady().then(() => {
   // creating the window up front (with a loading overlay in index.html) is what
   // keeps the first seconds from looking like a hung white screen.
   const win = new BrowserWindow({
-    width: 1320, height: 820, title: 'pz-icon-maker',
+    width: 1660, height: 880, title: 'pz-icon-maker',
     backgroundColor: '#1e1e22',
     webPreferences: { nodeIntegration: true, contextIsolation: false, backgroundThrottling: false },
   });
@@ -169,7 +184,7 @@ app.whenReady().then(() => {
     loadState();
     return {
       canceled: false, gameDir,
-      icons: state.targets.map((t) => ({ icon: t.icon, modelName: t.modelName })),
+      icons: iconSummaries(),
     };
   });
 
@@ -178,7 +193,7 @@ app.whenReady().then(() => {
     defaults: state.cfg.defaults,
     items: state.cfg.items,
     startIcon: startIcon || null,
-    icons: state.targets.map((t) => ({ icon: t.icon, modelName: t.modelName })),
+    icons: iconSummaries(),
   }));
 
   // full render spec for one icon (params merged with per-item overrides)
@@ -188,7 +203,8 @@ app.whenReady().then(() => {
     let mesh;
     try { mesh = ensureLoadable(t.meshFile, t.meshFormat); }
     catch (e) { return { error: e.message }; }
-    const p = mergeItemParams(state.cfg, icon);
+    const logicalMesh = t.rec ? t.rec.mesh : t.meshName;
+    const p = mergeItemParams(state.cfg, icon, logicalMesh);
     const { models, vfs } = state.resolved;
 
     // weapon attachment slots (empty for non-weapons); strip file paths for the UI
@@ -199,8 +215,16 @@ app.whenReady().then(() => {
         options: s.options.map((o) => ({ partType: o.partType, available: o.available, missing: o.missing })),
       }));
     }
+    const itemNames = [...new Set(state.resolved.records
+      .filter((r) => r.icon === icon)
+      .map((r) => r.item)
+      .filter(Boolean))];
+    if (!itemNames.length && t.rec && t.rec.item) itemNames.push(t.rec.item);
     return {
       icon, meshFile: mesh.meshFile, meshFormat: mesh.meshFormat, textureFile: t.textureFile,
+      itemNames,
+      meshName: logicalMesh || path.basename(t.meshFile),
+      textureName: t.rec ? t.rec.textureName : path.basename(t.textureFile),
       modelName: t.modelName, params: p, slots, attachments: p.attachments || {},
     };
   });
@@ -216,7 +240,7 @@ app.whenReady().then(() => {
     return {
       canceled: false, modPath, mediaDir: state.resolved.mediaDir,
       defaults: state.cfg.defaults, items: state.cfg.items,
-      icons: state.targets.map((t) => ({ icon: t.icon, modelName: t.modelName })),
+      icons: iconSummaries(),
     };
   });
 
@@ -258,7 +282,12 @@ app.whenReady().then(() => {
     let mesh;
     try { mesh = ensureLoadable(res.meshFile, res.meshFormat); }
     catch (e) { return { error: e.message }; }
-    return { meshFile: mesh.meshFile, meshFormat: mesh.meshFormat, textureFile: res.textureFile, modelName: res.modelName };
+    return {
+      meshFile: mesh.meshFile, meshFormat: mesh.meshFormat, textureFile: res.textureFile,
+      meshName: res.rec ? res.rec.mesh : (over.model ? models.get(stripModule(over.model).toLowerCase()).mesh : path.basename(res.meshFile)),
+      textureName: res.rec ? res.rec.textureName : (over.model ? models.get(stripModule(over.model).toLowerCase()).texture : path.basename(res.textureFile)),
+      modelName: res.modelName,
+    };
   });
 
   // raw RGBA (as array) -> final icon PNG data URL for the live 32px preview
@@ -268,16 +297,87 @@ app.whenReady().then(() => {
   });
 
   // merge one icon's override into the mod's icons.config.json
-  ipcMain.handle('save-config', (_e, { icon, override, alsoWritePng }) => {
+  ipcMain.handle('save-config', (_e, { icon, override, alsoWritePng, markConfigured }) => {
     const file = path.join(path.resolve(modPath), 'icons.config.json');
-    let raw = { defaults: {}, items: {}, include: [], exclude: [] };
+    let raw = { defaults: {}, items: {}, configured: {}, include: [], exclude: [] };
     if (fs.existsSync(file)) { try { raw = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { /* keep default */ } }
     raw.items = raw.items || {};
+    raw.configured = raw.configured || {};
     if (override && Object.keys(override).length) raw.items[icon] = override;
     else delete raw.items[icon];
+    if (markConfigured) raw.configured[icon] = true;
     fs.writeFileSync(file, JSON.stringify(raw, null, 2) + '\n');
     loadState(); // reflect the new override in memory
     return { file };
+  });
+
+  ipcMain.handle('set-configured', (_e, { icon, configured }) => {
+    const file = path.join(path.resolve(modPath), 'icons.config.json');
+    let raw = { defaults: {}, items: {}, configured: {}, include: [], exclude: [] };
+    if (fs.existsSync(file)) { try { raw = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { /* keep default */ } }
+    raw.configured = raw.configured || {};
+    if (configured) raw.configured[icon] = true;
+    else delete raw.configured[icon];
+    fs.writeFileSync(file, JSON.stringify(raw, null, 2) + '\n');
+    state.cfg.configured = raw.configured;
+    return { file, configured: !!configured };
+  });
+
+  ipcMain.handle('apply-to-mesh', (_e, { icon, settings }) => {
+    const target = state.targets.find((t) => t.icon === icon);
+    const logicalMesh = target && (target.rec ? target.rec.mesh : target.meshName);
+    const key = meshKey(logicalMesh);
+    if (!target || !key) return { error: 'current icon has no resolved mesh name' };
+
+    const file = path.join(path.resolve(modPath), 'icons.config.json');
+    let raw = { defaults: {}, items: {}, meshes: {}, configured: {}, include: [], exclude: [] };
+    if (fs.existsSync(file)) { try { raw = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { /* keep default */ } }
+    raw.items = raw.items || {};
+    raw.meshes = raw.meshes || {};
+    raw.configured = raw.configured || {};
+    raw.meshes[key] = {};
+    for (const settingKey of PER_ITEM_KEYS) {
+      if (settings && settingKey in settings) raw.meshes[key][settingKey] = settings[settingKey];
+    }
+    const sharedKeys = Object.keys(raw.meshes[key]);
+
+    const matching = state.targets.filter((t) =>
+      meshKey(t.rec ? t.rec.mesh : t.meshName) === key).map((t) => t.icon);
+    for (const matchingIcon of matching) {
+      delete raw.configured[matchingIcon];
+      const over = raw.items[matchingIcon];
+      if (!over) continue;
+      for (const settingKey of sharedKeys) delete over[settingKey];
+      if (!Object.keys(over).length) delete raw.items[matchingIcon];
+    }
+
+    fs.writeFileSync(file, JSON.stringify(raw, null, 2) + '\n');
+    loadState();
+    return { file, meshName: logicalMesh, count: matching.length, icons: iconSummaries() };
+  });
+
+  ipcMain.handle('apply-framing-all', (_e, { framing }) => {
+    const keys = ['padding', 'mirror', 'doubleSide', 'downscale'];
+    const file = path.join(path.resolve(modPath), 'icons.config.json');
+    let raw = { defaults: {}, items: {}, meshes: {}, configured: {}, include: [], exclude: [] };
+    if (fs.existsSync(file)) { try { raw = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { /* keep default */ } }
+    raw.defaults = raw.defaults || {};
+    raw.items = raw.items || {};
+    raw.meshes = raw.meshes || {};
+    for (const key of keys) if (framing && key in framing) raw.defaults[key] = framing[key];
+
+    for (const [mesh, over] of Object.entries(raw.meshes)) {
+      for (const key of keys) delete over[key];
+      if (!Object.keys(over).length) delete raw.meshes[mesh];
+    }
+    for (const [icon, over] of Object.entries(raw.items)) {
+      for (const key of keys) delete over[key];
+      if (!Object.keys(over).length) delete raw.items[icon];
+    }
+
+    fs.writeFileSync(file, JSON.stringify(raw, null, 2) + '\n');
+    loadState();
+    return { file, defaults: state.cfg.defaults, icons: iconSummaries(), count: state.targets.length };
   });
 
   ipcMain.handle('write-png', async (_e, { rgba, width, height, opts, outPath }) => {

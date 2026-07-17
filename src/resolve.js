@@ -17,6 +17,17 @@ function parseVec3(s) {
 /** Script names may be module-qualified ("Base.Foo"); models are keyed bare. */
 function stripModule(n) { return String(n).includes('.') ? String(n).split('.').pop() : String(n); }
 
+/** Conventional inventory-icon suffixes implied by an item's food parameters. */
+function foodVariantSuffixes(isCookable, daysFresh) {
+  const hasDaysFresh = daysFresh !== undefined && daysFresh !== '' &&
+    Number.isFinite(Number(daysFresh));
+  const out = [];
+  if (isCookable) out.push(['cooked', 'Cooked'], ['burnt', 'Burnt']);
+  if (hasDaysFresh) out.push(['rotten', 'Rotten']);
+  if (isCookable && hasDaysFresh) out.push(['cookedRotten', 'CookedRotten']);
+  return out;
+}
+
 /**
  * Parse one `ModelWeaponPart = <partType> <modelName> <attachmentNameSelf> <attachmentParent>`
  * line, as the game does: whitespace separated, "none" means null, and a bare name
@@ -215,6 +226,9 @@ function resolveMod(modPath, opts = {}) {
 
     const rec = {
       item: it.name, icon, modelField, modelName,
+      baseIcon: icon, variant: 'base',
+      isCookable: String(prop(it.block, 'IsCookable') || '').trim().toLowerCase() === 'true',
+      daysFresh: prop(it.block, 'DaysFresh'),
       file: it.file,
       mesh: null, meshFile: null, meshFormat: null,
       textureName: null, textureFile: null, scale: 1,
@@ -244,8 +258,63 @@ function resolveMod(modPath, opts = {}) {
     records.push(rec);
   }
 
+  // Food-state inventory icons use the base Icon plus a conventional suffix.
+  // Keep explicit item records first so a real item whose Icon happens to match
+  // a generated variant wins during icon de-duplication.
+  const variants = [];
+  for (const rec of records) {
+    if (!rec.icon) continue;
+    for (const [variant, suffix] of foodVariantSuffixes(rec.isCookable, rec.daysFresh)) {
+      const out = {
+        ...rec,
+        icon: `${rec.icon}${suffix}`,
+        variant,
+        generatedVariant: true,
+        issues: rec.issues.slice(),
+      };
+
+      // Prefer an exact <base model><state> block so a state can change its mesh,
+      // texture, scale, and attachments. Do not interpret state-specific item
+      // fields or accept underscore/other naming variations.
+      const variantModelName = rec.modelName ? `${stripModule(rec.modelName)}${suffix}` : null;
+      const variantModel = variantModelName ? models.get(variantModelName.toLowerCase()) : null;
+      if (variantModel) {
+        const mesh = variantModel.mesh ? resolveMesh(vfs, variantModel.mesh) : null;
+        const textureFile = variantModel.texture ? resolveTexture(vfs, variantModel.texture) : null;
+        out.modelName = variantModel.name;
+        out.modelField = 'model suffix';
+        out.mesh = variantModel.mesh;
+        out.meshFile = mesh && !mesh.unsupported ? mesh.file : null;
+        out.meshFormat = mesh && !mesh.unsupported ? mesh.format : null;
+        out.textureName = variantModel.texture;
+        out.textureFile = textureFile;
+        out.scale = variantModel.scale;
+        if (!out.meshFile) out.issues.push(`exact variant model "${variantModel.name}" has no loadable mesh`);
+        if (!out.textureFile) out.issues.push(`exact variant model "${variantModel.name}" has no texture`);
+      } else {
+        // Some state variants change only the texture and intentionally reuse
+        // the base model. This fallback is also exact and has no underscore form.
+        const variantTextureName = rec.textureName ? `${rec.textureName}${suffix}` : null;
+        const variantTextureFile = variantTextureName ? resolveTexture(vfs, variantTextureName) : null;
+        if (variantTextureFile) {
+          out.textureName = variantTextureName;
+          out.textureFile = variantTextureFile;
+          out.modelField = 'texture suffix';
+        } else {
+          out.textureName = variantTextureName;
+          out.textureFile = null;
+          out.issues.push(`no exact ${variant} model or texture variant found`);
+        }
+      }
+      if (out.issues.length) unresolved.push(out);
+      variants.push(out);
+    }
+  }
+  records.push(...variants);
+
   return { mediaDir, layout, roots: vfs.roots, records, unresolved, models, vfs, counts: {
     items: items.length, models: models.size,
+    variants: variants.length,
     renderable: records.filter((r) => r.meshFile && r.textureFile && r.icon).length,
   } };
 }
@@ -300,5 +369,5 @@ function buildAttachmentSlots(rec, models, vfs) {
 
 module.exports = {
   resolveMod, findMediaDir, resolveModLayout, buildAttachmentSlots,
-  parseModelWeaponPart, parseVec3, stripModule, MODEL_FIELD_PRIORITY_DEFAULT,
+  parseModelWeaponPart, parseVec3, stripModule, foodVariantSuffixes, MODEL_FIELD_PRIORITY_DEFAULT,
 };

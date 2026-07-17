@@ -44,7 +44,7 @@ function resolveOverride(over, records, models, vfs) {
   if (over.item) {
     const rec = records.find((r) => r.item.toLowerCase() === String(over.item).toLowerCase());
     if (rec && rec.meshFile && rec.textureFile) {
-      return { meshFile: rec.meshFile, meshFormat: rec.meshFormat, textureFile: rec.textureFile, rec };
+      return { meshFile: rec.meshFile, meshFormat: rec.meshFormat, textureFile: rec.textureFile, meshName: rec.mesh, rec };
     }
     return null;
   }
@@ -54,7 +54,7 @@ function resolveOverride(over, records, models, vfs) {
     const mesh = resolveMesh(vfs, m.mesh);
     const textureFile = m.texture ? resolveTexture(vfs, m.texture) : null;
     if (!mesh || mesh.unsupported || !textureFile) return null;
-    return { meshFile: mesh.file, meshFormat: mesh.format, textureFile };
+    return { meshFile: mesh.file, meshFormat: mesh.format, textureFile, meshName: m.mesh };
   }
   return null;
 }
@@ -194,7 +194,7 @@ async function cmdBuild(args) {
   }
 
   const renders = list.map((r) => {
-    const p = mergeItemParams(cfg, r.icon);
+    const p = mergeItemParams(cfg, r.icon, r.rec ? r.rec.mesh : r.meshName);
     let mesh;
     try { mesh = ensureLoadable(r.meshFile, r.meshFormat); }
     catch (e) { console.error(`  skip ${r.icon}: ${e.message}`); return null; }

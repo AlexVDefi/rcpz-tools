@@ -40,6 +40,7 @@ let DEFAULTS = null;
 let MEDIA_DIR = null;
 let icons = [];
 let cur = null;            // working params for the current icon
+let copiedSettings = null; // session-only copy/paste buffer
 let model = null, texture = null, prevMaterials = [];
 let curIcon = null;
 let curSlots = [];         // attachment slots for the current icon (weapons only)
@@ -193,9 +194,11 @@ function refreshIconSizes() {
 
 function updateDestHint() {
   const sz = $('iconSize').value || '32';
-  $('destHint').textContent = $('destMod').checked
-    ? `writes <mod>/media/textures/Item_<icon>.png at ${sz}x${sz}`
-    : `writes <folder>/<icon>_<size>.png for each enabled size (${enabledSizes().join(', ')})`;
+  $('iconSize').disabled = !$('namingItem').checked;
+  const where = $('destMod').checked ? '<mod>/media/textures' : '<folder>';
+  $('destHint').textContent = $('namingItem').checked
+    ? `writes ${where}/Item_<icon>.png at ${sz}x${sz}`
+    : `writes ${where}/<icon>_<size>.png for each enabled size (${enabledSizes().join(', ')})`;
 }
 
 // --- load an icon ---
@@ -204,10 +207,13 @@ async function loadIcon(icon) {
   const info = await ipc.invoke('get-icon', icon);
   if (info.error) { status(info.error, false); return; }
   curIcon = icon;
+  $('iconSelect').value = icon;
+  syncIconListSelection(icon);
   const p = info.params;
   cur = {
     extraYaw: p.extraYaw ?? 0, extraPitch: p.extraPitch ?? 0, extraRoll: p.extraRoll ?? 0,
     padding: p.padding ?? DEFAULTS.padding, mirror: p.mirror ?? true, doubleSide: p.doubleSide ?? true,
+    flipY: p.flipY ?? DEFAULTS.flipY ?? true,
     downscale: p.downscale ?? DEFAULTS.downscale,
     ambient: (p.ambient ?? DEFAULTS.ambient).slice(), keyDir: (p.keyDir ?? DEFAULTS.keyDir).slice(),
     keyColour: (p.keyColour ?? DEFAULTS.keyColour).slice(),
@@ -217,6 +223,10 @@ async function loadIcon(icon) {
   curSlots = info.slots || [];
   $('modelName').textContent = info.modelName || '-';
   $('meshName').textContent = info.meshFile.split(/[\\/]/).pop();
+  $('detailItem').textContent = info.itemNames && info.itemNames.length ? info.itemNames.join(', ') : '-';
+  $('detailIcon').textContent = info.icon || icon;
+  $('detailMesh').textContent = info.meshName || '-';
+  $('detailTexture').textContent = info.textureName || '-';
   await loadMeshTexture(info.meshFile, info.meshFormat, info.textureFile);
   syncControls();
   buildAttachUI();
@@ -233,8 +243,9 @@ async function loadMeshTexture(meshFile, meshFormat, textureFile) {
 
 // --- attachments (weapon parts) ---
 function showTab(name) {
-  for (const t of document.querySelectorAll('.tab')) t.classList.toggle('active', t.dataset.tab === name);
-  for (const p of document.querySelectorAll('.tabpane')) p.classList.toggle('active', p.dataset.tab === name);
+  const panel = $('settingsPanel');
+  for (const t of panel.querySelectorAll('.tab')) t.classList.toggle('active', t.dataset.tab === name);
+  for (const p of panel.querySelectorAll('.tabpane')) p.classList.toggle('active', p.dataset.tab === name);
 }
 
 function buildAttachUI() {
@@ -243,7 +254,7 @@ function buildAttachUI() {
   const renderable = curSlots.filter((s) => s.options.some((o) => o.available));
   if (!renderable.length) {           // non-weapon: hide the tab entirely
     tab.style.display = 'none';
-    const active = document.querySelector('.tab.active');
+    const active = $('settingsPanel').querySelector('.tab.active');
     if (active && active.dataset.tab === 'attach') showTab('adjust');
     return;
   }
@@ -320,6 +331,7 @@ function syncControls() {
   for (const [id, key, dp] of ranges) { $(id).value = cur[key]; $(id + 'V').textContent = Number(cur[key]).toFixed(dp); }
   $('mirror').checked = !!cur.mirror;
   $('doubleSide').checked = !!cur.doubleSide;
+  $('flipY').checked = !!cur.flipY;
   $('downscale').value = cur.downscale;
   $('ambient').value = cur.ambient[0]; $('ambientV').textContent = cur.ambient[0].toFixed(2);
   $('keyBright').value = cur.keyColour[0]; $('keyBrightV').textContent = cur.keyColour[0].toFixed(2);
@@ -335,6 +347,14 @@ function wire() {
   }
   $('mirror').addEventListener('change', () => { cur.mirror = $('mirror').checked; markDirty(); scheduleRender(); });
   $('doubleSide').addEventListener('change', () => { cur.doubleSide = $('doubleSide').checked; markDirty(); scheduleRender(); });
+  $('flipY').addEventListener('change', () => {
+    cur.flipY = $('flipY').checked;
+    if (texture) { texture.flipY = cur.flipY; texture.needsUpdate = true; }
+    for (const a of attachObjects) {
+      if (a.texture) { a.texture.flipY = cur.flipY; a.texture.needsUpdate = true; }
+    }
+    markDirty(); scheduleRender();
+  });
   $('downscale').addEventListener('change', () => { cur.downscale = $('downscale').value; markDirty(); scheduleRender(); });
   $('ambient').addEventListener('input', () => { const v = parseFloat($('ambient').value); cur.ambient = [v, v, v]; $('ambientV').textContent = v.toFixed(2); markDirty(); scheduleRender(); });
   $('keyBright').addEventListener('input', () => { const v = parseFloat($('keyBright').value); cur.keyColour = [v, v, v]; $('keyBrightV').textContent = v.toFixed(2); markDirty(); scheduleRender(); });
@@ -362,6 +382,10 @@ function wire() {
   $('resetBtn').addEventListener('click', () => loadIcon(curIcon));
   $('saveBtn').addEventListener('click', save);
   $('applyModel').addEventListener('click', applyModelOverride);
+  $('copySettings').addEventListener('click', copyCurrentSettings);
+  $('pasteSettings').addEventListener('click', pasteCopiedSettings);
+  $('applyToMesh').addEventListener('click', applyCurrentSettingsToMesh);
+  $('applyFramingAll').addEventListener('click', applyFramingToAll);
   $('attachAll').addEventListener('click', () => setAllAttachments(true));
   $('attachNone').addEventListener('click', () => setAllAttachments(false));
   $('outBg').addEventListener('input', applyOutBg); // viewing aid; no re-render needed
@@ -369,12 +393,22 @@ function wire() {
   $('gameDirBtn').addEventListener('click', chooseGameDir);
   $('charBtn').addEventListener('click', () => window.ipc.invoke('open-character'));
 
-  for (const t of document.querySelectorAll('.tab')) t.addEventListener('click', () => showTab(t.dataset.tab));
+  $('attachTab').addEventListener('click', () => {
+    const open = $('attachTab').classList.contains('active');
+    showTab(open ? 'adjust' : 'attach');
+  });
 
   $('openBatch').addEventListener('click', openBatch);
   $('closeBatch').addEventListener('click', closeBatch);
   $('batchBackdrop').addEventListener('click', closeBatch);
-  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeBatch(); });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') { closeBatch(); return; }
+    if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+    if (e.target && e.target.closest && e.target.closest('input, select, textarea, button')) return;
+    if ($('batchDrawer').classList.contains('open')) return;
+    e.preventDefault();
+    step(e.key === 'ArrowLeft' ? -1 : 1);
+  });
   $('runBatch').addEventListener('click', generate);
   $('cancelBatch').addEventListener('click', () => {
     cancelRequested = true;
@@ -383,6 +417,8 @@ function wire() {
   });
   $('destMod').addEventListener('change', updateDestHint);
   $('destFolder').addEventListener('change', updateDestHint);
+  $('namingItem').addEventListener('change', updateDestHint);
+  $('namingSized').addEventListener('change', updateDestHint);
   $('iconSize').addEventListener('change', updateDestHint);
   $('browseOut').addEventListener('click', async () => {
     const f = await ipc.invoke('choose-folder');
@@ -394,10 +430,203 @@ let dirty = false;
 function markDirty() { dirty = true; $('dirtyFlag').textContent = '● unsaved'; }
 function clearDirty() { dirty = false; $('dirtyFlag').textContent = ''; }
 
+const COPY_SETTING_KEYS = [
+  'extraYaw', 'extraPitch', 'extraRoll',
+  'padding', 'mirror', 'doubleSide', 'flipY', 'downscale',
+  'ambient', 'keyDir', 'keyColour',
+];
+
+function copyCurrentSettings() {
+  if (!cur) return;
+  copiedSettings = currentSettingsSnapshot();
+  $('pasteSettings').disabled = false;
+  status('settings copied from ' + curIcon);
+}
+
+function currentSettingsSnapshot() {
+  const snapshot = {};
+  for (const key of COPY_SETTING_KEYS) {
+    const value = cur[key];
+    snapshot[key] = Array.isArray(value) ? value.slice() : value;
+  }
+  return snapshot;
+}
+
+function pasteCopiedSettings() {
+  if (!cur || !copiedSettings) return;
+  for (const key of COPY_SETTING_KEYS) {
+    const value = copiedSettings[key];
+    cur[key] = Array.isArray(value) ? value.slice() : value;
+  }
+  if (texture) { texture.flipY = cur.flipY; texture.needsUpdate = true; }
+  for (const a of attachObjects) {
+    if (a.texture) { a.texture.flipY = cur.flipY; a.texture.needsUpdate = true; }
+  }
+  syncControls();
+  markDirty();
+  scheduleRender();
+  status('settings pasted to ' + curIcon + '; save to config to keep them');
+}
+
+async function applyCurrentSettingsToMesh() {
+  if (!cur || !curIcon) return;
+  const res = await ipc.invoke('apply-to-mesh', { icon: curIcon, settings: currentSettingsSnapshot() });
+  if (res && res.error) { status(res.error, false); return; }
+  icons = res.icons;
+  buildIconList();
+  syncIconListSelection(curIcon);
+  clearDirty();
+  status(`applied settings to ${res.count} icon(s) using mesh ${res.meshName}`);
+}
+
+async function applyFramingToAll() {
+  if (!cur) return;
+  const ok = window.confirm(
+    'Apply the current padding, mirror, double-sided, and downscale settings to every icon?\n\n' +
+    'Existing icon-level and mesh-level overrides for those framing settings will be removed.'
+  );
+  if (!ok) return;
+  const framing = {
+    padding: cur.padding,
+    mirror: cur.mirror,
+    doubleSide: cur.doubleSide,
+    downscale: cur.downscale,
+  };
+  const res = await ipc.invoke('apply-framing-all', { framing });
+  if (res && res.error) { status(res.error, false); return; }
+  DEFAULTS = res.defaults;
+  icons = res.icons;
+  buildIconList();
+  syncIconListSelection(curIcon);
+  status(`applied framing defaults to all ${res.count} icon(s)`);
+}
+
+const VARIANT_ORDER = { base: 0, cooked: 1, burnt: 2, rotten: 3, cookedRotten: 4 };
+const VARIANT_LABEL = { cooked: 'Cooked', burnt: 'Burnt', rotten: 'Rotten', cookedRotten: 'CookedRotten' };
+
+function orderedIcons() {
+  const groups = new Map();
+  for (const it of icons) {
+    const key = it.baseIcon || it.icon;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(it);
+  }
+  const ordered = [];
+  for (const [, entries] of [...groups.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
+    entries.sort((a, b) =>
+      (VARIANT_ORDER[a.variant] ?? 99) - (VARIANT_ORDER[b.variant] ?? 99) || a.icon.localeCompare(b.icon));
+    ordered.push(...entries);
+  }
+  return ordered;
+}
+
+function buildIconSelect() {
+  const sel = $('iconSelect');
+  sel.innerHTML = '';
+  const groups = new Map();
+  for (const it of icons) {
+    const key = it.baseIcon || it.icon;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(it);
+  }
+  for (const [, entries] of [...groups.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
+    entries.sort((a, b) =>
+      (VARIANT_ORDER[a.variant] ?? 99) - (VARIANT_ORDER[b.variant] ?? 99) || a.icon.localeCompare(b.icon));
+    for (const it of entries) {
+      const option = document.createElement('option');
+      option.value = it.icon;
+      option.textContent = it.variant && it.variant !== 'base' ? `\u00a0\u00a0${it.icon}` : it.icon;
+      sel.appendChild(option);
+    }
+  }
+}
+
+function buildIconList() {
+  const list = $('iconList');
+  if (!list) return;
+  list.innerHTML = '';
+  const groups = new Map();
+  for (const it of icons) {
+    const key = it.baseIcon || it.icon;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(it);
+  }
+
+  for (const [, entries] of [...groups.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
+    const group = document.createElement('div');
+    group.className = 'icon-group';
+    entries.sort((a, b) =>
+      (VARIANT_ORDER[a.variant] ?? 99) - (VARIANT_ORDER[b.variant] ?? 99) || a.icon.localeCompare(b.icon));
+
+    for (const it of entries) {
+      const row = document.createElement('div');
+      row.className = 'icon-row' + (it.variant && it.variant !== 'base' ? ' variant' : '');
+      row.dataset.icon = it.icon;
+      row.title = it.icon;
+
+      const check = document.createElement('input');
+      check.type = 'checkbox';
+      applyConfiguredState(check, it);
+      check.addEventListener('click', (e) => e.stopPropagation());
+      check.addEventListener('change', async (e) => {
+        e.stopPropagation();
+        const res = await ipc.invoke('set-configured', { icon: it.icon, configured: check.checked });
+        if (res && res.error) { applyConfiguredState(check, it); status(res.error, false); return; }
+        it.configured = check.checked;
+        applyConfiguredState(check, it);
+      });
+
+      const name = document.createElement('span');
+      name.className = 'icon-name';
+      name.textContent = it.variant && it.variant !== 'base'
+        ? (VARIANT_LABEL[it.variant] || it.variant)
+        : it.icon;
+      row.appendChild(check);
+      row.appendChild(name);
+      row.addEventListener('click', () => loadIcon(it.icon));
+      group.appendChild(row);
+    }
+    list.appendChild(group);
+  }
+  syncIconListSelection(curIcon);
+}
+
+function applyConfiguredState(check, entry) {
+  check.checked = !!entry.configured;
+  check.indeterminate = !entry.configured && !!entry.inherited;
+  check.classList.toggle('inherited', check.indeterminate);
+  check.title = entry.configured
+    ? 'Configured specifically for this icon'
+    : entry.inherited
+      ? `Uses settings shared by mesh: ${entry.meshName || ''}`
+      : 'Mark as configured';
+}
+
+function syncIconListSelection(icon) {
+  let selected = null;
+  for (const row of document.querySelectorAll('.icon-row')) {
+    const on = !!icon && row.dataset.icon === icon;
+    row.classList.toggle('selected', on);
+    if (on) selected = row;
+  }
+  if (selected) selected.scrollIntoView({ block: 'nearest' });
+}
+
+function setIconConfiguredInList(icon, configured) {
+  const entry = icons.find((it) => it.icon === icon);
+  if (entry) entry.configured = configured;
+  for (const row of document.querySelectorAll('.icon-row')) {
+    if (row.dataset.icon !== icon) continue;
+    const check = row.querySelector('input[type=checkbox]');
+    if (check && entry) applyConfiguredState(check, entry);
+  }
+}
+
 function step(d) {
   const sel = $('iconSelect');
   let i = sel.selectedIndex + d;
-  i = Math.max(0, Math.min(sel.options.length - 1, i));
+  while (i >= 0 && i < sel.options.length && sel.options[i].disabled) i += d;
+  if (i < 0 || i >= sel.options.length) return;
   sel.selectedIndex = i;
   loadIcon(sel.value);
 }
@@ -411,6 +640,8 @@ async function applyModelOverride() {
   cur.model = name;
   $('modelName').textContent = name;
   $('meshName').textContent = res.meshFile.split(/[\\/]/).pop();
+  $('detailMesh').textContent = res.meshName || '-';
+  $('detailTexture').textContent = res.textureName || '-';
   await loadMeshTexture(res.meshFile, res.meshFormat, res.textureFile);
   markDirty(); scheduleRender(); status('applied model ' + name);
 }
@@ -425,6 +656,7 @@ function buildOverride() {
   if (cur.padding !== d.padding) o.padding = cur.padding;
   if (cur.mirror !== d.mirror) o.mirror = cur.mirror;
   if (cur.doubleSide !== d.doubleSide) o.doubleSide = cur.doubleSide;
+  if (cur.flipY !== d.flipY) o.flipY = cur.flipY;
   if (cur.downscale !== d.downscale) o.downscale = cur.downscale;
   if (JSON.stringify(cur.ambient) !== JSON.stringify(d.ambient)) o.ambient = cur.ambient;
   if (JSON.stringify(cur.keyDir) !== JSON.stringify(d.keyDir)) o.keyDir = cur.keyDir;
@@ -436,8 +668,9 @@ function buildOverride() {
 
 async function save() {
   const override = buildOverride();
-  const res = await ipc.invoke('save-config', { icon: curIcon, override });
+  const res = await ipc.invoke('save-config', { icon: curIcon, override, markConfigured: true });
   if (res.error) { status(res.error, false); return; }
+  setIconConfiguredInList(curIcon, true);
   clearDirty();
   status('saved override for ' + curIcon + ' -> ' + res.file);
 }
@@ -490,6 +723,7 @@ function refreshBatchUI() {
     chips.appendChild(c);
   }
   $('scopeOneLbl').textContent = curIcon ? `This icon (${curIcon})` : 'This icon';
+  $('scopeModifiedLbl').textContent = `All Modified Icons (${icons.filter((it) => it.configured || it.inherited).length})`;
   $('scopeAllLbl').textContent = `All icons (${icons.length})`;
   refreshIconSizes();
 }
@@ -509,12 +743,11 @@ function closeBatch() {
 }
 
 /**
- * Render one icon or all icons, at every enabled size.
- *  - mod destination:    one Item_<icon>.png at the chosen icon size
- *  - folder destination: <icon>_<size>.png for each enabled size
+ * Render one icon or all icons using the independently selected destination and
+ * naming format.
  */
 async function generate() {
-  const scope = $('scopeOne').checked ? 'one' : 'all';
+  const scope = $('scopeOne').checked ? 'one' : ($('scopeModified').checked ? 'modified' : 'all');
   const bs = $('buildStatus'), bar = $('batchBar');
   const setBar = (f) => { bar.style.width = Math.round(f * 100) + '%'; };
   batchRunning = true; cancelRequested = false;
@@ -524,17 +757,24 @@ async function generate() {
     const sizes = enabledSizes();
     if (!sizes.length) { bs.style.color = '#e88'; bs.textContent = 'enable at least one size'; return; }
     const toMod = $('destMod').checked;
+    const itemNaming = $('namingItem').checked;
     const folder = $('destPath').value.trim();
     if (!toMod && !folder) { bs.style.color = '#e88'; bs.textContent = 'choose an output folder'; return; }
     if (dirty) await save(); // the saved config drives the render
 
-    const iconList = scope === 'one' ? [curIcon] : (await ipc.invoke('build-plan')).map((x) => x.icon);
+    const iconList = scope === 'one'
+      ? [curIcon]
+      : scope === 'modified'
+        ? icons.filter((it) => it.configured || it.inherited).map((it) => it.icon)
+        : (await ipc.invoke('build-plan')).map((x) => x.icon);
+    if (!iconList.length) { bs.style.color = '#e88'; bs.textContent = 'no modified icons to generate'; return; }
     const iconSize = parseInt($('iconSize').value, 10) || sizes[0];
+    const outDir = toMod ? `${MEDIA_DIR}/textures` : folder;
 
     const jobs = [];
     for (const icon of iconList) {
-      if (toMod) jobs.push({ icon, size: iconSize, outPath: `${MEDIA_DIR}/textures/Item_${icon}.png` });
-      else for (const sz of sizes) jobs.push({ icon, size: sz, outPath: `${folder}/${icon}_${sz}.png` });
+      if (itemNaming) jobs.push({ icon, size: iconSize, outPath: `${outDir}/Item_${icon}.png` });
+      else for (const sz of sizes) jobs.push({ icon, size: sz, outPath: `${outDir}/${icon}_${sz}.png` });
     }
 
     const exists = await ipc.invoke('check-exists', jobs.map((j) => j.outPath));
@@ -608,8 +848,8 @@ async function chooseGameDir() {
   icons = res.icons;
   const sel = $('iconSelect');
   const keep = sel.value;
-  sel.innerHTML = '';
-  for (const it of icons) { const o = document.createElement('option'); o.value = it.icon; o.textContent = it.icon; sel.appendChild(o); }
+  buildIconSelect();
+  buildIconList();
   if ([...sel.options].some((o) => o.value === keep)) sel.value = keep;
   await loadIcon(sel.value || (icons[0] && icons[0].icon));
   hideBoot();
@@ -625,11 +865,15 @@ async function openMod() {
   DEFAULTS = res.defaults; MEDIA_DIR = res.mediaDir; icons = res.icons;
   $('modLabel').textContent = res.modPath;
   const sel = $('iconSelect');
-  sel.innerHTML = '';
-  for (const it of icons) { const o = document.createElement('option'); o.value = it.icon; o.textContent = it.icon; sel.appendChild(o); }
+  buildIconSelect();
+  buildIconList();
   clearDirty();
   $('buildStatus').textContent = '';
-  if (icons.length) { sel.selectedIndex = 0; await loadIcon(icons[0].icon); }
+  if (icons.length) {
+    const first = orderedIcons()[0];
+    sel.value = first.icon;
+    await loadIcon(first.icon);
+  }
   else { curSlots = []; buildAttachUI(); status('no renderable icons in that mod', false); }
   hideBoot();
 }
@@ -641,7 +885,9 @@ async function boot() {
   $('modLabel').textContent = data.modPath;
   setGameDirBadge(data.gameDir);
   const sel = $('iconSelect');
-  for (const it of icons) { const o = document.createElement('option'); o.value = it.icon; o.textContent = it.icon; sel.appendChild(o); }
+  buildIconSelect();
+  buildIconList();
+  icons = orderedIcons();
   wire();
   buildSizeRow();
   buildOutputs();
@@ -650,7 +896,7 @@ async function boot() {
   if (icons.length) {
     let idx = 0;
     if (data.startIcon) { const i = icons.findIndex((it) => it.icon === data.startIcon); if (i >= 0) idx = i; }
-    sel.selectedIndex = idx;
+    sel.value = icons[idx].icon;
     bootMsg(`Loading ${icons[idx].icon}…`);
     await loadIcon(icons[idx].icon);
     await updateOutput();          // don't drop the overlay before pixels exist
