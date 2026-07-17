@@ -1,0 +1,7 @@
+{
+  "name": "@pz-icon-maker/shared",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Platform-agnostic shared core: mesh converter, asset resolution, character/icon domain logic. Consumed by both the Electron app and the web app."
+}
