@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { listClips, listClothing, listHeldItems, listHair, clothingGroup, CLOTHING_GROUP_ORDER, SKIN_TONES } from '@shared/character-core.js';
+import { listClips, listClothing, listHeldItems, listHair, clothingGroup, CLOTHING_GROUP_ORDER, HELD_GROUP_ORDER, SKIN_TONES } from '@shared/character-core.js';
 import { CharacterEngine, type Ctx } from './render/character-engine';
 import { ThumbnailProvider } from './render/thumbnail-provider';
 import { ClipPreview } from './render/clip-preview';
@@ -87,8 +87,8 @@ export function CharacterViewer({ ctx, index }: { ctx: Ctx; index: unknown }) {
   const [currentClipId, setCurrentClipId] = useState<string | null>(null);
   const clothing = useMemo(() => (listClothing(index) as Array<{ name: string; kind: string; location: string; isMod: boolean; modName?: string | null }>)
     .map((c) => ({ ...c, key: c.name, label: c.name, facet: clothingGroup(c), source: c.modName || 'Vanilla' })), [index]);
-  const held = useMemo(() => (listHeldItems(index) as Array<{ name: string; isMod?: boolean; modName?: string | null }>)
-    .map((h) => ({ ...h, key: h.name, label: h.name, facet: firstLetter(h.name), isMod: !!h.isMod, source: h.modName || 'Vanilla' })), [index]);
+  const held = useMemo(() => (listHeldItems(index) as Array<{ name: string; isMod?: boolean; modName?: string | null; group: string; tags: string[] }>)
+    .map((h) => ({ ...h, key: h.name, label: h.name, facet: h.group, isMod: !!h.isMod, source: h.modName || 'Vanilla' })), [index]);
   const hairData = useMemo(() => listHair(index) as HairData, [index]);
 
   const idleClip = useMemo(() =>
@@ -280,11 +280,13 @@ export function CharacterViewer({ ctx, index }: { ctx: Ctx; index: unknown }) {
           {tab === 'held' && (
             <AssetGrid<typeof held[number] & GridItem>
               items={held as (typeof held[number] & GridItem)[]}
-              facetLabel="letters"
+              facetLabel="types"
+              facetOrder={HELD_GROUP_ORDER as string[]}
               active={(it) => { void equipTick; return !!engineRef.current?.isHeld(it.name); }}
               onPick={(it) => toggleHeld(it)}
               favActive={(it) => favs.has(favKey('held', it.name))}
               onToggleFav={(it) => toggleFav('held', it.name)}
+              tagsOf={(it) => it.tags}
               renderThumb={(it) => <Thumb depKey={`h:${it.name}`} getUrl={() => thumbs.held(it)} />} />
           )}
 

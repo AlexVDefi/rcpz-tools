@@ -11,7 +11,7 @@ const LABEL_H = 40;
 // toggle, and a column-size control (bigger/smaller thumbnails). Cards scale with the
 // chosen column count and the panel width, so it stays responsive as the split is dragged.
 export function AssetGrid<T extends GridItem>({
-  items, facetLabel, active, onPick, renderThumb, facetOrder, extraControls, favActive, onToggleFav,
+  items, facetLabel, active, onPick, renderThumb, facetOrder, extraControls, favActive, onToggleFav, tagsOf,
 }: {
   items: T[];
   facetLabel: string;
@@ -22,10 +22,12 @@ export function AssetGrid<T extends GridItem>({
   extraControls?: ReactNode;
   favActive?: (item: T) => boolean;
   onToggleFav?: (item: T) => void;
+  tagsOf?: (item: T) => string[];
 }) {
   const [q, setQ] = useState('');
   const [facet, setFacet] = useState('');
   const [source, setSource] = useState('');
+  const [tag, setTag] = useState('');
   const [modOnly, setModOnly] = useState(false);
   const [favOnly, setFavOnly] = useState(false);
   const [sort, setSort] = useState<'name' | 'facet' | 'mod'>('name');
@@ -46,15 +48,22 @@ export function AssetGrid<T extends GridItem>({
     return [...set].sort((a, b) => (a === 'Vanilla' ? -1 : b === 'Vanilla' ? 1 : a.localeCompare(b)));
   }, [items]);
 
+  const tags = useMemo(() => {
+    if (!tagsOf) return [] as [string, number][];
+    const counts = new Map<string, number>();
+    for (const it of items) for (const t of tagsOf(it)) counts.set(t, (counts.get(t) || 0) + 1);
+    return [...counts.entries()].sort((a, b) => (b[1] - a[1]) || a[0].localeCompare(b[0]));
+  }, [items, tagsOf]);
+
   const filtered = useMemo(() => {
     const f = q.trim().toLowerCase();
     const rows = items.filter((it) =>
-      (!facet || it.facet === facet) && (!modOnly || it.isMod) && (!favOnly || !!favActive?.(it)) && (!source || it.source === source) && (!f || it.label.toLowerCase().includes(f)));
+      (!facet || it.facet === facet) && (!modOnly || it.isMod) && (!favOnly || !!favActive?.(it)) && (!source || it.source === source) && (!tag || !!tagsOf?.(it).includes(tag)) && (!f || it.label.toLowerCase().includes(f)));
     return rows.slice().sort((a, b) =>
       sort === 'mod' ? (Number(b.isMod) - Number(a.isMod)) || a.label.localeCompare(b.label)
       : sort === 'facet' ? a.facet.localeCompare(b.facet) || a.label.localeCompare(b.label)
       : a.label.localeCompare(b.label));
-  }, [items, q, facet, source, modOnly, favOnly, favActive, sort]);
+  }, [items, q, facet, source, tag, tagsOf, modOnly, favOnly, favActive, sort]);
 
   useEffect(() => {
     const el = scrollRef.current; if (!el) return;
@@ -87,6 +96,12 @@ export function AssetGrid<T extends GridItem>({
           <select value={source} onChange={(e) => setSource(e.target.value)} style={inputStyle} title="filter by mod">
             <option value="">all sources</option>
             {sources.map((s) => <option key={s} value={s}>{s}</option>)}
+          </select>
+        )}
+        {tags.length > 0 && (
+          <select value={tag} onChange={(e) => setTag(e.target.value)} style={inputStyle} title="filter by tag">
+            <option value="">all tags</option>
+            {tags.map(([t, n]) => <option key={t} value={t}>{t} ({n})</option>)}
           </select>
         )}
         <select value={sort} onChange={(e) => setSort(e.target.value as 'name' | 'facet' | 'mod')} style={inputStyle}>

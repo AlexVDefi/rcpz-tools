@@ -131,16 +131,36 @@ export function listHair(index) {
 
 const DEFAULT_HAND = { 'Bip01_Prop1': { offset: [0, 0, 0], rotate: [0, 0, 0], scale: 1 } };
 
-/** Held items/weapons: a model is "held" if it declares a hand attachment (Bip01_Prop*) OR
- *  is a weapon's equipped sprite (an item's `WeaponSprite = [module.]Model`). Most weapons —
- *  vanilla and modded — never write an explicit Bip01_Prop attachment (the engine defaults
- *  them to Prop1), so keying only off the attachment misses them; we resolve WeaponSprite
- *  references too and default the hand bone to Prop1. */
+// Group a held item for the picker facet, from its item script's SubCategory (weapon kind:
+// Firearm/Swinging/Stab/Spear) and DisplayCategory (purpose: Weapon/Tool/Cooking/Food/...).
+// Firearm first (the common case people hunt for), then purpose, then coarse melee, else Other.
+export const HELD_GROUP_ORDER = ['firearm', 'melee', 'spear', 'explosive', 'tool', 'cooking', 'food', 'instrument', 'misc', 'other'];
+function heldGroup(sc, dc, tags) {
+  const s = (sc || '').toLowerCase(), d = (dc || '').toLowerCase();
+  if (s === 'firearm' || tags.includes('firearm')) return 'firearm';
+  if (d.includes('explosive')) return 'explosive';
+  if (s === 'spear') return 'spear';
+  if (d.includes('tool')) return 'tool';
+  if (d.includes('instrument')) return 'instrument';
+  if (d.includes('cooking')) return 'cooking';
+  if (s === 'swinging' || s === 'stab') return 'melee';
+  if (d === 'food') return 'food';
+  return dc ? 'misc' : 'other';
+}
+const cleanTags = (raw) => raw ? raw.split(';').map((t) => t.trim().replace(/^base:/i, '')).filter(Boolean) : [];
+// "Apple_GroundCooked" / "BaconStrip_Hand" -> base item name, to inherit its category
+const stripStateSuffix = (n) => n.replace(/_(Ground|Hand)(Cooked|Rotten|Burnt|Overdone|Stale)?$/i, '').replace(/_(Cooked|Rotten|Burnt|Overdone|Stale)$/i, '');
+
+/** Held items/weapons: a model is "held" if it declares a hand attachment (Bip01_Prop*) OR is
+ *  a weapon's equipped sprite (an item's `WeaponSprite = [module.]Model`) — most weapons never
+ *  write an explicit attachment (the engine defaults them to Prop1). Floor-display models
+ *  (`*_Ground`) are excluded. Each item carries a `group` (facet) + `tags` from its item script. */
 export function listHeldItems(index) {
-  const models = new Map();          // nameLower -> model descriptor (mesh/texture/hand attach)
-  const weaponSprites = new Set();   // lowercased model names referenced by any item's WeaponSprite
+  const models = new Map();      // nameLower -> model descriptor (mesh/texture/hand attach)
+  const catBySprite = new Map(); // model name (lower, from WeaponSprite) -> { sc, dc, tags }
+  const catByItem = new Map();   // item name (lower) -> { sc, dc, tags }
   for (const f of index.scriptFiles) {
-    if (!f.text.includes('model ') && !f.text.includes('WeaponSprite')) continue;
+    if (!f.text.includes('model ') && !f.text.includes('DisplayCategory') && !f.text.includes('WeaponSprite')) continue;
     let blocks; try { blocks = parseScriptText(f.text); } catch { continue; }
     walkBlocks(blocks, (b) => {
       if (b.type === 'model' && prop(b, 'mesh') && !models.has(b.name.toLowerCase())) {
@@ -153,19 +173,29 @@ export function listHeldItems(index) {
         }
         models.set(b.name.toLowerCase(), { name: b.name, mesh: prop(b, 'mesh'), texture: prop(b, 'texture'), scale: parseFloat(prop(b, 'scale')) || 1, attachments, handProp: firstProp, isMod: f.isMod, modName: sourceMod(index, f.sourceIndex) });
       } else if (b.type === 'item') {
-        const ws = prop(b, 'WeaponSprite');
-        if (ws) weaponSprites.add(ws.split('.').pop().toLowerCase());
+        const dc = prop(b, 'DisplayCategory'), sc = prop(b, 'SubCategory');
+        if (dc || sc) {
+          const info = { sc, dc, tags: cleanTags(prop(b, 'Tags')) };
+          catByItem.set(b.name.toLowerCase(), info);
+          const ws = prop(b, 'WeaponSprite');
+          if (ws) catBySprite.set(ws.split('.').pop().toLowerCase(), info);
+        }
       }
     });
   }
   const out = [];
   for (const [key, m] of models) {
-    if (!m.handProp && !weaponSprites.has(key)) continue; // not a hand item
+    if (/_Ground\w*$/i.test(m.name)) continue;            // floor-display model, not held
+    const isWeapon = catBySprite.has(key);
+    if (!m.handProp && !isWeapon) continue;               // not a hand item
+    const info = catBySprite.get(key) || catByItem.get(key) || catByItem.get(stripStateSuffix(m.name).toLowerCase()) || { tags: [] };
+    const tags = info.tags || [];
     out.push({
       name: m.name, mesh: m.mesh, texture: m.texture, scale: m.scale,
       prop: m.handProp || 'Bip01_Prop1',
       attachments: m.handProp ? m.attachments : DEFAULT_HAND,
       isMod: m.isMod, modName: m.modName,
+      group: heldGroup(info.sc, info.dc, tags), tags,
     });
   }
   return out.sort((a, b) => a.name.localeCompare(b.name));
