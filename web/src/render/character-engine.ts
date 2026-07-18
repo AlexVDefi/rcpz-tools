@@ -92,7 +92,27 @@ export class CharacterEngine {
   // Negate: the compass degrees are mirrored east-west relative to three's Y rotation
   // (N/S sit on the axis, so they're unaffected; E/W and diagonals need the flip).
   setFacing(deg: number) { this.rigs.setFacing(-deg * Math.PI / 180); }
-  setGridVisible(on: boolean) { this.grid.visible = on; }
+  setGridVisible(on: boolean) { if (!this.floorMesh) this.grid.visible = on; }
+
+  private floorMesh: THREE.Mesh | null = null;
+  /** Lay a repeating floor-tile texture on a ground plane (hides the grid), or null to clear. */
+  setFloor(tex: THREE.Texture | null) {
+    if (this.floorMesh) {
+      this.scene.remove(this.floorMesh);
+      this.floorMesh.geometry.dispose();
+      (this.floorMesh.material as THREE.Material).dispose(); // not the texture (cached by FloorLibrary)
+      this.floorMesh = null;
+    }
+    if (!tex) { this.grid.visible = true; return; }
+    const SIZE = 30;
+    tex.repeat.set(SIZE, SIZE); // ~1 tile per world unit (character is ~1 unit tall)
+    const mesh = new THREE.Mesh(new THREE.PlaneGeometry(SIZE, SIZE), new THREE.MeshBasicMaterial({ map: tex }));
+    mesh.rotation.x = -Math.PI / 2;
+    mesh.position.y = 0;
+    this.scene.add(mesh);
+    this.floorMesh = mesh;
+    this.grid.visible = false;
+  }
 
   lightingObj() {
     const l = this.light;

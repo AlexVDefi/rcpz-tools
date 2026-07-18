@@ -3,10 +3,12 @@ import { listClips, listClothing, listHeldItems, listHair, clothingGroup, CLOTHI
 import { CharacterEngine, type Ctx } from './render/character-engine';
 import { ThumbnailProvider } from './render/thumbnail-provider';
 import { ClipPreview } from './render/clip-preview';
+import { FloorLibrary } from './render/floor';
 import { AssetGrid, type GridItem } from './AssetGrid';
 import { Thumb } from './Thumb';
 
-type Tab = 'animate' | 'clothing' | 'held' | 'hair' | 'scene';
+type Tab = 'animate' | 'clothing' | 'held' | 'hair' | 'scene' | 'floor';
+const floorCategory = (name: string) => name.replace(/(_\d+)+$/, '').replace(/^(floors_|blends_)/, '');
 interface Clip { id: string; name: string; actor: string; format: string; isMod: boolean; rel: string; modName?: string | null }
 
 const firstLetter = (s: string) => (/[a-z]/i.test(s[0]) ? s[0].toUpperCase() : '#');
@@ -66,6 +68,13 @@ export function CharacterViewer({ ctx, index }: { ctx: Ctx; index: unknown }) {
   useEffect(() => () => thumbs.dispose(), [thumbs]);
   const preview = useMemo(() => new ClipPreview(ctx), [ctx]);
   useEffect(() => () => preview.dispose(), [preview]);
+  const floorLib = useMemo(() => new FloorLibrary(ctx.resolver as ConstructorParameters<typeof FloorLibrary>[0]), [ctx]);
+  const [floorTiles, setFloorTiles] = useState<{ name: string }[]>([]);
+  const [floorSel, setFloorSel] = useState<string | null>(null);
+  const floorItems = useMemo(() => floorTiles.map((t) => ({ ...t, key: t.name, label: t.name.replace(/^(floors_|blends_)/, ''), facet: floorCategory(t.name), isMod: false, source: 'Vanilla' })), [floorTiles]);
+  const pickFloor = async (name: string) => { setFloorSel(name); try { engineRef.current?.setFloor(await floorLib.texture(name)); } catch { /* ignore */ } };
+  const clearFloor = () => { setFloorSel(null); engineRef.current?.setFloor(null); };
+  useEffect(() => { if (tab === 'floor' && !floorTiles.length) floorLib.list().then((ts) => setFloorTiles(ts as { name: string }[])).catch(() => {}); }, [tab, floorLib, floorTiles.length]);
   // scrolling detaches the fixed-position hover preview from its cell — hide it
   useEffect(() => { const off = () => preview.stop(); window.addEventListener('wheel', off, { passive: true }); return () => window.removeEventListener('wheel', off); }, [preview]);
   useEffect(() => { localStorage.setItem('pz-panel-w', String(panelW)); }, [panelW]);
@@ -123,7 +132,7 @@ export function CharacterViewer({ ctx, index }: { ctx: Ctx; index: unknown }) {
     window.addEventListener('mouseup', onUp);
   }
 
-  const tabs: [Tab, string][] = [['animate', 'Animate'], ['clothing', 'Clothing'], ['held', 'Held'], ['hair', 'Hair'], ['scene', 'Scene']];
+  const tabs: [Tab, string][] = [['animate', 'Animate'], ['clothing', 'Clothing'], ['held', 'Held'], ['hair', 'Hair'], ['floor', 'Floor'], ['scene', 'Scene']];
   const segBtn = (on: boolean) => ({ borderRadius: 0, padding: '6px 9px', background: on ? 'var(--accent)' : 'var(--panel)', color: on ? '#fff' : 'var(--muted)' }) as const;
 
   return (
@@ -201,6 +210,24 @@ export function CharacterViewer({ ctx, index }: { ctx: Ctx; index: unknown }) {
           )}
 
           {tab === 'hair' && <HairTab hairData={hairData} gender={gender} engineRef={engineRef} />}
+
+          {tab === 'floor' && (
+            <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+              <div style={{ padding: 8, borderBottom: '1px solid var(--line)' }}>
+                <button className="secondary" onClick={clearFloor} style={{ background: !floorSel ? 'var(--accent)' : 'var(--panel)', color: !floorSel ? '#fff' : 'var(--text)' }}>None (grid)</button>
+              </div>
+              <div style={{ flex: 1, minHeight: 0 }}>
+                {floorItems.length ? (
+                  <AssetGrid<typeof floorItems[number] & GridItem>
+                    items={floorItems as (typeof floorItems[number] & GridItem)[]}
+                    facetLabel="categories"
+                    active={(it) => it.name === floorSel}
+                    onPick={(it) => pickFloor(it.name)}
+                    renderThumb={(it) => <Thumb depKey={`floor:${it.name}`} getUrl={() => floorLib.thumbUrl(it.name)} />} />
+                ) : <div style={{ padding: 20, color: 'var(--muted)' }}>Loading floor tiles…</div>}
+              </div>
+            </div>
+          )}
 
           {tab === 'scene' && <SceneTab engineRef={engineRef} camMode={camMode} setCam={(m) => engineRef.current?.setCamMode(m)} />}
         </div>
