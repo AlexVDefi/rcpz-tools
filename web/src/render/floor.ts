@@ -114,8 +114,16 @@ export class FloorLibrary {
     g.addColorStop(0.93, 'rgba(255,255,255,0.85)'); // thin band right at the seam only
     g.addColorStop(1, 'rgba(255,255,255,0)');
     mctx.fillStyle = g; mctx.fillRect(0, 0, F, F);
-    const md = mctx.getImageData(0, 0, F, F);
-    for (let i = 3; i < md.data.length; i += 4) md.data[i] = Math.random() * 255 < md.data[i] ? 255 : 0; // dither
+    // Dither the probability field into a crisp 0/1 scatter, in BLOCKS (~grass pixel size) so the
+    // speckle matches the chunky nearest-filtered grass instead of being finer than it.
+    const md = mctx.getImageData(0, 0, F, F), d = md.data;
+    const B = 4, cols = Math.ceil(F / B);
+    const blk = new Float32Array(cols * cols);
+    for (let i = 0; i < blk.length; i++) blk[i] = Math.random() * 255;
+    for (let y = 0; y < F; y++) for (let x = 0; x < F; x++) {
+      const i = (y * F + x) * 4 + 3;
+      d[i] = blk[((y / B) | 0) * cols + ((x / B) | 0)] < d[i] ? 255 : 0;
+    }
     mctx.putImageData(md, 0, 0);
     const cell = document.createElement('canvas'); cell.width = F; cell.height = F;
     const cctx = cell.getContext('2d')!;
