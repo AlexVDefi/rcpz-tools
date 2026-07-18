@@ -4,7 +4,7 @@
 import { ThumbnailRenderer, type Ctx, type IdleClip } from './thumbnail-renderer';
 import { idbCache } from '../platform/idb';
 
-const VERSION = 7; // bump to invalidate all cached thumbnails (v7: idle-posed body)
+const VERSION = 8; // bump to invalidate all cached thumbnails (v8: world-space glb clip retarget)
 const HAIR_TINT = [0.353, 0.227, 0.125]; // neutral brown (#5a3a20) so hair/beard shapes read
 
 export class ThumbnailProvider {
