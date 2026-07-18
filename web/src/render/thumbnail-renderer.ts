@@ -12,7 +12,9 @@ import { normalizeClothingRig } from './anim';
 import { composeBody } from './canvas-image-ops';
 
 export interface Ctx { resolver: unknown; converter: unknown; }
-const SIZE = 256;
+// Rendered once, cached, and CSS-scaled per card. Render high (512) so large 1-2 column
+// cards on a big monitor stay crisp; the browser downsamples cleanly for small cards.
+const SIZE = 512;
 
 export class ThumbnailRenderer {
   private ctx: Ctx;
