@@ -44,18 +44,23 @@ export class FloorLibrary {
     return p.decoding ??= bytesToImage(p.png).then((img) => { p.image = img; return img; });
   }
 
-  private deshear(atlas: HTMLImageElement, e: FloorTile, T: number): HTMLCanvasElement {
-    const c = document.createElement('canvas'); c.width = T; c.height = T;
-    const ctx = c.getContext('2d')!;
+  /** De-shear a tile into ctx, filling an S×S region (mirrored X for scene handedness). */
+  private deshearInto(ctx: CanvasRenderingContext2D, atlas: HTMLImageElement, e: FloorTile, S: number) {
+    ctx.save();
     ctx.imageSmoothingEnabled = true;
     ctx.imageSmoothingQuality = 'high';
     const { w, h } = e;
-    const fill = (T * Math.SQRT2) / w; // de-sheared square side = w/√2 -> scale to fill T
-    ctx.translate(T / 2, T / 2);
+    const fill = (S * Math.SQRT2) / w; // de-sheared square side = w/√2 -> scale to fill S
+    ctx.translate(S / 2, S / 2);
     ctx.scale(-fill, fill); // negative X mirrors horizontally to match the scene's handedness
     ctx.rotate(Math.PI / 4);
     ctx.scale(1, w / h); // undo the 2:1 iso vertical squash
     ctx.drawImage(atlas, e.x, e.y, w, h, -w / 2, -h / 2, w, h);
+    ctx.restore();
+  }
+  private deshear(atlas: HTMLImageElement, e: FloorTile, T: number): HTMLCanvasElement {
+    const c = document.createElement('canvas'); c.width = T; c.height = T;
+    this.deshearInto(c.getContext('2d')!, atlas, e, T);
     return c;
   }
 
@@ -80,17 +85,34 @@ export class FloorLibrary {
     const cached = this.texCache.get(ck); if (cached) return cached;
     const recs = names.map((n) => this.recs.get(n)).filter(Boolean) as Rec[];
     if (!recs.length) return null;
-    const T = 128;
-    const big = document.createElement('canvas'); big.width = N * T; big.height = N * T;
+    const T = 128, PAD = 30, F = T + 2 * PAD, W = N * T;
+    const big = document.createElement('canvas'); big.width = W; big.height = W;
     const ctx = big.getContext('2d')!;
     let seed = 0; for (let i = 0; i < key.length; i++) seed = (seed * 31 + key.charCodeAt(i)) & 0x7fffffff;
     const rnd = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; };
-    // decode each needed page once
     const imgs = new Map<number, HTMLImageElement>();
     for (const r of recs) if (!imgs.has(r.page)) imgs.set(r.page, await this.pageImage(r.page));
+    const img = (rec: Rec) => imgs.get(rec.page)!;
+    const picks: Rec[] = [];
+    for (let i = 0; i < N * N; i++) picks.push(recs[Math.floor(rnd() * recs.length)]);
+    // Pass 1: opaque base, tiles edge-to-edge (hard seams) — guarantees full coverage.
     for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) {
-      const rec = recs[Math.floor(rnd() * recs.length)];
-      ctx.drawImage(this.deshear(imgs.get(rec.page)!, rec.tile, T), c * T, r * T);
+      ctx.save(); ctx.translate(c * T, r * T); this.deshearInto(ctx, img(picks[r * N + c]), picks[r * N + c].tile, T); ctx.restore();
+    }
+    // Pass 2: same tiles drawn OVERSIZED + feathered, overlapping so the seams cross-fade into
+    // soft transitions (drawn over the opaque base, so no transparency shows). Edges wrap.
+    const mask = document.createElement('canvas'); mask.width = F; mask.height = F;
+    const mctx = mask.getContext('2d')!;
+    mctx.filter = `blur(${PAD * 0.6}px)`; mctx.fillStyle = '#fff'; mctx.fillRect(PAD, PAD, T, T); mctx.filter = 'none';
+    const cell = document.createElement('canvas'); cell.width = F; cell.height = F;
+    const cctx = cell.getContext('2d')!;
+    for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) {
+      const rec = picks[r * N + c];
+      cctx.clearRect(0, 0, F, F);
+      this.deshearInto(cctx, img(rec), rec.tile, F);
+      cctx.globalCompositeOperation = 'destination-in'; cctx.drawImage(mask, 0, 0); cctx.globalCompositeOperation = 'source-over';
+      const x = c * T - PAD, y = r * T - PAD;
+      for (const ox of [0, -W, W]) for (const oy of [0, -W, W]) ctx.drawImage(cell, x + ox, y + oy);
     }
     const tex = new THREE.CanvasTexture(big);
     tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
