@@ -12,6 +12,7 @@
 export interface AssetSource {
   id: string;
   isMod: boolean;
+  modName?: string; // human mod name (for the per-mod grid filter); undefined for vanilla
   listDir(relDir: string): Promise<Array<{ name: string; kind: 'file' | 'dir' }>>;
   readBytes(relPath: string): Promise<Uint8Array>;
   readText(relPath: string): Promise<string>;
@@ -23,7 +24,7 @@ const split = (rel: string) => norm(rel).split('/').filter(Boolean);
 
 export function createFsaAssetSource(
   root: FileSystemDirectoryHandle,
-  opts: { id: string; isMod?: boolean },
+  opts: { id: string; isMod?: boolean; modName?: string },
 ): AssetSource {
   const dirCache = new Map<string, Promise<FileSystemDirectoryHandle | null>>();
 
@@ -55,6 +56,7 @@ export function createFsaAssetSource(
   return {
     id: opts.id,
     isMod: !!opts.isMod,
+    modName: opts.modName,
     async listDir(relDir) {
       const dir = await dirHandle(relDir);
       if (!dir) return [];

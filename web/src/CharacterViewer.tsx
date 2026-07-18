@@ -27,10 +27,10 @@ export function CharacterViewer({ ctx, index }: { ctx: Ctx; index: unknown }) {
   const [clothOnBody, setClothOnBody] = useState(true);
 
   const clips: Clip[] = useMemo(() => listClips(index), [index]);
-  const clothing = useMemo(() => (listClothing(index) as Array<{ name: string; kind: string; location: string; isMod: boolean }>)
-    .map((c) => ({ ...c, key: c.name, label: c.name, facet: clothingGroup(c) })), [index]);
-  const held = useMemo(() => (listHeldItems(index) as Array<{ name: string }>)
-    .map((h) => ({ ...h, key: h.name, label: h.name, facet: firstLetter(h.name), isMod: false })), [index]);
+  const clothing = useMemo(() => (listClothing(index) as Array<{ name: string; kind: string; location: string; isMod: boolean; modName?: string | null }>)
+    .map((c) => ({ ...c, key: c.name, label: c.name, facet: clothingGroup(c), source: c.modName || 'Vanilla' })), [index]);
+  const held = useMemo(() => (listHeldItems(index) as Array<{ name: string; isMod?: boolean; modName?: string | null }>)
+    .map((h) => ({ ...h, key: h.name, label: h.name, facet: firstLetter(h.name), isMod: !!h.isMod, source: h.modName || 'Vanilla' })), [index]);
   const hairData = useMemo(() => listHair(index) as { hair: { male: { name: string }[]; female: { name: string }[] }; beards: { name: string }[] }, [index]);
 
   const idleClip = useMemo(() =>

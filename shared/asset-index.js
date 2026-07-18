@@ -72,7 +72,7 @@ export async function buildAssetIndex(sources, opts = {}) {
       if (ext(name) !== '.xml') return;
       const key = rel.toLowerCase();
       if (seenCloth.has(key)) return; seenCloth.add(key);
-      try { clothingFiles.push({ rel, text: await src.readText(rel), isMod }); } catch {}
+      try { clothingFiles.push({ rel, text: await src.readText(rel), isMod, sourceIndex: si }); } catch {}
     });
     onProgress(`clothing: ${clothingFiles.length}`);
 

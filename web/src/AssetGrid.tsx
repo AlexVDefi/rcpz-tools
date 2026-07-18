@@ -1,7 +1,7 @@
 import { useMemo, useRef, useState, useEffect, type ReactNode } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 
-export interface GridItem { key: string; label: string; facet: string; isMod: boolean; }
+export interface GridItem { key: string; label: string; facet: string; isMod: boolean; source?: string; }
 
 const GAP = 8;
 const PAD = 8;
@@ -23,6 +23,7 @@ export function AssetGrid<T extends GridItem>({
 }) {
   const [q, setQ] = useState('');
   const [facet, setFacet] = useState('');
+  const [source, setSource] = useState('');
   const [modOnly, setModOnly] = useState(false);
   const [sort, setSort] = useState<'name' | 'facet' | 'mod'>('name');
   const [colPref, setColPref] = useState<number>(() => Number(localStorage.getItem('pz-grid-cols')) || 2);
@@ -36,15 +37,21 @@ export function AssetGrid<T extends GridItem>({
     return [...counts.entries()].sort((a, b) => (rank(a[0]) - rank(b[0])) || a[0].localeCompare(b[0]));
   }, [items, facetOrder]);
 
+  const sources = useMemo(() => {
+    const set = new Set<string>();
+    for (const it of items) if (it.source) set.add(it.source);
+    return [...set].sort((a, b) => (a === 'Vanilla' ? -1 : b === 'Vanilla' ? 1 : a.localeCompare(b)));
+  }, [items]);
+
   const filtered = useMemo(() => {
     const f = q.trim().toLowerCase();
     const rows = items.filter((it) =>
-      (!facet || it.facet === facet) && (!modOnly || it.isMod) && (!f || it.label.toLowerCase().includes(f)));
+      (!facet || it.facet === facet) && (!modOnly || it.isMod) && (!source || it.source === source) && (!f || it.label.toLowerCase().includes(f)));
     return rows.slice().sort((a, b) =>
       sort === 'mod' ? (Number(b.isMod) - Number(a.isMod)) || a.label.localeCompare(b.label)
       : sort === 'facet' ? a.facet.localeCompare(b.facet) || a.label.localeCompare(b.label)
       : a.label.localeCompare(b.label));
-  }, [items, q, facet, modOnly, sort]);
+  }, [items, q, facet, source, modOnly, sort]);
 
   useEffect(() => {
     const el = scrollRef.current; if (!el) return;
@@ -73,6 +80,12 @@ export function AssetGrid<T extends GridItem>({
           <option value="">all {facetLabel} ({items.length})</option>
           {facets.map(([f, n]) => <option key={f} value={f}>{f} ({n})</option>)}
         </select>
+        {sources.length > 1 && (
+          <select value={source} onChange={(e) => setSource(e.target.value)} style={inputStyle} title="filter by mod">
+            <option value="">all sources</option>
+            {sources.map((s) => <option key={s} value={s}>{s}</option>)}
+          </select>
+        )}
         <select value={sort} onChange={(e) => setSort(e.target.value as 'name' | 'facet' | 'mod')} style={inputStyle}>
           <option value="name">sort: name</option>
           <option value="facet">sort: {facetLabel}</option>

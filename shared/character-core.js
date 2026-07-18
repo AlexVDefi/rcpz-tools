@@ -11,6 +11,9 @@
 
 import { parseScriptText, walkBlocks, prop } from './script-parser.js';
 
+/** Human mod name for the source that provided item at `sourceIndex` (null = vanilla). */
+const sourceMod = (index, sourceIndex) => index.sources?.[sourceIndex]?.modName || null;
+
 // ---- constants (from character/assets.js, clothing.js, items.js) ----
 const HUMAN_ACTORS = new Set(['bob', 'kate', 'zombie']);
 const SKIN_TONES = {
@@ -46,7 +49,7 @@ export function listClips(index) {
     .filter((a) => HUMAN_ACTORS.has(String(a.actor).toLowerCase()))
     .map((a) => ({
       id: a.key, name: a.clip, actor: a.actor, format: a.format, isMod: a.isMod, rel: a.rel,
-      sourceIndex: a.sourceIndex,
+      sourceIndex: a.sourceIndex, modName: sourceMod(index, a.sourceIndex),
       best: a.format === 'x' || a.format === 'glb' || a.format === 'gltf',
     }));
   clips.sort((a, b) => (b.isMod - a.isMod) || a.actor.localeCompare(b.actor) || a.name.localeCompare(b.name));
@@ -97,6 +100,7 @@ export function listClothing(index) {
     try {
       const item = parseClothingXml(f.text, f.rel);
       item.isMod = f.isMod;
+      item.modName = sourceMod(index, f.sourceIndex);
       item.location = locations.get(item.name) || 'other';
       items.push(item);
     } catch { /* skip malformed */ }
@@ -141,7 +145,7 @@ export function listHeldItems(index) {
         }
       }
       if (!firstProp || !prop(b, 'mesh')) return;
-      items.set(b.name.toLowerCase(), { name: b.name, mesh: prop(b, 'mesh'), texture: prop(b, 'texture'), scale: parseFloat(prop(b, 'scale')) || 1, prop: firstProp, attachments });
+      items.set(b.name.toLowerCase(), { name: b.name, mesh: prop(b, 'mesh'), texture: prop(b, 'texture'), scale: parseFloat(prop(b, 'scale')) || 1, prop: firstProp, attachments, isMod: f.isMod, modName: sourceMod(index, f.sourceIndex) });
     });
   }
   return [...items.values()].sort((a, b) => a.name.localeCompare(b.name));

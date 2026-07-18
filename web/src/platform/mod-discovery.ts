@@ -122,5 +122,5 @@ export async function discoverWorkshopMods(picked: FileSystemDirectoryHandle, on
 
 /** Turn active mods (in priority order) into ordered AssetSources for buildAssetIndex. */
 export function modSources(mods: DiscoveredMod[]): AssetSource[] {
-  return mods.flatMap((m) => m.roots.map((h, i) => createFsaAssetSource(h, { id: `mod:${m.modId}:${i}`, isMod: true })));
+  return mods.flatMap((m) => m.roots.map((h, i) => createFsaAssetSource(h, { id: `mod:${m.modId}:${i}`, isMod: true, modName: m.name })));
 }
