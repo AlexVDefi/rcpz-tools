@@ -82,16 +82,14 @@ export class ThumbnailRenderer {
   private frameGroup(group?: string) {
     const box = this.bodyBox!;
     const bot = box.min.y, H = box.max.y - box.min.y || 1, mid = box.min.y + H / 2;
-    // cy = look-at height (fraction UP from the feet); half = ortho half-height as a
-    // fraction of body height (smaller = more zoom). Tuned to fill the square card.
-    let cy = mid, half = 0.55 * H;
+    // Default: WHOLE body fits the square vertically — head near the top edge, feet near the
+    // bottom (a standing figure is narrow, so horizontal margins are expected). Only hats and
+    // shoes zoom to a region, since those items would be a tiny dot on a full-body shot.
+    let cy = mid, half = 0.52 * H;
     switch (group) {
-      case 'head': cy = bot + 0.90 * H; half = 0.13 * H; break;
-      case 'feet': cy = bot + 0.06 * H; half = 0.11 * H; break;
-      case 'legs': case 'skirts': cy = bot + 0.28 * H; half = 0.26 * H; break;
-      case 'torso': case 'arms': case 'accessories': cy = bot + 0.72 * H; half = 0.20 * H; break;
-      case 'hands': cy = bot + 0.55 * H; half = 0.42 * H; break; // hands at the sides
-      default: cy = mid; half = 0.55 * H; break; // outfits, backpacks, other, unknown
+      case 'head': cy = bot + 0.88 * H; half = 0.15 * H; break;
+      case 'feet': cy = bot + 0.07 * H; half = 0.13 * H; break;
+      default: cy = mid; half = 0.52 * H; break; // torso, legs, arms, outfits, bags, accessories…
     }
     this.camera.left = -half; this.camera.right = half; this.camera.top = half; this.camera.bottom = -half;
     this.camera.position.set(0, cy, 6); this.camera.lookAt(0, cy, 0); this.camera.updateProjectionMatrix();

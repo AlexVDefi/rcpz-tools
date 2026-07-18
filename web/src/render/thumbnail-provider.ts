@@ -4,7 +4,7 @@
 import { ThumbnailRenderer, type Ctx } from './thumbnail-renderer';
 import { idbCache } from '../platform/idb';
 
-const VERSION = 4; // bump to invalidate all cached thumbnails (v4: geometry-local bounds + zoom)
+const VERSION = 5; // bump to invalidate all cached thumbnails (v5: full-body vertical fit)
 
 export class ThumbnailProvider {
   private renderer: ThumbnailRenderer;
