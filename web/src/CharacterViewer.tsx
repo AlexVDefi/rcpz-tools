@@ -7,7 +7,9 @@ import { FloorLibrary } from './render/floor';
 import { AssetGrid, type GridItem } from './AssetGrid';
 import { Thumb } from './Thumb';
 
-type Tab = 'animate' | 'clothing' | 'held' | 'character' | 'scene' | 'floor';
+type Tab = 'animate' | 'clothing' | 'held' | 'character' | 'favorites' | 'scene' | 'floor';
+type FavKind = 'clothing' | 'held' | 'hair' | 'beard';
+const favKey = (kind: FavKind, name: string) => `${kind}:${name}`;
 const floorCategory = (name: string) => name.replace(/(_\d+)+$/, '').replace(/^(floors_|blends_)/, '');
 // Curated material presets: each scatters random variants into a baked, non-repetitive floor.
 // blends_natural_01 is grouped in 16-index material blocks; the SOLID tiles are at offsets
@@ -27,6 +29,8 @@ interface Clip { id: string; name: string; actor: string; format: string; isMod:
 interface HairStyle { name: string; model?: string; texture?: string }
 interface HairData { hair: { male: HairStyle[]; female: HairStyle[] }; beards: HairStyle[] }
 type HairItem = HairStyle & GridItem;
+// Unified entry for the Favorites tab; facet = kind so it stays filterable.
+type FavItem = GridItem & { name: string; favKind: FavKind; kind?: string; model?: string; texture?: string };
 
 const firstLetter = (s: string) => (/[a-z]/i.test(s[0]) ? s[0].toUpperCase() : '#');
 
@@ -65,6 +69,15 @@ export function CharacterViewer({ ctx, index }: { ctx: Ctx; index: unknown }) {
   const [, setBusy] = useState('');
   const [panelW, setPanelW] = useState(() => Number(localStorage.getItem('pz-panel-w')) || 420);
   const [clothOnBody, setClothOnBody] = useState(true);
+  const [favs, setFavs] = useState<Set<string>>(() => { try { return new Set(JSON.parse(localStorage.getItem('pz-favorites') || '[]') as string[]); } catch { return new Set(); } });
+  useEffect(() => { localStorage.setItem('pz-favorites', JSON.stringify([...favs])); }, [favs]);
+  const toggleFav = (kind: FavKind, name: string) => setFavs((s) => { const n = new Set(s); const k = favKey(kind, name); if (n.has(k)) n.delete(k); else n.add(k); return n; });
+  // hair/beard selection lifted here so the Character tab and the Favorites tab agree on it
+  const [hairSel, setHairSel] = useState('None');
+  const [beardSel, setBeardSel] = useState('None');
+  const [hairColor, setHairColor] = useState('#5a3a20');
+  const [beardColor, setBeardColor] = useState('#5a3a20');
+  const [equipOpen, setEquipOpen] = useState(false);
   const [loop, setLoop] = useState(true);
   const [speed, setSpeed] = useState(1);
   const [camMode, setCamMode] = useState<'orbit' | 'iso'>('orbit');
@@ -79,6 +92,15 @@ export function CharacterViewer({ ctx, index }: { ctx: Ctx; index: unknown }) {
   const held = useMemo(() => (listHeldItems(index) as Array<{ name: string; isMod?: boolean; modName?: string | null }>)
     .map((h) => ({ ...h, key: h.name, label: h.name, facet: firstLetter(h.name), isMod: !!h.isMod, source: h.modName || 'Vanilla' })), [index]);
   const hairData = useMemo(() => listHair(index) as HairData, [index]);
+  const favItems = useMemo(() => {
+    const out: FavItem[] = [];
+    for (const c of clothing) if (favs.has(favKey('clothing', c.name))) out.push({ ...c, key: favKey('clothing', c.name), facet: 'clothing', favKind: 'clothing' });
+    for (const h of held) if (favs.has(favKey('held', h.name))) out.push({ ...h, key: favKey('held', h.name), facet: 'held', favKind: 'held' });
+    const seen = new Set<string>(); // male/female hair lists can share a style name
+    for (const s of [...hairData.hair.male, ...hairData.hair.female]) if (favs.has(favKey('hair', s.name)) && !seen.has(s.name)) { seen.add(s.name); out.push({ ...toHairItem(s), key: favKey('hair', s.name), facet: 'hair', favKind: 'hair' }); }
+    for (const s of hairData.beards) if (favs.has(favKey('beard', s.name))) out.push({ ...toHairItem(s), key: favKey('beard', s.name), facet: 'beard', favKind: 'beard' });
+    return out;
+  }, [favs, clothing, held, hairData]);
 
   const idleClip = useMemo(() =>
     clips.find((c) => c.name === 'Bob_Idle') || clips.find((c) => /^bob_idle\b/i.test(c.name)) || clips.find((c) => c.actor.toLowerCase() === 'bob' && /idle/i.test(c.name)),
@@ -146,6 +168,37 @@ export function CharacterViewer({ ctx, index }: { ctx: Ctx; index: unknown }) {
   const toggleCloth = (it: { name: string }) => guard(() => engineRef.current!.toggleClothing(it));
   const toggleHeld = (it: { name: string }) => guard(() => engineRef.current!.toggleHeld(it));
   const togglePlay = () => { const e = engineRef.current; if (e) setPlaying(e.togglePlay()); };
+  // hair/beard apply + recolour (shared by the Character and Favorites tabs)
+  const applyHairPart = (kind: 'hair' | 'beard', style: HairStyle) => {
+    (kind === 'hair' ? setHairSel : setBeardSel)(style.name);
+    engineRef.current?.applyPart(kind, { name: style.name, model: style.model, texture: style.texture }, hexRgb(kind === 'hair' ? hairColor : beardColor)).catch(() => {});
+  };
+  const recolourPart = (kind: 'hair' | 'beard', hex: string) => {
+    (kind === 'hair' ? setHairColor : setBeardColor)(hex);
+    engineRef.current?.setPartTint(kind, hexRgb(hex));
+  };
+  // equipped-panel actions
+  const toggleHide = (name: string, hidden: boolean) => guard(() => engineRef.current!.setItemHidden(name, hidden));
+  const removeEquip = (name: string, type: 'clothing' | 'held') => guard(() => engineRef.current!.removeEquipped(name, type));
+
+  // Favorites tab dispatches thumb/active/pick to the right subsystem by favKind.
+  const favThumb = (it: FavItem) => {
+    if (it.favKind === 'clothing') return <Thumb depKey={`c:${it.name}:${gender}:${clothOnBody}`} getUrl={() => thumbs.clothing(it as { name: string; kind: string; facet?: string }, gender, clothOnBody)} />;
+    if (it.favKind === 'held') return <Thumb depKey={`h:${it.name}`} getUrl={() => thumbs.held(it)} />;
+    const k = it.favKind === 'beard' ? 'beard' : 'hair';
+    return <Thumb depKey={`hair:${k}:${it.name}:${gender}`} getUrl={() => thumbs.hair(it, k, gender)} />;
+  };
+  const favActive = (it: FavItem) => {
+    void equipTick;
+    if (it.favKind === 'clothing') return !!engineRef.current?.isEquipped(it.name);
+    if (it.favKind === 'held') return !!engineRef.current?.isHeld(it.name);
+    return (it.favKind === 'hair' ? hairSel : beardSel) === it.name;
+  };
+  const favPick = (it: FavItem) => {
+    if (it.favKind === 'clothing') toggleCloth(it);
+    else if (it.favKind === 'held') toggleHeld(it);
+    else applyHairPart(it.favKind, it);
+  };
 
   function startDrag(e: React.MouseEvent) {
     e.preventDefault();
@@ -160,8 +213,10 @@ export function CharacterViewer({ ctx, index }: { ctx: Ctx; index: unknown }) {
     window.addEventListener('mouseup', onUp);
   }
 
-  const tabs: [Tab, string][] = [['animate', 'Animate'], ['clothing', 'Clothing'], ['held', 'Held'], ['character', 'Character'], ['floor', 'Floor'], ['scene', 'Scene']];
+  const tabs: [Tab, string][] = [['animate', 'Animate'], ['clothing', 'Clothing'], ['held', 'Held'], ['character', 'Character'], ['favorites', '★'], ['floor', 'Floor'], ['scene', 'Scene']];
   const segBtn = (on: boolean) => ({ borderRadius: 0, padding: '6px 9px', background: on ? 'var(--accent)' : 'var(--panel)', color: on ? '#fff' : 'var(--muted)' }) as const;
+  void equipTick; // re-read equipped state on every equip change
+  const equipList = engineRef.current?.equippedList() ?? [];
 
   return (
     <div ref={containerRef} style={{ display: 'flex', height: 'calc(100vh - 128px)', minHeight: 460 }}>
@@ -171,12 +226,33 @@ export function CharacterViewer({ ctx, index }: { ctx: Ctx; index: unknown }) {
           {status && <span style={{ color: 'var(--muted)', background: '#00000099', padding: '4px 8px', borderRadius: 6 }}>{status}</span>}
           <span style={{ color: 'var(--muted)', background: '#00000099', padding: '4px 8px', borderRadius: 6, maxWidth: 340, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{nowPlaying || 'pick a clip →'}</span>
         </div>
-        <div style={{ position: 'absolute', right: 12, top: 12, display: 'flex', border: '1px solid var(--line)', borderRadius: 6, overflow: 'hidden' }}>
-          <button className="secondary" title="Free orbit" onClick={() => engineRef.current?.setCamMode('orbit')}
-            style={{ borderRadius: 0, padding: '5px 11px', fontSize: 24, lineHeight: 1, background: camMode === 'orbit' ? 'var(--accent)' : 'var(--panel)', color: camMode === 'orbit' ? '#fff' : 'var(--text)' }}>⟳</button>
-          <button className="secondary" title="PZ iso" onClick={() => engineRef.current?.setCamMode('iso')}
-            style={{ borderRadius: 0, padding: '5px 11px', fontSize: 24, lineHeight: 1, background: camMode === 'iso' ? 'var(--accent)' : 'var(--panel)', color: camMode === 'iso' ? '#fff' : 'var(--text)' }}>◈</button>
+        <div style={{ position: 'absolute', right: 12, top: 12, display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+          <button className="secondary" title="Equipped items" onClick={() => setEquipOpen((v) => !v)}
+            style={{ borderRadius: 6, padding: '7px 12px', fontSize: 13, lineHeight: 1, border: '1px solid var(--line)', background: equipOpen ? 'var(--accent)' : 'var(--panel)', color: equipOpen ? '#fff' : 'var(--text)' }}>Equipped{equipList.length ? ` (${equipList.length})` : ''}</button>
+          <div style={{ display: 'flex', border: '1px solid var(--line)', borderRadius: 6, overflow: 'hidden' }}>
+            <button className="secondary" title="Free orbit" onClick={() => engineRef.current?.setCamMode('orbit')}
+              style={{ borderRadius: 0, padding: '5px 11px', fontSize: 24, lineHeight: 1, background: camMode === 'orbit' ? 'var(--accent)' : 'var(--panel)', color: camMode === 'orbit' ? '#fff' : 'var(--text)' }}>⟳</button>
+            <button className="secondary" title="PZ iso" onClick={() => engineRef.current?.setCamMode('iso')}
+              style={{ borderRadius: 0, padding: '5px 11px', fontSize: 24, lineHeight: 1, background: camMode === 'iso' ? 'var(--accent)' : 'var(--panel)', color: camMode === 'iso' ? '#fff' : 'var(--text)' }}>◈</button>
+          </div>
         </div>
+        {equipOpen && (
+          <div style={{ position: 'absolute', right: 12, top: 54, width: 264, maxHeight: '68%', overflow: 'auto', background: '#0e0e13f2', border: '1px solid var(--line)', borderRadius: 8, padding: 8 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+              <span style={{ fontSize: 12, color: 'var(--muted)' }}>Equipped ({equipList.length})</span>
+              <span role="button" onClick={() => setEquipOpen(false)} title="close" style={{ cursor: 'pointer', color: 'var(--muted)', padding: '0 4px' }}>✕</span>
+            </div>
+            {!equipList.length && <div style={{ color: 'var(--muted)', fontSize: 12, padding: '8px 4px' }}>Nothing equipped.</div>}
+            {equipList.map((e) => (
+              <div key={e.type + ':' + e.name} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 2px' }}>
+                <span style={{ flex: 1, fontSize: 12, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', opacity: e.hidden ? 0.45 : 1 }} title={e.name}>{e.name}</span>
+                <span style={{ fontSize: 9, color: 'var(--muted)', border: '1px solid var(--line)', borderRadius: 3, padding: '0 3px' }}>{e.type === 'held' ? 'held' : 'worn'}</span>
+                <button className="secondary" title={e.hidden ? 'show in scene' : 'hide from scene'} onClick={() => toggleHide(e.name, !e.hidden)} style={{ padding: '2px 8px', fontSize: 11, minWidth: 44 }}>{e.hidden ? 'show' : 'hide'}</button>
+                <button className="secondary" title="remove (unequip)" onClick={() => removeEquip(e.name, e.type)} style={{ padding: '2px 8px', fontSize: 12, color: '#ff6b6b' }}>✕</button>
+              </div>
+            ))}
+          </div>
+        )}
         <div style={{ position: 'absolute', left: 12, bottom: 12, right: 12, display: 'flex', gap: 8, alignItems: 'center', background: '#000000aa', borderRadius: 8, padding: '6px 10px' }}>
           <button className="secondary" onClick={togglePlay} style={{ padding: '4px 12px' }}>{playing ? '❚❚' : '▶'}</button>
           <input ref={scrubRef} type="range" min={0} max={1000} defaultValue={0}
@@ -220,6 +296,8 @@ export function CharacterViewer({ ctx, index }: { ctx: Ctx; index: unknown }) {
               facetOrder={CLOTHING_GROUP_ORDER as string[]}
               active={(it) => { void equipTick; return !!engineRef.current?.isEquipped(it.name); }}
               onPick={(it) => toggleCloth(it)}
+              favActive={(it) => favs.has(favKey('clothing', it.name))}
+              onToggleFav={(it) => toggleFav('clothing', it.name)}
               extraControls={(
                 <div style={{ display: 'flex', border: '1px solid var(--line)', borderRadius: 6, overflow: 'hidden' }} title="thumbnail style">
                   <button className="secondary" onClick={() => setClothOnBody(true)} style={segBtn(clothOnBody)}>on body</button>
@@ -235,10 +313,30 @@ export function CharacterViewer({ ctx, index }: { ctx: Ctx; index: unknown }) {
               facetLabel="letters"
               active={(it) => { void equipTick; return !!engineRef.current?.isHeld(it.name); }}
               onPick={(it) => toggleHeld(it)}
+              favActive={(it) => favs.has(favKey('held', it.name))}
+              onToggleFav={(it) => toggleFav('held', it.name)}
               renderThumb={(it) => <Thumb depKey={`h:${it.name}`} getUrl={() => thumbs.held(it)} />} />
           )}
 
-          {tab === 'character' && <CharacterTab hairData={hairData} gender={gender} setGender={setGender} skin={skin} tones={tones} onSkin={(t) => { setSkin(t); engineRef.current?.setSkin(t); }} thumbs={thumbs} engineRef={engineRef} />}
+          {tab === 'character' && <CharacterTab hairData={hairData} gender={gender} setGender={setGender} skin={skin} tones={tones} onSkin={(t) => { setSkin(t); engineRef.current?.setSkin(t); }} thumbs={thumbs} hairSel={hairSel} beardSel={beardSel} hairColor={hairColor} beardColor={beardColor} onPickPart={applyHairPart} onRecolour={recolourPart} favs={favs} onToggleFav={toggleFav} />}
+
+          {tab === 'favorites' && (
+            favItems.length ? (
+              <AssetGrid<FavItem>
+                items={favItems}
+                facetLabel="kinds"
+                facetOrder={['clothing', 'held', 'hair', 'beard']}
+                active={favActive}
+                onPick={favPick}
+                favActive={() => true}
+                onToggleFav={(it) => toggleFav(it.favKind, it.name)}
+                renderThumb={favThumb} />
+            ) : (
+              <div style={{ color: 'var(--muted)', padding: 24, textAlign: 'center', fontSize: 13 }}>
+                No favorites yet. Tap the ☆ on any clothing, held, hair, or beard card to add it here.
+              </div>
+            )
+          )}
 
           {tab === 'floor' && (
             <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
@@ -353,8 +451,9 @@ const toHairItem = (s: HairStyle): HairItem => ({ ...s, key: s.name, label: s.na
 const NONE_HAIR: HairItem = { name: 'None', key: 'None', label: 'None', facet: '·', isMod: false };
 
 // Character tab: identity (gender + skin texture) as a compact header, then a browsable
-// thumbnail grid for the active appearance kind (Hair or Beard) filling the rest.
-function CharacterTab({ hairData, gender, setGender, skin, tones, onSkin, thumbs, engineRef }: {
+// thumbnail grid for the active appearance kind (Hair or Beard) filling the rest. Selection
+// and colour are lifted to the parent so the Favorites tab stays in sync.
+function CharacterTab({ hairData, gender, setGender, skin, tones, onSkin, thumbs, hairSel, beardSel, hairColor, beardColor, onPickPart, onRecolour, favs, onToggleFav }: {
   hairData: HairData;
   gender: 'male' | 'female';
   setGender: (g: 'male' | 'female') => void;
@@ -362,29 +461,22 @@ function CharacterTab({ hairData, gender, setGender, skin, tones, onSkin, thumbs
   tones: string[];
   onSkin: (tone: string) => void;
   thumbs: ThumbnailProvider;
-  engineRef: React.MutableRefObject<CharacterEngine | null>;
+  hairSel: string;
+  beardSel: string;
+  hairColor: string;
+  beardColor: string;
+  onPickPart: (kind: 'hair' | 'beard', style: HairStyle) => void;
+  onRecolour: (kind: 'hair' | 'beard', hex: string) => void;
+  favs: Set<string>;
+  onToggleFav: (kind: FavKind, name: string) => void;
 }) {
   const [kind, setKind] = useState<'hair' | 'beard'>('hair');
-  const [hair, setHair] = useState('None');
-  const [beard, setBeard] = useState('None');
-  const [hairColor, setHairColor] = useState('#5a3a20');
-  const [beardColor, setBeardColor] = useState('#5a3a20');
 
   const hairItems = useMemo(() => [NONE_HAIR, ...(gender === 'female' ? hairData.hair.female : hairData.hair.male).map(toHairItem)], [hairData, gender]);
   const beardItems = useMemo(() => [NONE_HAIR, ...hairData.beards.map(toHairItem)], [hairData]);
   const items = kind === 'hair' ? hairItems : beardItems;
-  const selected = kind === 'hair' ? hair : beard;
+  const selected = kind === 'hair' ? hairSel : beardSel;
   const color = kind === 'hair' ? hairColor : beardColor;
-
-  const pick = (it: HairItem) => {
-    if (kind === 'hair') setHair(it.name); else setBeard(it.name);
-    engineRef.current?.applyPart(kind, { name: it.name, model: it.model, texture: it.texture }, hexRgb(color)).catch(() => {});
-  };
-  // Colour is a shader tint: recolour the live rig in place (no mesh reload -> no flicker/lag).
-  const recolour = (hex: string) => {
-    if (kind === 'hair') setHairColor(hex); else setBeardColor(hex);
-    engineRef.current?.setPartTint(kind, hexRgb(hex));
-  };
 
   // 'MaleBody03a' -> '3h' (body-hair variant), 'FemaleBody02' -> '2'
   const toneLabel = (t: string) => { const m = t.match(/(\d+)(a?)$/); return m ? String(parseInt(m[1], 10)) + (m[2] ? 'h' : '') : t; };
@@ -415,14 +507,16 @@ function CharacterTab({ hairData, gender, setGender, skin, tones, onSkin, thumbs
           items={items}
           facetLabel="letters"
           active={(it) => it.name === selected}
-          onPick={pick}
+          onPick={(it) => onPickPart(kind, it)}
+          favActive={(it) => it.name !== 'None' && favs.has(favKey(kind, it.name))}
+          onToggleFav={(it) => { if (it.name !== 'None') onToggleFav(kind, it.name); }}
           extraControls={(
             <>
               <div style={{ display: 'flex', border: '1px solid var(--line)', borderRadius: 6, overflow: 'hidden' }} title="hair or beard">
                 <button className="secondary" onClick={() => setKind('hair')} style={seg(kind === 'hair')}>hair</button>
                 <button className="secondary" onClick={() => setKind('beard')} style={seg(kind === 'beard')}>beard</button>
               </div>
-              <input type="color" value={color} onChange={(e) => recolour(e.target.value)} title="colour" style={{ width: 34, height: 30, padding: 0, border: '1px solid var(--line)', borderRadius: 6, background: 'transparent' }} />
+              <input type="color" value={color} onChange={(e) => onRecolour(kind, e.target.value)} title="colour" style={{ width: 34, height: 30, padding: 0, border: '1px solid var(--line)', borderRadius: 6, background: 'transparent' }} />
             </>
           )}
           renderThumb={(it) => it.name === 'None'

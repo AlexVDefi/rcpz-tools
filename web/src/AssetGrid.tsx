@@ -11,7 +11,7 @@ const LABEL_H = 40;
 // toggle, and a column-size control (bigger/smaller thumbnails). Cards scale with the
 // chosen column count and the panel width, so it stays responsive as the split is dragged.
 export function AssetGrid<T extends GridItem>({
-  items, facetLabel, active, onPick, renderThumb, facetOrder, extraControls,
+  items, facetLabel, active, onPick, renderThumb, facetOrder, extraControls, favActive, onToggleFav,
 }: {
   items: T[];
   facetLabel: string;
@@ -20,11 +20,14 @@ export function AssetGrid<T extends GridItem>({
   renderThumb?: (item: T) => ReactNode;
   facetOrder?: string[];
   extraControls?: ReactNode;
+  favActive?: (item: T) => boolean;
+  onToggleFav?: (item: T) => void;
 }) {
   const [q, setQ] = useState('');
   const [facet, setFacet] = useState('');
   const [source, setSource] = useState('');
   const [modOnly, setModOnly] = useState(false);
+  const [favOnly, setFavOnly] = useState(false);
   const [sort, setSort] = useState<'name' | 'facet' | 'mod'>('name');
   const [colPref, setColPref] = useState<number>(() => Number(localStorage.getItem('pz-grid-cols')) || 2);
   const [width, setWidth] = useState(0);
@@ -46,12 +49,12 @@ export function AssetGrid<T extends GridItem>({
   const filtered = useMemo(() => {
     const f = q.trim().toLowerCase();
     const rows = items.filter((it) =>
-      (!facet || it.facet === facet) && (!modOnly || it.isMod) && (!source || it.source === source) && (!f || it.label.toLowerCase().includes(f)));
+      (!facet || it.facet === facet) && (!modOnly || it.isMod) && (!favOnly || !!favActive?.(it)) && (!source || it.source === source) && (!f || it.label.toLowerCase().includes(f)));
     return rows.slice().sort((a, b) =>
       sort === 'mod' ? (Number(b.isMod) - Number(a.isMod)) || a.label.localeCompare(b.label)
       : sort === 'facet' ? a.facet.localeCompare(b.facet) || a.label.localeCompare(b.label)
       : a.label.localeCompare(b.label));
-  }, [items, q, facet, source, modOnly, sort]);
+  }, [items, q, facet, source, modOnly, favOnly, favActive, sort]);
 
   useEffect(() => {
     const el = scrollRef.current; if (!el) return;
@@ -92,6 +95,10 @@ export function AssetGrid<T extends GridItem>({
           <option value="mod">sort: mod first</option>
         </select>
         <button className="secondary" onClick={() => setModOnly((v) => !v)} style={{ padding: '6px 10px', background: modOnly ? 'var(--accent)' : 'var(--panel)', color: modOnly ? '#fff' : 'var(--text)' }}>modded</button>
+        {onToggleFav && (
+          <button className="secondary" onClick={() => setFavOnly((v) => !v)} title="show favorites only"
+            style={{ padding: '6px 10px', background: favOnly ? 'var(--accent)' : 'var(--panel)', color: favOnly ? '#fff' : '#f5c518' }}>★</button>
+        )}
         {extraControls}
         <div style={{ display: 'flex', border: '1px solid var(--line)', borderRadius: 6, overflow: 'hidden', marginLeft: 'auto' }} title="thumbnail size">
           {[1, 2, 3, 4].map((n) => (
@@ -115,6 +122,12 @@ export function AssetGrid<T extends GridItem>({
                       style={{ all: 'unset', cursor: 'pointer', border: `1px solid ${on ? 'var(--accent)' : 'var(--line)'}`, background: on ? '#5b8cff22' : '#14141a', borderRadius: 8, overflow: 'hidden', display: 'flex', flexDirection: 'column', height: rowH, boxSizing: 'border-box' }}>
                       <div style={{ flex: 1, minHeight: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#101014', position: 'relative' }}>
                         {renderThumb ? renderThumb(it) : <span style={{ color: '#3a3a44', fontSize: 26 }}>◻</span>}
+                        {onToggleFav && (
+                          <span role="button" title="favorite" onClick={(e) => { e.stopPropagation(); onToggleFav(it); }}
+                            style={{ position: 'absolute', top: 2, left: 4, fontSize: 18, lineHeight: 1, cursor: 'pointer', color: favActive?.(it) ? '#f5c518' : '#ffffff66', textShadow: '0 1px 2px #000' }}>
+                            {favActive?.(it) ? '★' : '☆'}
+                          </span>
+                        )}
                         {it.isMod && <span style={{ position: 'absolute', top: 4, right: 4, background: '#2e7d32cc', color: '#fff', fontSize: 9, padding: '1px 4px', borderRadius: 3 }}>MOD</span>}
                       </div>
                       <div style={{ padding: '5px 7px', borderTop: '1px solid var(--line)', height: LABEL_H, boxSizing: 'border-box' }}>

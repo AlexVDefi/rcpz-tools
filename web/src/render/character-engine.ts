@@ -43,6 +43,7 @@ export class CharacterEngine {
   private equipped = new Map<string, Equip>();
   private statics = new Map<string, THREE.Object3D>();
   private held = new Map<string, { holder: THREE.Object3D }>();
+  private hidden = new Set<string>(); // equipped-but-temporarily-hidden clothing/held names
   private whiteTex: THREE.Texture | null = null;
   onClipName?: (s: string) => void;
   onFrame?: (time: number, duration: number) => void;
@@ -267,12 +268,37 @@ export class CharacterEngine {
     if (!this.currentBody) return;
     const layers: { bytes: Uint8Array; tint: number[] | null }[] = [];
     const masks: Uint8Array[] = [];
-    for (const e of this.equipped.values()) {
+    for (const [name, e] of this.equipped.entries()) {
+      if (this.hidden.has(name)) continue; // a hidden garment drops its texture layer AND its skin mask
       for (const b of e.baseTextures) layers.push({ bytes: b, tint: e.tint });
       for (const m of e.maskTextures) masks.push(m);
     }
     const canvas = await composeBody(this.currentBody.skinTexture, layers, masks);
     this.setBodyTexture(sourceToTexture(canvas, false));
+  }
+
+  /** All currently-equipped clothing + held items, for the viewer's equipped panel. */
+  equippedList(): { name: string; type: 'clothing' | 'held'; hidden: boolean }[] {
+    const out: { name: string; type: 'clothing' | 'held'; hidden: boolean }[] = [];
+    for (const name of this.equipped.keys()) out.push({ name, type: 'clothing', hidden: this.hidden.has(name) });
+    for (const name of this.held.keys()) out.push({ name, type: 'held', hidden: this.hidden.has(name) });
+    return out;
+  }
+
+  /** Temporarily show/hide an equipped item without unequipping it. Meshes/statics/held toggle
+   *  their Object3D visibility; a hidden garment is also dropped from the body recomposite so
+   *  its skin mask stops showing through. */
+  async setItemHidden(name: string, hidden: boolean) {
+    if (hidden) this.hidden.add(name); else this.hidden.delete(name);
+    const rig = this.rigs.get('cloth:' + name); if (rig) rig.root.visible = !hidden;
+    const st = this.statics.get(name); if (st) st.visible = !hidden;
+    const h = this.held.get(name); if (h) h.holder.visible = !hidden;
+    if (this.equipped.has(name)) await this.recompositeBody();
+  }
+
+  async removeEquipped(name: string, type: 'clothing' | 'held') {
+    if (type === 'held') this.unequipHeld(name);
+    else await this.unequipClothing(name);
   }
 
   isEquipped(name: string) { return this.equipped.has(name); }
@@ -301,6 +327,7 @@ export class CharacterEngine {
     if (e.kind === 'mesh') this.rigs.removeKind('cloth:' + name);
     else if (e.kind === 'static') this.detachStatic(name);
     this.equipped.delete(name);
+    this.hidden.delete(name);
     await this.recompositeBody();
   }
 
@@ -357,6 +384,7 @@ export class CharacterEngine {
     const h = this.held.get(name);
     if (h?.holder.parent) h.holder.parent.remove(h.holder);
     this.held.delete(name);
+    this.hidden.delete(name);
   }
 
   /** kind = 'hair' | 'beard'. style=null or {name:'None'} removes the part. */
