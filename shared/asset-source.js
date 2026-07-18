@@ -28,6 +28,8 @@ export function createNodeAssetSource(rootAbs, opts = {}) {
   const abs = (rel) => path.join(root, rel.replace(/\\/g, '/'));
   return {
     id: opts.id || root,
+    isMod: !!opts.isMod,
+    modName: opts.modName || null,
     async listDir(relDir) {
       let entries;
       try { entries = await fs.promises.readdir(abs(relDir), { withFileTypes: true }); }

@@ -129,26 +129,46 @@ export function listHair(index) {
   return { hair, beards };
 }
 
-/** Held items/weapons: models that attach to a hand bone (Prop1/Prop2). */
+const DEFAULT_HAND = { 'Bip01_Prop1': { offset: [0, 0, 0], rotate: [0, 0, 0], scale: 1 } };
+
+/** Held items/weapons: a model is "held" if it declares a hand attachment (Bip01_Prop*) OR
+ *  is a weapon's equipped sprite (an item's `WeaponSprite = [module.]Model`). Most weapons —
+ *  vanilla and modded — never write an explicit Bip01_Prop attachment (the engine defaults
+ *  them to Prop1), so keying only off the attachment misses them; we resolve WeaponSprite
+ *  references too and default the hand bone to Prop1. */
 export function listHeldItems(index) {
-  const items = new Map();
+  const models = new Map();          // nameLower -> model descriptor (mesh/texture/hand attach)
+  const weaponSprites = new Set();   // lowercased model names referenced by any item's WeaponSprite
   for (const f of index.scriptFiles) {
-    if (!f.text.includes('Bip01_Prop')) continue;
+    if (!f.text.includes('model ') && !f.text.includes('WeaponSprite')) continue;
     let blocks; try { blocks = parseScriptText(f.text); } catch { continue; }
     walkBlocks(blocks, (b) => {
-      if (b.type !== 'model' || items.has(b.name.toLowerCase())) return;
-      const attachments = {}; let firstProp = null;
-      for (const c of b.children) {
-        if (c.type === 'attachment' && PROP_BONES.has(c.name)) {
-          attachments[c.name] = { offset: parseVec3(prop(c, 'offset')), rotate: parseVec3(prop(c, 'rotate')), scale: parseFloat(prop(c, 'scale')) || 1 };
-          if (!firstProp) firstProp = c.name;
+      if (b.type === 'model' && prop(b, 'mesh') && !models.has(b.name.toLowerCase())) {
+        const attachments = {}; let firstProp = null;
+        for (const c of b.children) {
+          if (c.type === 'attachment' && PROP_BONES.has(c.name)) {
+            attachments[c.name] = { offset: parseVec3(prop(c, 'offset')), rotate: parseVec3(prop(c, 'rotate')), scale: parseFloat(prop(c, 'scale')) || 1 };
+            if (!firstProp) firstProp = c.name;
+          }
         }
+        models.set(b.name.toLowerCase(), { name: b.name, mesh: prop(b, 'mesh'), texture: prop(b, 'texture'), scale: parseFloat(prop(b, 'scale')) || 1, attachments, handProp: firstProp, isMod: f.isMod, modName: sourceMod(index, f.sourceIndex) });
+      } else if (b.type === 'item') {
+        const ws = prop(b, 'WeaponSprite');
+        if (ws) weaponSprites.add(ws.split('.').pop().toLowerCase());
       }
-      if (!firstProp || !prop(b, 'mesh')) return;
-      items.set(b.name.toLowerCase(), { name: b.name, mesh: prop(b, 'mesh'), texture: prop(b, 'texture'), scale: parseFloat(prop(b, 'scale')) || 1, prop: firstProp, attachments, isMod: f.isMod, modName: sourceMod(index, f.sourceIndex) });
     });
   }
-  return [...items.values()].sort((a, b) => a.name.localeCompare(b.name));
+  const out = [];
+  for (const [key, m] of models) {
+    if (!m.handProp && !weaponSprites.has(key)) continue; // not a hand item
+    out.push({
+      name: m.name, mesh: m.mesh, texture: m.texture, scale: m.scale,
+      prop: m.handProp || 'Bip01_Prop1',
+      attachments: m.handProp ? m.attachments : DEFAULT_HAND,
+      isMod: m.isMod, modName: m.modName,
+    });
+  }
+  return out.sort((a, b) => a.name.localeCompare(b.name));
 }
 
 // ============================ RESOLVE (async → bytes) ============================
