@@ -39,12 +39,12 @@ export function parsePack(bytes) {
       const x = i32(), y = i32(), w = i32(), h = i32(), ox = i32(), oy = i32(), fx = i32(), fy = i32();
       entries.push({ name: nm, x, y, w, h, ox, oy, fx, fy });
     }
+    void mask; // flag present but no mask block actually follows
     const pngSize = i32();
     const png = u8.subarray(o, o + pngSize); o += pngSize;
     pages.push({ name, entries, png });
-    // tolerant tail: optional mask block, optional marker
-    if (mask && o + 4 <= u8.length) { const ms = dv.getInt32(o, true); if (o + 4 + ms <= u8.length) o += 4 + ms; }
-    if (o + 4 <= u8.length) i32(); // 0xDEADBEEF marker (absent on some packs)
+    // The next page follows DIRECTLY after the atlas PNG — there is no mask block or marker
+    // (the format docs claim otherwise, but the bytes don't; single-page packs just hit EOF).
   }
   return { pages };
 }

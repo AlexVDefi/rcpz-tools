@@ -104,8 +104,10 @@ export class CharacterEngine {
       this.floorMesh = null;
     }
     if (!tex) { this.grid.visible = true; return; }
-    const SIZE = 30;
-    tex.repeat.set(SIZE, SIZE); // ~1 tile per world unit (character is ~1 unit tall)
+    // The body mesh is ~0.98 units tall (~2 game tiles), so a tile ≈ 0.45 units. Large plane
+    // so the floor always fills the orbit view; repeat sizes each tile to ~0.45 units.
+    const SIZE = 40, TILE = 0.45;
+    tex.repeat.set(SIZE / TILE, SIZE / TILE);
     const mesh = new THREE.Mesh(new THREE.PlaneGeometry(SIZE, SIZE), new THREE.MeshBasicMaterial({ map: tex }));
     mesh.rotation.x = -Math.PI / 2;
     mesh.position.y = 0;
