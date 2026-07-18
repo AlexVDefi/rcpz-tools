@@ -7,7 +7,7 @@ import { FloorLibrary } from './render/floor';
 import { AssetGrid, type GridItem } from './AssetGrid';
 import { Thumb } from './Thumb';
 
-type Tab = 'animate' | 'clothing' | 'held' | 'character' | 'favorites' | 'scene' | 'floor';
+type Tab = 'animate' | 'clothing' | 'held' | 'character' | 'scene' | 'floor';
 type FavKind = 'clothing' | 'held' | 'hair' | 'beard';
 const favKey = (kind: FavKind, name: string) => `${kind}:${name}`;
 const floorCategory = (name: string) => name.replace(/(_\d+)+$/, '').replace(/^(floors_|blends_)/, '');
@@ -29,8 +29,6 @@ interface Clip { id: string; name: string; actor: string; format: string; isMod:
 interface HairStyle { name: string; model?: string; texture?: string }
 interface HairData { hair: { male: HairStyle[]; female: HairStyle[] }; beards: HairStyle[] }
 type HairItem = HairStyle & GridItem;
-// Unified entry for the Favorites tab; facet = kind so it stays filterable.
-type FavItem = GridItem & { name: string; favKind: FavKind; kind?: string; model?: string; texture?: string };
 
 const firstLetter = (s: string) => (/[a-z]/i.test(s[0]) ? s[0].toUpperCase() : '#');
 
@@ -92,15 +90,6 @@ export function CharacterViewer({ ctx, index }: { ctx: Ctx; index: unknown }) {
   const held = useMemo(() => (listHeldItems(index) as Array<{ name: string; isMod?: boolean; modName?: string | null }>)
     .map((h) => ({ ...h, key: h.name, label: h.name, facet: firstLetter(h.name), isMod: !!h.isMod, source: h.modName || 'Vanilla' })), [index]);
   const hairData = useMemo(() => listHair(index) as HairData, [index]);
-  const favItems = useMemo(() => {
-    const out: FavItem[] = [];
-    for (const c of clothing) if (favs.has(favKey('clothing', c.name))) out.push({ ...c, key: favKey('clothing', c.name), facet: 'clothing', favKind: 'clothing' });
-    for (const h of held) if (favs.has(favKey('held', h.name))) out.push({ ...h, key: favKey('held', h.name), facet: 'held', favKind: 'held' });
-    const seen = new Set<string>(); // male/female hair lists can share a style name
-    for (const s of [...hairData.hair.male, ...hairData.hair.female]) if (favs.has(favKey('hair', s.name)) && !seen.has(s.name)) { seen.add(s.name); out.push({ ...toHairItem(s), key: favKey('hair', s.name), facet: 'hair', favKind: 'hair' }); }
-    for (const s of hairData.beards) if (favs.has(favKey('beard', s.name))) out.push({ ...toHairItem(s), key: favKey('beard', s.name), facet: 'beard', favKind: 'beard' });
-    return out;
-  }, [favs, clothing, held, hairData]);
 
   const idleClip = useMemo(() =>
     clips.find((c) => c.name === 'Bob_Idle') || clips.find((c) => /^bob_idle\b/i.test(c.name)) || clips.find((c) => c.actor.toLowerCase() === 'bob' && /idle/i.test(c.name)),
@@ -181,25 +170,6 @@ export function CharacterViewer({ ctx, index }: { ctx: Ctx; index: unknown }) {
   const toggleHide = (name: string, hidden: boolean) => guard(() => engineRef.current!.setItemHidden(name, hidden));
   const removeEquip = (name: string, type: 'clothing' | 'held') => guard(() => engineRef.current!.removeEquipped(name, type));
 
-  // Favorites tab dispatches thumb/active/pick to the right subsystem by favKind.
-  const favThumb = (it: FavItem) => {
-    if (it.favKind === 'clothing') return <Thumb depKey={`c:${it.name}:${gender}:${clothOnBody}`} getUrl={() => thumbs.clothing(it as { name: string; kind: string; facet?: string }, gender, clothOnBody)} />;
-    if (it.favKind === 'held') return <Thumb depKey={`h:${it.name}`} getUrl={() => thumbs.held(it)} />;
-    const k = it.favKind === 'beard' ? 'beard' : 'hair';
-    return <Thumb depKey={`hair:${k}:${it.name}:${gender}`} getUrl={() => thumbs.hair(it, k, gender)} />;
-  };
-  const favActive = (it: FavItem) => {
-    void equipTick;
-    if (it.favKind === 'clothing') return !!engineRef.current?.isEquipped(it.name);
-    if (it.favKind === 'held') return !!engineRef.current?.isHeld(it.name);
-    return (it.favKind === 'hair' ? hairSel : beardSel) === it.name;
-  };
-  const favPick = (it: FavItem) => {
-    if (it.favKind === 'clothing') toggleCloth(it);
-    else if (it.favKind === 'held') toggleHeld(it);
-    else applyHairPart(it.favKind, it);
-  };
-
   function startDrag(e: React.MouseEvent) {
     e.preventDefault();
     const container = containerRef.current!;
@@ -213,7 +183,7 @@ export function CharacterViewer({ ctx, index }: { ctx: Ctx; index: unknown }) {
     window.addEventListener('mouseup', onUp);
   }
 
-  const tabs: [Tab, string][] = [['animate', 'Animate'], ['clothing', 'Clothing'], ['held', 'Held'], ['character', 'Character'], ['favorites', '★'], ['floor', 'Floor'], ['scene', 'Scene']];
+  const tabs: [Tab, string][] = [['animate', 'Animate'], ['clothing', 'Clothing'], ['held', 'Held'], ['character', 'Character'], ['floor', 'Floor'], ['scene', 'Scene']];
   const segBtn = (on: boolean) => ({ borderRadius: 0, padding: '6px 9px', background: on ? 'var(--accent)' : 'var(--panel)', color: on ? '#fff' : 'var(--muted)' }) as const;
   void equipTick; // re-read equipped state on every equip change
   const equipList = engineRef.current?.equippedList() ?? [];
@@ -319,24 +289,6 @@ export function CharacterViewer({ ctx, index }: { ctx: Ctx; index: unknown }) {
           )}
 
           {tab === 'character' && <CharacterTab hairData={hairData} gender={gender} setGender={setGender} skin={skin} tones={tones} onSkin={(t) => { setSkin(t); engineRef.current?.setSkin(t); }} thumbs={thumbs} hairSel={hairSel} beardSel={beardSel} hairColor={hairColor} beardColor={beardColor} onPickPart={applyHairPart} onRecolour={recolourPart} favs={favs} onToggleFav={toggleFav} />}
-
-          {tab === 'favorites' && (
-            favItems.length ? (
-              <AssetGrid<FavItem>
-                items={favItems}
-                facetLabel="kinds"
-                facetOrder={['clothing', 'held', 'hair', 'beard']}
-                active={favActive}
-                onPick={favPick}
-                favActive={() => true}
-                onToggleFav={(it) => toggleFav(it.favKind, it.name)}
-                renderThumb={favThumb} />
-            ) : (
-              <div style={{ color: 'var(--muted)', padding: 24, textAlign: 'center', fontSize: 13 }}>
-                No favorites yet. Tap the ☆ on any clothing, held, hair, or beard card to add it here.
-              </div>
-            )
-          )}
 
           {tab === 'floor' && (
             <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
