@@ -34,6 +34,8 @@ export class CharacterEngine {
   light = { ambient: CHAR_LIGHTING.ambient[0], keyBright: CHAR_LIGHTING.keyColour[0], keyDir: [...CHAR_LIGHTING.keyDir] as number[] };
 
   private grid: THREE.GridHelper;
+  private shadow: THREE.Mesh | null = null;
+  private floorMat: THREE.MeshBasicMaterial | null = null;
   private raf = 0;
   private disposed = false;
   private bodyRest = new Map<string, THREE.Quaternion>();
@@ -52,6 +54,7 @@ export class CharacterEngine {
     this.renderer.setClearColor(0x14141a, 1);
     this.grid = new THREE.GridHelper(4, 16, 0x2b2b34, 0x24242c);
     this.scene.add(this.grid);
+    this.addShadow();
     this.orbit = makeOrbit(() => this.camera as THREE.PerspectiveCamera, canvas);
     // dragging the mouse in the locked PZ-iso view drops back to free orbit
     this.orbit.onInteract = () => { if (this.camMode === 'iso') this.setCamMode('orbit'); };
@@ -103,7 +106,7 @@ export class CharacterEngine {
       this.scene.remove(this.floorMesh);
       this.floorMesh.geometry.dispose();
       (this.floorMesh.material as THREE.Material).dispose(); // not the texture (cached by FloorLibrary)
-      this.floorMesh = null;
+      this.floorMesh = null; this.floorMat = null;
     }
     if (!tex) { this.grid.visible = true; return; }
     // The body mesh is ~0.98 units tall (~2 game tiles), so a tile ≈ 0.45 units. Large plane
@@ -111,13 +114,37 @@ export class CharacterEngine {
     const SIZE = 40, TILE = 0.45;
     const rep = SIZE / (TILE * tilesAcross);
     tex.repeat.set(rep, rep);
-    const mesh = new THREE.Mesh(new THREE.PlaneGeometry(SIZE, SIZE), new THREE.MeshBasicMaterial({ map: tex }));
+    const mat = new THREE.MeshBasicMaterial({ map: tex });
+    mat.color.setScalar(this.light.ambient); // floor is lit by AMBIENT only, not the key light
+    const mesh = new THREE.Mesh(new THREE.PlaneGeometry(SIZE, SIZE), mat);
     mesh.rotation.x = -Math.PI / 2;
     mesh.position.y = 0;
     this.scene.add(mesh);
-    this.floorMesh = mesh;
+    this.floorMesh = mesh; this.floorMat = mat;
     this.grid.visible = false;
   }
+
+  // Soft blob shadow under the character (matches the game's grounding shadow): a radial
+  // black gradient on a small horizontal plane just above the floor.
+  private addShadow() {
+    const S = 256;
+    const c = document.createElement('canvas'); c.width = c.height = S;
+    const ctx = c.getContext('2d')!;
+    const g = ctx.createRadialGradient(S / 2, S / 2, 0, S / 2, S / 2, S / 2);
+    g.addColorStop(0, 'rgba(0,0,0,0.55)');
+    g.addColorStop(0.45, 'rgba(0,0,0,0.34)');
+    g.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = g; ctx.fillRect(0, 0, S, S);
+    const mat = new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(c), transparent: true, depthWrite: false });
+    const D = 0.8; // shadow diameter (~character footprint)
+    const mesh = new THREE.Mesh(new THREE.PlaneGeometry(D, D), mat);
+    mesh.rotation.x = -Math.PI / 2;
+    mesh.position.y = 0.006; // just above the floor to avoid z-fighting
+    mesh.renderOrder = 1;
+    this.scene.add(mesh);
+    this.shadow = mesh;
+  }
+  setShadowVisible(on: boolean) { if (this.shadow) this.shadow.visible = on; }
 
   lightingObj() {
     const l = this.light;
@@ -134,6 +161,7 @@ export class CharacterEngine {
     for (const rig of this.rigs.rigs) rig.root.traverse(set);
     for (const s of this.statics.values()) s.traverse(set);
     for (const h of this.held.values()) h.holder.traverse(set);
+    if (this.floorMat) this.floorMat.color.setScalar(this.light.ambient); // floor tracks ambient only
   }
   setLight(key: 'ambient' | 'keyBright' | 'kx' | 'ky' | 'kz', v: number) {
     if (key === 'kx') this.light.keyDir[0] = v; else if (key === 'ky') this.light.keyDir[1] = v; else if (key === 'kz') this.light.keyDir[2] = v;

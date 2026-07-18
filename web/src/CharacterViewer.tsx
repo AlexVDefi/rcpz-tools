@@ -281,6 +281,7 @@ const LIGHT_DEFAULT = { ambient: 0.55, keyBright: 0.5, kx: 0.12, ky: 0.28, kz: 1
 function SceneTab({ engineRef, camMode, setCam }: { engineRef: React.MutableRefObject<CharacterEngine | null>; camMode: 'orbit' | 'iso'; setCam: (m: 'orbit' | 'iso') => void }) {
   const [facing, setFacing] = useState<number | null>(0);
   const [grid, setGrid] = useState(true);
+  const [shadow, setShadow] = useState(true);
   const [light, setLight] = useState({ ...LIGHT_DEFAULT });
 
   const setL = (k: keyof typeof LIGHT_DEFAULT, v: number) => { setLight((s) => ({ ...s, [k]: v })); engineRef.current?.setLight(k as 'ambient' | 'keyBright' | 'kx' | 'ky' | 'kz', v); };
@@ -323,8 +324,12 @@ function SceneTab({ engineRef, camMode, setCam }: { engineRef: React.MutableRefO
       {slider('kz', 'key Z', -2, 2)}
 
       <label style={label}>Scene</label>
-      <button className="secondary" onClick={() => { const n = !grid; setGrid(n); engineRef.current?.setGridVisible(n); }}
-        style={{ padding: '6px 12px', background: grid ? 'var(--accent)' : 'var(--panel)', color: grid ? '#fff' : 'var(--text)' }}>Floor grid</button>
+      <div style={{ display: 'flex', gap: 8 }}>
+        <button className="secondary" onClick={() => { const n = !grid; setGrid(n); engineRef.current?.setGridVisible(n); }}
+          style={{ padding: '6px 12px', background: grid ? 'var(--accent)' : 'var(--panel)', color: grid ? '#fff' : 'var(--text)' }}>Floor grid</button>
+        <button className="secondary" onClick={() => { const n = !shadow; setShadow(n); engineRef.current?.setShadowVisible(n); }}
+          style={{ padding: '6px 12px', background: shadow ? 'var(--accent)' : 'var(--panel)', color: shadow ? '#fff' : 'var(--text)' }}>Shadow</button>
+      </div>
     </div>
   );
 }
