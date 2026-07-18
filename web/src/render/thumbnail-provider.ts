@@ -30,8 +30,9 @@ export class ThumbnailProvider {
     return p;
   }
 
-  clothing(item: { name: string; kind: string }, gender: 'male' | 'female'): Promise<string> {
-    return this.resolveKey(`thumb:cloth:${gender}:${item.name}:v${VERSION}`, () => this.renderer.clothingThumb(item, gender));
+  clothing(item: { name: string; kind: string }, gender: 'male' | 'female', onBody: boolean): Promise<string> {
+    const mode = onBody ? 'body' : 'solo';
+    return this.resolveKey(`thumb:cloth:${mode}:${gender}:${item.name}:v${VERSION}`, () => this.renderer.clothingThumb(item, gender, onBody));
   }
 
   held(item: { name: string }): Promise<string> {

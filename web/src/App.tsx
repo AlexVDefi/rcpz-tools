@@ -72,8 +72,9 @@ export function App() {
     else setError('Permission denied.');
   }, [savedHandle, scan]);
 
+  const wide = view === 'character' && index != null;
   return (
-    <div style={{ maxWidth: view === 'character' ? 1400 : 960, margin: '0 auto', padding: 24 }}>
+    <div style={{ maxWidth: wide ? 'none' : 960, margin: wide ? 0 : '0 auto', padding: '16px 24px' }}>
       <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
         <h1 style={{ marginBottom: 4 }}>pz-icon-maker <span style={{ color: 'var(--muted)', fontWeight: 400 }}>· web</span></h1>
         {index != null && (

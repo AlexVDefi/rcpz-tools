@@ -13,6 +13,7 @@ const firstLetter = (s: string) => (/[a-z]/i.test(s[0]) ? s[0].toUpperCase() : '
 export function CharacterViewer({ ctx, index }: { ctx: Ctx; index: unknown }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const engineRef = useRef<CharacterEngine | null>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
   const startedRef = useRef(false);
   const [gender, setGender] = useState<'male' | 'female'>('male');
   const [status, setStatus] = useState('loading body…');
@@ -20,8 +21,10 @@ export function CharacterViewer({ ctx, index }: { ctx: Ctx; index: unknown }) {
   const [playing, setPlaying] = useState(true);
   const [tab, setTab] = useState<Tab>('animate');
   const [clipFilter, setClipFilter] = useState('');
-  const [equipTick, setEquipTick] = useState(0); // bump to re-highlight equipped cards
-  const [busy, setBusy] = useState('');
+  const [equipTick, setEquipTick] = useState(0);
+  const [, setBusy] = useState('');
+  const [panelW, setPanelW] = useState(() => Number(localStorage.getItem('pz-panel-w')) || 420);
+  const [clothOnBody, setClothOnBody] = useState(true);
 
   const clips: Clip[] = useMemo(() => listClips(index), [index]);
   const clothing = useMemo(() => (listClothing(index) as Array<{ name: string; kind: string; location: string; isMod: boolean }>)
@@ -30,26 +33,25 @@ export function CharacterViewer({ ctx, index }: { ctx: Ctx; index: unknown }) {
     .map((h) => ({ ...h, key: h.name, label: h.name, facet: firstLetter(h.name), isMod: false })), [index]);
   const hairData = useMemo(() => listHair(index) as { hair: { male: { name: string }[]; female: { name: string }[] }; beards: { name: string }[] }, [index]);
 
-  // one shared thumbnail renderer (its own GL context), IDB-cached, for the grids
   const thumbs = useMemo(() => new ThumbnailProvider(ctx), [ctx]);
   useEffect(() => () => thumbs.dispose(), [thumbs]);
+  useEffect(() => { localStorage.setItem('pz-panel-w', String(panelW)); }, [panelW]);
 
   const shownClips = useMemo(() => {
     const f = clipFilter.trim().toLowerCase();
     return (f ? clips.filter((c) => c.name.toLowerCase().includes(f)) : clips).slice(0, 500);
   }, [clips, clipFilter]);
 
-  // create engine once
+  // engine once; refit the canvas whenever its container resizes (window OR splitter drag)
   useEffect(() => {
     const eng = new CharacterEngine(canvasRef.current!, ctx);
     eng.onClipName = setNowPlaying;
     engineRef.current = eng;
-    const onResize = () => eng.fit();
-    window.addEventListener('resize', onResize);
-    return () => { window.removeEventListener('resize', onResize); eng.dispose(); engineRef.current = null; };
+    const ro = new ResizeObserver(() => eng.fit());
+    if (canvasRef.current?.parentElement) ro.observe(canvasRef.current.parentElement);
+    return () => { ro.disconnect(); eng.dispose(); engineRef.current = null; };
   }, [ctx]);
 
-  // load / swap body on gender change
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -59,14 +61,9 @@ export function CharacterViewer({ ctx, index }: { ctx: Ctx; index: unknown }) {
         await eng.loadBody(gender);
         if (cancelled) return;
         setStatus(''); setEquipTick((t) => t + 1);
-        // Play a default idle once, like the desktop app: the character stands naturally
-        // AND every added rig (hair/beard/clothing) seats against a common clip pose
-        // instead of the unaligned raw bind pose.
         if (!startedRef.current) {
           startedRef.current = true;
-          const idle = clips.find((c) => c.name === 'Bob_Idle')
-            || clips.find((c) => /^bob_idle\b/i.test(c.name))
-            || clips.find((c) => c.actor.toLowerCase() === 'bob' && /idle/i.test(c.name));
+          const idle = clips.find((c) => c.name === 'Bob_Idle') || clips.find((c) => /^bob_idle\b/i.test(c.name)) || clips.find((c) => c.actor.toLowerCase() === 'bob' && /idle/i.test(c.name));
           if (idle) { try { await eng.playClip(idle); setPlaying(true); } catch { /* non-fatal */ } }
         }
       } catch (e) { if (!cancelled) setStatus('body error: ' + (e instanceof Error ? e.message : String(e))); }
@@ -74,45 +71,57 @@ export function CharacterViewer({ ctx, index }: { ctx: Ctx; index: unknown }) {
     return () => { cancelled = true; };
   }, [gender, clips]);
 
-  async function guard(label: string, fn: () => Promise<unknown>) {
-    setBusy(label);
+  async function guard(fn: () => Promise<unknown>) {
     try { await fn(); } catch (e) { setNowPlaying('error: ' + (e instanceof Error ? e.message : String(e))); }
     finally { setBusy(''); setEquipTick((t) => t + 1); }
   }
-
-  const playClip = (c: Clip) => guard('loading ' + c.name, async () => { await engineRef.current!.playClip(c); setPlaying(true); });
-  const toggleCloth = (it: { name: string }) => guard('equipping ' + it.name, () => engineRef.current!.toggleClothing(it));
-  const toggleHeld = (it: { name: string }) => guard('equipping ' + it.name, () => engineRef.current!.toggleHeld(it));
+  const playClip = (c: Clip) => guard(async () => { await engineRef.current!.playClip(c); setPlaying(true); });
+  const toggleCloth = (it: { name: string }) => guard(() => engineRef.current!.toggleClothing(it));
+  const toggleHeld = (it: { name: string }) => guard(() => engineRef.current!.toggleHeld(it));
   const togglePlay = () => { const e = engineRef.current; if (e) setPlaying(e.togglePlay()); };
 
+  function startDrag(e: React.MouseEvent) {
+    e.preventDefault();
+    const container = containerRef.current!;
+    const onMove = (ev: MouseEvent) => {
+      const rect = container.getBoundingClientRect();
+      setPanelW(Math.max(300, Math.min(rect.width - 360, rect.right - ev.clientX)));
+    };
+    const onUp = () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp); document.body.style.userSelect = ''; };
+    document.body.style.userSelect = 'none';
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+  }
+
   const tabs: [Tab, string][] = [['animate', 'Animate'], ['clothing', 'Clothing'], ['held', 'Held'], ['hair', 'Hair']];
+  const segBtn = (on: boolean) => ({ borderRadius: 0, padding: '6px 9px', background: on ? 'var(--accent)' : 'var(--panel)', color: on ? '#fff' : 'var(--muted)' }) as const;
 
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: '1fr 360px', gap: 12, height: 'calc(100vh - 150px)', minHeight: 440 }}>
-      <div style={{ position: 'relative', background: '#14141a', border: '1px solid var(--line)', borderRadius: 8, overflow: 'hidden' }}>
+    <div ref={containerRef} style={{ display: 'flex', height: 'calc(100vh - 128px)', minHeight: 460 }}>
+      <div style={{ flex: 1, minWidth: 320, position: 'relative', background: '#14141a', border: '1px solid var(--line)', borderRadius: 8, overflow: 'hidden' }}>
         <canvas ref={canvasRef} style={{ width: '100%', height: '100%', display: 'block' }} />
         <div style={{ position: 'absolute', left: 12, top: 12, display: 'flex', gap: 8, alignItems: 'center' }}>
           <div style={{ display: 'flex', border: '1px solid var(--line)', borderRadius: 6, overflow: 'hidden' }}>
             {(['male', 'female'] as const).map((g) => (
-              <button key={g} className="secondary" onClick={() => setGender(g)}
-                style={{ borderRadius: 0, background: gender === g ? 'var(--accent)' : 'var(--panel)', color: gender === g ? '#fff' : 'var(--text)' }}>{g}</button>
+              <button key={g} className="secondary" onClick={() => setGender(g)} style={segBtn(gender === g)}>{g}</button>
             ))}
           </div>
-          {(status || busy) && <span style={{ color: 'var(--muted)', background: '#00000099', padding: '4px 8px', borderRadius: 6 }}>{status || busy}</span>}
+          {status && <span style={{ color: 'var(--muted)', background: '#00000099', padding: '4px 8px', borderRadius: 6 }}>{status}</span>}
         </div>
         <div style={{ position: 'absolute', left: 12, bottom: 12, right: 12, display: 'flex', gap: 8, alignItems: 'center' }}>
           <button className="secondary" onClick={togglePlay}>{playing ? '❚❚' : '▶'}</button>
-          <span style={{ color: 'var(--muted)', background: '#00000099', padding: '4px 8px', borderRadius: 6, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', flex: 1 }}>
-            {nowPlaying || 'pick a clip →'}
-          </span>
+          <span style={{ color: 'var(--muted)', background: '#00000099', padding: '4px 8px', borderRadius: 6, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', flex: 1 }}>{nowPlaying || 'pick a clip →'}</span>
         </div>
       </div>
 
-      <div style={{ display: 'flex', flexDirection: 'column', minHeight: 0, background: 'var(--panel)', border: '1px solid var(--line)', borderRadius: 8 }}>
+      <div onMouseDown={startDrag} title="drag to resize" style={{ width: 12, cursor: 'col-resize', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+        <div style={{ width: 4, height: 44, borderRadius: 2, background: 'var(--line)' }} />
+      </div>
+
+      <div style={{ width: panelW, flexShrink: 0, minWidth: 300, display: 'flex', flexDirection: 'column', minHeight: 0, background: 'var(--panel)', border: '1px solid var(--line)', borderRadius: 8 }}>
         <div style={{ display: 'flex', borderBottom: '1px solid var(--line)' }}>
           {tabs.map(([t, label]) => (
-            <button key={t} onClick={() => setTab(t)} className="secondary"
-              style={{ flex: 1, borderRadius: 0, background: tab === t ? 'var(--accent)' : 'transparent', color: tab === t ? '#fff' : 'var(--text)' }}>{label}</button>
+            <button key={t} onClick={() => setTab(t)} className="secondary" style={{ flex: 1, borderRadius: 0, background: tab === t ? 'var(--accent)' : 'transparent', color: tab === t ? '#fff' : 'var(--text)' }}>{label}</button>
           ))}
         </div>
 
@@ -125,12 +134,9 @@ export function CharacterViewer({ ctx, index }: { ctx: Ctx; index: unknown }) {
               </div>
               <div style={{ overflow: 'auto', flex: 1 }}>
                 {shownClips.map((c) => (
-                  <div key={c.id} onClick={() => playClip(c)}
-                    style={{ padding: '4px 10px', cursor: 'pointer', fontFamily: 'monospace', fontSize: 12, display: 'flex', gap: 8 }}
-                    onMouseEnter={(e) => (e.currentTarget.style.background = '#ffffff10')}
-                    onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}>
-                    <span style={{ color: c.isMod ? '#8ec77f' : 'var(--muted)', width: 44 }}>{c.actor}</span>
-                    <span>{c.name}</span>
+                  <div key={c.id} onClick={() => playClip(c)} style={{ padding: '4px 10px', cursor: 'pointer', fontFamily: 'monospace', fontSize: 12, display: 'flex', gap: 8 }}
+                    onMouseEnter={(e) => (e.currentTarget.style.background = '#ffffff10')} onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}>
+                    <span style={{ color: c.isMod ? '#8ec77f' : 'var(--muted)', width: 44 }}>{c.actor}</span><span>{c.name}</span>
                   </div>
                 ))}
                 {clips.length > shownClips.length && <div style={{ padding: 10, color: 'var(--muted)' }}>+{clips.length - shownClips.length} more — refine search</div>}
@@ -145,7 +151,13 @@ export function CharacterViewer({ ctx, index }: { ctx: Ctx; index: unknown }) {
               facetOrder={CLOTHING_GROUP_ORDER as string[]}
               active={(it) => { void equipTick; return !!engineRef.current?.isEquipped(it.name); }}
               onPick={(it) => toggleCloth(it)}
-              renderThumb={(it) => <Thumb depKey={`c:${it.name}:${gender}`} getUrl={() => thumbs.clothing(it, gender)} />} />
+              extraControls={(
+                <div style={{ display: 'flex', border: '1px solid var(--line)', borderRadius: 6, overflow: 'hidden' }} title="thumbnail style">
+                  <button className="secondary" onClick={() => setClothOnBody(true)} style={segBtn(clothOnBody)}>on body</button>
+                  <button className="secondary" onClick={() => setClothOnBody(false)} style={segBtn(!clothOnBody)}>item</button>
+                </div>
+              )}
+              renderThumb={(it) => <Thumb depKey={`c:${it.name}:${gender}:${clothOnBody}`} getUrl={() => thumbs.clothing(it, gender, clothOnBody)} />} />
           )}
 
           {tab === 'held' && (
@@ -175,13 +187,11 @@ function HairTab({ hairData, gender, engineRef }: {
   const [beardColor, setBeardColor] = useState('#5a3a20');
   const hairList = gender === 'female' ? hairData.hair.female : hairData.hair.male;
   const hexRgb = (hex: string) => { const n = parseInt(hex.slice(1), 16); return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255]; };
-
   const apply = (kind: 'hair' | 'beard', name: string, color: string) => {
     const list = kind === 'beard' ? hairData.beards : hairList;
     const style = name === 'None' ? { name: 'None' } : list.find((s) => s.name === name) || { name };
     engineRef.current?.applyPart(kind, style, hexRgb(color)).catch(() => {});
   };
-
   const row = { display: 'flex', gap: 8, alignItems: 'center', marginBottom: 12 } as const;
   const sel = { flex: 1, background: '#14141a', color: 'var(--text)', border: '1px solid var(--line)', borderRadius: 6, padding: '7px 9px' } as const;
   return (
