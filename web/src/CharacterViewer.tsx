@@ -221,11 +221,12 @@ function ClipThumb({ clip, thumbs, preview }: { clip: { id: string; rel: string;
   );
 }
 
-// 3x3 compass; S (0deg) faces the camera, matching the default idle.
+// 3x3 compass; degrees are the character's Y facing. Positions are rotated one step
+// clockwise from the cardinal layout so the buttons line up with what's seen in the viewer.
 const FACING_GRID: ([string, number] | null)[] = [
-  ['NW', 135], ['N', 180], ['NE', 225],
-  ['W', 90], null, ['E', 270],
-  ['SW', 45], ['S', 0], ['SE', 315],
+  ['W', 90], ['NW', 135], ['N', 180],
+  ['SW', 45], null, ['NE', 225],
+  ['S', 0], ['SE', 315], ['E', 270],
 ];
 const LIGHT_DEFAULT = { ambient: 0.55, keyBright: 0.5, kx: 0.12, ky: 0.28, kz: 1.0 };
 
