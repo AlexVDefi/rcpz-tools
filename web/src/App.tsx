@@ -3,7 +3,7 @@ import { useEffect, useState, useCallback, useMemo } from 'react';
 import { buildAssetIndex } from '@shared/asset-index.js';
 import { listClothing, listClips, listHair, listHeldItems } from '@shared/character-core.js';
 import { createFsaAssetSource } from './platform/fsa-source';
-import { idbHandles, hasPermission, requestPermission } from './platform/idb';
+import { idbHandles, idbCache, hasPermission, requestPermission, storageUsage } from './platform/idb';
 import { converter } from './render/converter';
 import { CharacterViewer } from './CharacterViewer';
 
@@ -135,6 +135,7 @@ export function App() {
             <button onClick={() => setView('character')}>Open character viewer →</button>
             <button className="secondary" onClick={pickInstall}>Choose a different folder…</button>
           </div>
+          <CacheInfo />
         </div>
       )}
 
@@ -143,6 +144,29 @@ export function App() {
           <CharacterViewer ctx={ctx} index={index} />
         </div>
       )}
+    </div>
+  );
+}
+
+// Live thumbnail-cache readout + purge. Answers "how much space is this using?"
+function CacheInfo() {
+  const [bytes, setBytes] = useState<number | null>(null);
+  const [count, setCount] = useState<number | null>(null);
+  const [busy, setBusy] = useState(false);
+  const refresh = useCallback(async () => { setBytes(await storageUsage()); setCount(await idbCache.count().catch(() => null)); }, []);
+  useEffect(() => { refresh(); }, [refresh]);
+  const clear = useCallback(async () => {
+    setBusy(true);
+    await idbCache.clear();
+    // drop in-memory object URLs held by the viewer's provider by reloading
+    location.reload();
+  }, []);
+  const mb = bytes != null ? (bytes / 1e6).toFixed(1) + ' MB' : '—';
+  return (
+    <div style={{ marginTop: 18, color: 'var(--muted)', fontSize: 13, display: 'flex', gap: 12, alignItems: 'center' }}>
+      <span>Thumbnail cache: <b style={{ color: 'var(--text)' }}>{mb}</b>{count != null ? ` · ${count} thumbnails` : ''}</span>
+      <button className="secondary" onClick={clear} disabled={busy} style={{ padding: '4px 10px', fontSize: 12 }}>{busy ? 'clearing…' : 'Clear thumbnails'}</button>
+      <button className="secondary" onClick={refresh} style={{ padding: '4px 10px', fontSize: 12 }}>refresh</button>
     </div>
   );
 }

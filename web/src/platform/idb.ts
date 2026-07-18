@@ -44,8 +44,16 @@ export const idbHandles = {
 export const idbCache = {
   get: (key: string) => tx<unknown>(STORE_CACHE, 'readonly', (s) => s.get(key)),
   put: (key: string, value: unknown) => tx(STORE_CACHE, 'readwrite', (s) => s.put(value, key)) as Promise<unknown>,
+  count: () => tx<number>(STORE_CACHE, 'readonly', (s) => s.count()),
   clear: () => tx(STORE_CACHE, 'readwrite', (s) => s.clear()) as Promise<unknown>,
 };
+
+/** Total bytes this origin is using (thumbnails dominate). null if unsupported. */
+export async function storageUsage(): Promise<number | null> {
+  if (!navigator.storage?.estimate) return null;
+  const e = await navigator.storage.estimate();
+  return e.usage ?? null;
+}
 
 /** Has the user granted read permission on this handle in this session? */
 export async function hasPermission(handle: FileSystemHandle): Promise<boolean> {
