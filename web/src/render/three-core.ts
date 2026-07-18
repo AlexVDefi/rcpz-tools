@@ -154,11 +154,10 @@ export function makeOrbit(getCamera: () => THREE.Camera, dom: HTMLElement, targe
   }
 
   const onDown = (e: MouseEvent) => {
-    if (e.button === 2) { mode = 'pan'; e.preventDefault(); }
-    else if (e.button === 0) mode = 'rotate';
+    if (e.button === 2) { mode = 'pan'; e.preventDefault(); } // pan keeps the current (e.g. iso) camera
+    else if (e.button === 0) { mode = 'rotate'; api.onInteract?.(); } // only rotating leaves a locked camera
     else return;
     lastX = e.clientX; lastY = e.clientY;
-    api.onInteract?.();
   };
   const onUp = () => { mode = 'none'; };
   const onMove = (e: MouseEvent) => {

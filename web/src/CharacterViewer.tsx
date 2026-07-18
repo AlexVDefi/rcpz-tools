@@ -170,6 +170,12 @@ export function CharacterViewer({ ctx, index }: { ctx: Ctx; index: unknown }) {
           {status && <span style={{ color: 'var(--muted)', background: '#00000099', padding: '4px 8px', borderRadius: 6 }}>{status}</span>}
           <span style={{ color: 'var(--muted)', background: '#00000099', padding: '4px 8px', borderRadius: 6, maxWidth: 340, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{nowPlaying || 'pick a clip →'}</span>
         </div>
+        <div style={{ position: 'absolute', right: 12, top: 12, display: 'flex', border: '1px solid var(--line)', borderRadius: 6, overflow: 'hidden' }}>
+          <button className="secondary" title="Free orbit" onClick={() => engineRef.current?.setCamMode('orbit')}
+            style={{ borderRadius: 0, padding: '6px 10px', fontSize: 16, lineHeight: 1, background: camMode === 'orbit' ? 'var(--accent)' : 'var(--panel)', color: camMode === 'orbit' ? '#fff' : 'var(--text)' }}>⟳</button>
+          <button className="secondary" title="PZ iso" onClick={() => engineRef.current?.setCamMode('iso')}
+            style={{ borderRadius: 0, padding: '6px 10px', fontSize: 16, lineHeight: 1, background: camMode === 'iso' ? 'var(--accent)' : 'var(--panel)', color: camMode === 'iso' ? '#fff' : 'var(--text)' }}>◈</button>
+        </div>
         <div style={{ position: 'absolute', left: 12, bottom: 12, right: 12, display: 'flex', gap: 8, alignItems: 'center', background: '#000000aa', borderRadius: 8, padding: '6px 10px' }}>
           <button className="secondary" onClick={togglePlay} style={{ padding: '4px 12px' }}>{playing ? '❚❚' : '▶'}</button>
           <input ref={scrubRef} type="range" min={0} max={1000} defaultValue={0}
@@ -252,8 +258,7 @@ export function CharacterViewer({ ctx, index }: { ctx: Ctx; index: unknown }) {
             </div>
           )}
 
-          {tab === 'scene' && <SceneTab engineRef={engineRef} camMode={camMode} setCam={(m) => engineRef.current?.setCamMode(m)}
-            floorSel={floorSel} onPreset={pickPreset} onClear={clearFloor} />}
+          {tab === 'scene' && <SceneTab engineRef={engineRef} floorSel={floorSel} onPreset={pickPreset} onClear={clearFloor} />}
         </div>
       </div>
     </div>
@@ -281,8 +286,8 @@ const FACING_GRID: ([string, number] | null)[] = [
 ];
 const LIGHT_DEFAULT = { ambient: 0.55, keyBright: 0.5, kx: 0.12, ky: 0.28, kz: 1.0 };
 
-function SceneTab({ engineRef, camMode, setCam, floorSel, onPreset, onClear }: {
-  engineRef: React.MutableRefObject<CharacterEngine | null>; camMode: 'orbit' | 'iso'; setCam: (m: 'orbit' | 'iso') => void;
+function SceneTab({ engineRef, floorSel, onPreset, onClear }: {
+  engineRef: React.MutableRefObject<CharacterEngine | null>;
   floorSel: string | null; onPreset: (name: string, tiles: string[]) => void; onClear: () => void;
 }) {
   const [facing, setFacing] = useState<number | null>(0);
@@ -293,7 +298,6 @@ function SceneTab({ engineRef, camMode, setCam, floorSel, onPreset, onClear }: {
   const setL = (k: keyof typeof LIGHT_DEFAULT, v: number) => { setLight((s) => ({ ...s, [k]: v })); engineRef.current?.setLight(k as 'ambient' | 'keyBright' | 'kx' | 'ky' | 'kz', v); };
   const resetL = () => { setLight({ ...LIGHT_DEFAULT }); engineRef.current?.resetLight(); };
 
-  const seg = (on: boolean) => ({ borderRadius: 0, padding: '6px 12px', background: on ? 'var(--accent)' : 'var(--panel)', color: on ? '#fff' : 'var(--text)' }) as const;
   const label = { color: 'var(--muted)', fontSize: 12, display: 'block', margin: '14px 0 6px' } as const;
   const slider = (k: keyof typeof LIGHT_DEFAULT, name: string, min: number, max: number) => (
     <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 6 }}>
@@ -305,22 +309,7 @@ function SceneTab({ engineRef, camMode, setCam, floorSel, onPreset, onClear }: {
 
   return (
     <div style={{ padding: 12, overflow: 'auto', height: '100%' }}>
-      <label style={label}>Camera</label>
-      <div style={{ display: 'flex', border: '1px solid var(--line)', borderRadius: 6, overflow: 'hidden', width: 'fit-content' }}>
-        <button className="secondary" onClick={() => setCam('orbit')} style={seg(camMode === 'orbit')}>Free orbit</button>
-        <button className="secondary" onClick={() => setCam('iso')} style={seg(camMode === 'iso')}>PZ iso</button>
-      </div>
-
-      <label style={label}>Floor</label>
-      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-        <button className="secondary" onClick={onClear} style={{ padding: '6px 12px', background: !floorSel ? 'var(--accent)' : 'var(--panel)', color: !floorSel ? '#fff' : 'var(--text)' }}>None</button>
-        {FLOOR_PRESETS.map(([name, tiles]) => (
-          <button key={name} className="secondary" onClick={() => onPreset(name, tiles)}
-            style={{ padding: '6px 12px', background: floorSel === 'preset:' + name ? 'var(--accent)' : 'var(--panel)', color: floorSel === 'preset:' + name ? '#fff' : 'var(--text)' }}>{name}</button>
-        ))}
-      </div>
-
-      <label style={label}>Facing</label>
+      <label style={{ ...label, marginTop: 0 }}>Facing</label>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 52px)', gap: 4 }}>
         {FACING_GRID.map((cell, i) => cell === null ? <span key={i} /> : (
           <button key={i} className="secondary" onClick={() => { setFacing(cell[1]); engineRef.current?.setFacing(cell[1]); }}
@@ -337,6 +326,15 @@ function SceneTab({ engineRef, camMode, setCam, floorSel, onPreset, onClear }: {
       {slider('kx', 'key X', -2, 2)}
       {slider('ky', 'key Y', -2, 2)}
       {slider('kz', 'key Z', -2, 2)}
+
+      <label style={label}>Floor</label>
+      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+        <button className="secondary" onClick={onClear} style={{ padding: '6px 12px', background: !floorSel ? 'var(--accent)' : 'var(--panel)', color: !floorSel ? '#fff' : 'var(--text)' }}>None</button>
+        {FLOOR_PRESETS.map(([name, tiles]) => (
+          <button key={name} className="secondary" onClick={() => onPreset(name, tiles)}
+            style={{ padding: '6px 12px', background: floorSel === 'preset:' + name ? 'var(--accent)' : 'var(--panel)', color: floorSel === 'preset:' + name ? '#fff' : 'var(--text)' }}>{name}</button>
+        ))}
+      </div>
 
       <label style={label}>Scene</label>
       <div style={{ display: 'flex', gap: 8 }}>

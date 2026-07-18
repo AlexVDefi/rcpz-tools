@@ -131,13 +131,13 @@ export class CharacterEngine {
     const c = document.createElement('canvas'); c.width = c.height = S;
     const ctx = c.getContext('2d')!;
     const g = ctx.createRadialGradient(S / 2, S / 2, 0, S / 2, S / 2, S / 2);
-    g.addColorStop(0, 'rgba(0,0,0,0.38)');
-    g.addColorStop(0.32, 'rgba(0,0,0,0.16)'); // faster falloff
-    g.addColorStop(0.65, 'rgba(0,0,0,0.03)');
+    g.addColorStop(0, 'rgba(0,0,0,0.55)');
+    g.addColorStop(0.32, 'rgba(0,0,0,0.28)'); // faster falloff
+    g.addColorStop(0.65, 'rgba(0,0,0,0.06)');
     g.addColorStop(1, 'rgba(0,0,0,0)');
     ctx.fillStyle = g; ctx.fillRect(0, 0, S, S);
     const mat = new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(c), transparent: true, depthWrite: false });
-    const D = 0.6; // shadow diameter (~character footprint)
+    const D = 0.8; // shadow diameter (~character footprint)
     const mesh = new THREE.Mesh(new THREE.PlaneGeometry(D, D), mat);
     mesh.rotation.x = -Math.PI / 2;
     mesh.position.y = 0.006; // just above the floor to avoid z-fighting
