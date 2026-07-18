@@ -52,7 +52,7 @@ export class FloorLibrary {
     const { w, h } = e;
     const fill = (T * Math.SQRT2) / w; // de-sheared square side = w/√2 -> scale to fill T
     ctx.translate(T / 2, T / 2);
-    ctx.scale(fill, fill);
+    ctx.scale(-fill, fill); // negative X mirrors horizontally to match the scene's handedness
     ctx.rotate(Math.PI / 4);
     ctx.scale(1, w / h); // undo the 2:1 iso vertical squash
     ctx.drawImage(atlas, e.x, e.y, w, h, -w / 2, -h / 2, w, h);
@@ -69,6 +69,35 @@ export class FloorLibrary {
     tex.anisotropy = 8;
     tex.needsUpdate = true;
     this.texCache.set(name, tex);
+    return tex;
+  }
+
+  /** Bake a varied floor texture: an N×N grid of random variants from `names`, de-sheared.
+   *  Repeating this (vs one tile) gives the game's natural, non-repetitive look. Cached by key. */
+  async presetTexture(names: string[], key: string, N = 8): Promise<THREE.Texture | null> {
+    await this.ensure();
+    const ck = 'preset:' + key;
+    const cached = this.texCache.get(ck); if (cached) return cached;
+    const recs = names.map((n) => this.recs.get(n)).filter(Boolean) as Rec[];
+    if (!recs.length) return null;
+    const T = 128;
+    const big = document.createElement('canvas'); big.width = N * T; big.height = N * T;
+    const ctx = big.getContext('2d')!;
+    let seed = 0; for (let i = 0; i < key.length; i++) seed = (seed * 31 + key.charCodeAt(i)) & 0x7fffffff;
+    const rnd = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; };
+    // decode each needed page once
+    const imgs = new Map<number, HTMLImageElement>();
+    for (const r of recs) if (!imgs.has(r.page)) imgs.set(r.page, await this.pageImage(r.page));
+    for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) {
+      const rec = recs[Math.floor(rnd() * recs.length)];
+      ctx.drawImage(this.deshear(imgs.get(rec.page)!, rec.tile, T), c * T, r * T);
+    }
+    const tex = new THREE.CanvasTexture(big);
+    tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+    tex.colorSpace = THREE.NoColorSpace;
+    tex.anisotropy = 8;
+    tex.needsUpdate = true;
+    this.texCache.set(ck, tex);
     return tex;
   }
 

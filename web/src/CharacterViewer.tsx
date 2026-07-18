@@ -9,6 +9,21 @@ import { Thumb } from './Thumb';
 
 type Tab = 'animate' | 'clothing' | 'held' | 'hair' | 'scene' | 'floor';
 const floorCategory = (name: string) => name.replace(/(_\d+)+$/, '').replace(/^(floors_|blends_)/, '');
+// Curated material presets: each scatters random variants into a baked, non-repetitive floor.
+// blends_natural_01 is grouped in 16-index material blocks; the SOLID tiles are at offsets
+// {0,5,6,7} per block (the others are transparent edge blends). Blocks: 0=sand, 16&32=grass,
+// 48=dry grass, 64=dirt, 112=mud (verified from the in-game lawn reference).
+const P = (base: string, ...idx: number[]) => idx.map((i) => `${base}_${i}`);
+const NB = (b: number) => [b, b + 5, b + 6, b + 7].map((i) => `blends_natural_01_${i}`);
+const FLOOR_PRESETS: [string, string[]][] = [
+  ['Grass', [...NB(16), ...NB(32)]],
+  ['Dry grass', NB(48)],
+  ['Dirt', NB(64)],
+  ['Sand', NB(0)],
+  ['Mud', NB(112)],
+  ['Asphalt', P('floors_exterior_street_01', 0, 1, 2, 3, 4, 5, 6, 7, 8)],
+  ['Wood', P('floors_interior_tilesandwood_01', 6)],
+];
 interface Clip { id: string; name: string; actor: string; format: string; isMod: boolean; rel: string; modName?: string | null }
 
 const firstLetter = (s: string) => (/[a-z]/i.test(s[0]) ? s[0].toUpperCase() : '#');
@@ -72,7 +87,8 @@ export function CharacterViewer({ ctx, index }: { ctx: Ctx; index: unknown }) {
   const [floorTiles, setFloorTiles] = useState<{ name: string }[]>([]);
   const [floorSel, setFloorSel] = useState<string | null>(null);
   const floorItems = useMemo(() => floorTiles.map((t) => ({ ...t, key: t.name, label: t.name.replace(/^(floors_|blends_)/, ''), facet: floorCategory(t.name), isMod: false, source: 'Vanilla' })), [floorTiles]);
-  const pickFloor = async (name: string) => { setFloorSel(name); try { engineRef.current?.setFloor(await floorLib.texture(name)); } catch { /* ignore */ } };
+  const pickFloor = async (name: string) => { setFloorSel(name); try { engineRef.current?.setFloor(await floorLib.texture(name), 1); } catch { /* ignore */ } };
+  const pickPreset = async (name: string, tiles: string[]) => { setFloorSel('preset:' + name); try { engineRef.current?.setFloor(await floorLib.presetTexture(tiles, name, 8), 8); } catch { /* ignore */ } };
   const clearFloor = () => { setFloorSel(null); engineRef.current?.setFloor(null); };
   useEffect(() => { if (tab === 'floor' && !floorTiles.length) floorLib.list().then((ts) => setFloorTiles(ts as { name: string }[])).catch(() => {}); }, [tab, floorLib, floorTiles.length]);
   // scrolling detaches the fixed-position hover preview from its cell — hide it
@@ -213,9 +229,14 @@ export function CharacterViewer({ ctx, index }: { ctx: Ctx; index: unknown }) {
 
           {tab === 'floor' && (
             <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-              <div style={{ padding: 8, borderBottom: '1px solid var(--line)' }}>
-                <button className="secondary" onClick={clearFloor} style={{ background: !floorSel ? 'var(--accent)' : 'var(--panel)', color: !floorSel ? '#fff' : 'var(--text)' }}>None (grid)</button>
+              <div style={{ padding: 8, borderBottom: '1px solid var(--line)', display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                <button className="secondary" onClick={clearFloor} style={{ background: !floorSel ? 'var(--accent)' : 'var(--panel)', color: !floorSel ? '#fff' : 'var(--text)' }}>None</button>
+                {FLOOR_PRESETS.map(([name, tiles]) => (
+                  <button key={name} className="secondary" onClick={() => pickPreset(name, tiles)}
+                    style={{ background: floorSel === 'preset:' + name ? 'var(--accent)' : 'var(--panel)', color: floorSel === 'preset:' + name ? '#fff' : 'var(--text)' }}>{name}</button>
+                ))}
               </div>
+              <div style={{ padding: '4px 8px', color: 'var(--muted)', fontSize: 11, borderBottom: '1px solid var(--line)' }}>…or pick any single tile:</div>
               <div style={{ flex: 1, minHeight: 0 }}>
                 {floorItems.length ? (
                   <AssetGrid<typeof floorItems[number] & GridItem>

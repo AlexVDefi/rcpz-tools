@@ -95,8 +95,10 @@ export class CharacterEngine {
   setGridVisible(on: boolean) { if (!this.floorMesh) this.grid.visible = on; }
 
   private floorMesh: THREE.Mesh | null = null;
-  /** Lay a repeating floor-tile texture on a ground plane (hides the grid), or null to clear. */
-  setFloor(tex: THREE.Texture | null) {
+  /** Lay a repeating floor texture on a ground plane (hides the grid), or null to clear.
+   *  `tilesAcross` = how many game tiles the texture already contains (1 for a single tile,
+   *  N for a baked N×N varied preset), so each tile still lands at ~0.45 world units. */
+  setFloor(tex: THREE.Texture | null, tilesAcross = 1) {
     if (this.floorMesh) {
       this.scene.remove(this.floorMesh);
       this.floorMesh.geometry.dispose();
@@ -105,9 +107,10 @@ export class CharacterEngine {
     }
     if (!tex) { this.grid.visible = true; return; }
     // The body mesh is ~0.98 units tall (~2 game tiles), so a tile ≈ 0.45 units. Large plane
-    // so the floor always fills the orbit view; repeat sizes each tile to ~0.45 units.
+    // so the floor always fills the orbit view.
     const SIZE = 40, TILE = 0.45;
-    tex.repeat.set(SIZE / TILE, SIZE / TILE);
+    const rep = SIZE / (TILE * tilesAcross);
+    tex.repeat.set(rep, rep);
     const mesh = new THREE.Mesh(new THREE.PlaneGeometry(SIZE, SIZE), new THREE.MeshBasicMaterial({ map: tex }));
     mesh.rotation.x = -Math.PI / 2;
     mesh.position.y = 0;
