@@ -369,7 +369,10 @@ export class CharacterEngine {
     const att = (r.attachments && r.attachments[prop]) || null;
     const gltf = await glbToGltf(r.meshGlb);
     const obj = gltf.scene;
-    const tex = r.texture ? await bytesToTexture(r.texture, true) : this.white();
+    // flipY=false: the assimp glb UVs are in glTF convention (V origin at top), same as the
+    // body/clothing path. flipY=true samples the transparent atlas background on both vanilla
+    // (.x) and modded (.fbx) weapons -> black/see-through patches.
+    const tex = r.texture ? await bytesToTexture(r.texture, false) : this.white();
     const mat = makeMaterial(tex, this.lightingObj(), true);
     obj.traverse((o) => { const m = o as THREE.Mesh; if (m.isMesh) { if (!m.geometry.getAttribute('normal')) m.geometry.computeVertexNormals(); m.material = mat; m.frustumCulled = false; } });
     if (r.scale && r.scale !== 1) obj.scale.setScalar(r.scale);

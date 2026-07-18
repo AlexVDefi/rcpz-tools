@@ -20,8 +20,9 @@ export function glbToGltf(bytes: Uint8Array): Promise<GLTF> {
 
 /**
  * PNG bytes -> texture. Uses HTMLImageElement + object URL (NOT ImageBitmap): three
- * honours texture.flipY for an <img> source but ignores it for ImageBitmap, and the
- * character path toggles flipY per asset (body/skin=false, held items=true).
+ * honours texture.flipY for an <img> source but ignores it for ImageBitmap. The assimp
+ * glb meshes carry glTF-convention UVs, so every asset (body, clothing, held items) loads
+ * its texture with flipY=false; keep the <img> path so that stays correct.
  */
 export function bytesToTexture(bytes: Uint8Array, flipY: boolean): Promise<THREE.Texture> {
   return new Promise((resolve, reject) => {

@@ -253,7 +253,7 @@ export class ThumbnailRenderer {
       const r = await resolveHeldItem(this.ctx, item);
       if (r.error || !r.meshGlb) throw new Error(r.error || 'no mesh');
       const root = (await glbToGltf(r.meshGlb)).scene;
-      const tex = r.texture ? await bytesToTexture(r.texture, true) : new THREE.Texture();
+      const tex = r.texture ? await bytesToTexture(r.texture, false) : new THREE.Texture(); // glTF UV convention (see toggleHeld)
       this.applyMat(root, this.material(tex, false));
       return this.renderAlone(root, true);
     };
