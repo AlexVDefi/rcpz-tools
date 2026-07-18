@@ -2,13 +2,33 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { listClips, listClothing, listHeldItems, listHair, clothingGroup, CLOTHING_GROUP_ORDER } from '@shared/character-core.js';
 import { CharacterEngine, type Ctx } from './render/character-engine';
 import { ThumbnailProvider } from './render/thumbnail-provider';
+import { ClipPreview } from './render/clip-preview';
 import { AssetGrid, type GridItem } from './AssetGrid';
 import { Thumb } from './Thumb';
 
 type Tab = 'animate' | 'clothing' | 'held' | 'hair' | 'scene';
-interface Clip { id: string; name: string; actor: string; format: string; isMod: boolean; rel: string }
+interface Clip { id: string; name: string; actor: string; format: string; isMod: boolean; rel: string; modName?: string | null }
 
 const firstLetter = (s: string) => (/[a-z]/i.test(s[0]) ? s[0].toUpperCase() : '#');
+
+// Coarse clip category from the name (for the animation-grid facet).
+function clipCategory(name: string): string {
+  const n = name.toLowerCase();
+  if (/aim/.test(n)) return 'Aim';
+  if (/attack|swipe|stab|shoot|melee|slash|\bhit/.test(n)) return 'Attack';
+  if (/reload|rack|chamber|bolt/.test(n)) return 'Reload';
+  if (/walk/.test(n)) return 'Walk';
+  if (/\brun/.test(n)) return 'Run';
+  if (/sneak|crouch/.test(n)) return 'Sneak';
+  if (/\bsit/.test(n)) return 'Sit';
+  if (/climb|vault|fence/.test(n)) return 'Climb';
+  if (/fall|trip/.test(n)) return 'Fall';
+  if (/death|die|dead/.test(n)) return 'Death';
+  if (/react|damage|bitten|bite/.test(n)) return 'React';
+  if (/idle/.test(n)) return 'Idle';
+  if (/turn/.test(n)) return 'Turn';
+  return 'Other';
+}
 
 export function CharacterViewer({ ctx, index }: { ctx: Ctx; index: unknown }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -20,7 +40,6 @@ export function CharacterViewer({ ctx, index }: { ctx: Ctx; index: unknown }) {
   const [nowPlaying, setNowPlaying] = useState('');
   const [playing, setPlaying] = useState(true);
   const [tab, setTab] = useState<Tab>('animate');
-  const [clipFilter, setClipFilter] = useState('');
   const [equipTick, setEquipTick] = useState(0);
   const [, setBusy] = useState('');
   const [panelW, setPanelW] = useState(() => Number(localStorage.getItem('pz-panel-w')) || 420);
@@ -31,6 +50,8 @@ export function CharacterViewer({ ctx, index }: { ctx: Ctx; index: unknown }) {
   const scrubbingRef = useRef(false);
 
   const clips: Clip[] = useMemo(() => listClips(index), [index]);
+  const clipItems = useMemo(() => clips.map((c) => ({ ...c, key: c.id, label: c.name, facet: clipCategory(c.name), source: c.modName || 'Vanilla' })), [clips]);
+  const [currentClipId, setCurrentClipId] = useState<string | null>(null);
   const clothing = useMemo(() => (listClothing(index) as Array<{ name: string; kind: string; location: string; isMod: boolean; modName?: string | null }>)
     .map((c) => ({ ...c, key: c.name, label: c.name, facet: clothingGroup(c), source: c.modName || 'Vanilla' })), [index]);
   const held = useMemo(() => (listHeldItems(index) as Array<{ name: string; isMod?: boolean; modName?: string | null }>)
@@ -42,12 +63,12 @@ export function CharacterViewer({ ctx, index }: { ctx: Ctx; index: unknown }) {
     [clips]);
   const thumbs = useMemo(() => new ThumbnailProvider(ctx, idleClip), [ctx, idleClip]);
   useEffect(() => () => thumbs.dispose(), [thumbs]);
+  const preview = useMemo(() => new ClipPreview(ctx), [ctx]);
+  useEffect(() => () => preview.dispose(), [preview]);
+  // scrolling detaches the fixed-position hover preview from its cell — hide it
+  useEffect(() => { const off = () => preview.stop(); window.addEventListener('wheel', off, { passive: true }); return () => window.removeEventListener('wheel', off); }, [preview]);
   useEffect(() => { localStorage.setItem('pz-panel-w', String(panelW)); }, [panelW]);
 
-  const shownClips = useMemo(() => {
-    const f = clipFilter.trim().toLowerCase();
-    return (f ? clips.filter((c) => c.name.toLowerCase().includes(f)) : clips).slice(0, 500);
-  }, [clips, clipFilter]);
 
   // engine once; refit the canvas whenever its container resizes (window OR splitter drag)
   useEffect(() => {
@@ -82,7 +103,7 @@ export function CharacterViewer({ ctx, index }: { ctx: Ctx; index: unknown }) {
     try { await fn(); } catch (e) { setNowPlaying('error: ' + (e instanceof Error ? e.message : String(e))); }
     finally { setBusy(''); setEquipTick((t) => t + 1); }
   }
-  const playClip = (c: Clip) => guard(async () => { await engineRef.current!.playClip(c); setPlaying(true); });
+  const playClip = (c: Clip) => guard(async () => { await engineRef.current!.playClip(c); setPlaying(true); setCurrentClipId(c.id); });
   const toggleCloth = (it: { name: string }) => guard(() => engineRef.current!.toggleClothing(it));
   const toggleHeld = (it: { name: string }) => guard(() => engineRef.current!.toggleHeld(it));
   const togglePlay = () => { const e = engineRef.current; if (e) setPlaying(e.togglePlay()); };
@@ -144,21 +165,12 @@ export function CharacterViewer({ ctx, index }: { ctx: Ctx; index: unknown }) {
 
         <div style={{ flex: 1, minHeight: 0 }}>
           {tab === 'animate' && (
-            <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-              <div style={{ padding: 8, borderBottom: '1px solid var(--line)' }}>
-                <input value={clipFilter} onChange={(e) => setClipFilter(e.target.value)} placeholder={`Search ${clips.length} clips…`}
-                  style={{ width: '100%', background: '#14141a', color: 'var(--text)', border: '1px solid var(--line)', borderRadius: 6, padding: '7px 9px' }} />
-              </div>
-              <div style={{ overflow: 'auto', flex: 1 }}>
-                {shownClips.map((c) => (
-                  <div key={c.id} onClick={() => playClip(c)} style={{ padding: '4px 10px', cursor: 'pointer', fontFamily: 'monospace', fontSize: 12, display: 'flex', gap: 8 }}
-                    onMouseEnter={(e) => (e.currentTarget.style.background = '#ffffff10')} onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}>
-                    <span style={{ color: c.isMod ? '#8ec77f' : 'var(--muted)', width: 44 }}>{c.actor}</span><span>{c.name}</span>
-                  </div>
-                ))}
-                {clips.length > shownClips.length && <div style={{ padding: 10, color: 'var(--muted)' }}>+{clips.length - shownClips.length} more — refine search</div>}
-              </div>
-            </div>
+            <AssetGrid<typeof clipItems[number] & GridItem>
+              items={clipItems as (typeof clipItems[number] & GridItem)[]}
+              facetLabel="categories"
+              active={(it) => it.id === currentClipId}
+              onPick={(it) => playClip(it)}
+              renderThumb={(it) => <ClipThumb clip={it} thumbs={thumbs} preview={preview} />} />
           )}
 
           {tab === 'clothing' && (
@@ -191,6 +203,18 @@ export function CharacterViewer({ ctx, index }: { ctx: Ctx; index: unknown }) {
           {tab === 'scene' && <SceneTab engineRef={engineRef} />}
         </div>
       </div>
+    </div>
+  );
+}
+
+// Clip grid cell: static thumbnail + hover to play the animation live over the cell.
+function ClipThumb({ clip, thumbs, preview }: { clip: { id: string; rel: string; format: string }; thumbs: ThumbnailProvider; preview: ClipPreview }) {
+  const ref = useRef<HTMLDivElement>(null);
+  return (
+    <div ref={ref} style={{ width: '100%', height: '100%' }}
+      onMouseEnter={() => { const el = ref.current; if (!el) return; const r = el.getBoundingClientRect(); preview.play(clip, { left: r.left, top: r.top, width: r.width, height: r.height }); }}
+      onMouseLeave={() => preview.stop()}>
+      <Thumb depKey={`clip:${clip.id}`} getUrl={() => thumbs.clip(clip)} />
     </div>
   );
 }

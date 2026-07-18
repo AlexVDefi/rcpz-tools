@@ -39,6 +39,10 @@ export class ThumbnailProvider {
     return this.resolveKey(`thumb:held:${item.name}:v${VERSION}`, () => this.renderer.heldThumb(item));
   }
 
+  clip(clip: { id: string; rel: string; format: string }): Promise<string> {
+    return this.resolveKey(`thumb:clip:${clip.id}:v${VERSION}`, () => this.renderer.clipThumb(clip));
+  }
+
   dispose() {
     for (const u of this.urls.values()) URL.revokeObjectURL(u);
     this.urls.clear();

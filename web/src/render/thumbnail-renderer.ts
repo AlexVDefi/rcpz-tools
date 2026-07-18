@@ -8,7 +8,7 @@
 import { resolveBody, resolveClothing, resolveHeldItem, resolveClip } from '@shared/character-core.js';
 import { THREE, makeSkinnedMaterial, makeMaterial, CHAR_LIGHTING } from './three-core';
 import { glbToGltf, bytesToTexture, sourceToTexture } from './loaders';
-import { normaliseClip, normalizeClothingRig } from './anim';
+import { normaliseClip, normalizeClothingRig, boneRestMap } from './anim';
 import { RigSet } from './rigset';
 import { composeBody } from './canvas-image-ops';
 
@@ -35,6 +35,7 @@ export class ThumbnailRenderer {
   private bodySkeleton: THREE.Skeleton | null = null;
   private skinBytes: Uint8Array | null = null;
   private skinTex: THREE.Texture | null = null;
+  private bodyRest = new Map<string, THREE.Quaternion>();
   private idleNorm: ReturnType<typeof normaliseClip> | null = null;
 
   constructor(ctx: Ctx, idleClip?: IdleClip) {
@@ -81,6 +82,7 @@ export class ThumbnailRenderer {
     this.skinTex = await bytesToTexture(body.skinTexture, false);
     const root = (await glbToGltf(body.meshGlb)).scene;
     this.applyMat(root, this.material(this.skinTex, true));
+    this.bodyRest = boneRestMap(root); // capture bind pose before posing, for clip retarget
     this.bodyRoot = root; this.bodyGender = gender;
     this.bodySkeleton = null;
     root.traverse((o) => { const sm = o as THREE.SkinnedMesh; if (sm.isSkinnedMesh && !this.bodySkeleton) this.bodySkeleton = sm.skeleton; });
@@ -180,6 +182,33 @@ export class ThumbnailRenderer {
       else if (garment) garment.parent?.remove(garment);
       if (garment) this.disposeTree(garment);
       this.setBodyTexture(this.skinTex!);
+      return blob;
+    };
+    const p = this.queue.then(run, run);
+    this.queue = p.catch(() => {});
+    return p as Promise<Blob>;
+  }
+
+  /** Static thumbnail of a clip: the body posed at a representative frame. */
+  clipThumb(clip: { rel: string; format: string; id?: string }, gender: 'male' | 'female' = 'male'): Promise<Blob> {
+    const run = async (): Promise<Blob> => {
+      await this.ensureBody(gender);
+      try {
+        const r = await resolveClip(this.ctx, clip);
+        if (!r.error && r.glb) {
+          const gltf = await glbToGltf(r.glb);
+          if (gltf.animations?.length) {
+            const norm = normaliseClip(gltf.animations[0], clip.format, { clipRest: boneRestMap(gltf.scene), bodyRest: this.bodyRest });
+            this.rigs.setClip(norm);
+            this.rigs.setTime((norm.clip.duration || 1) * 0.4);
+            this.bodyRoot!.updateMatrixWorld(true);
+          }
+        }
+      } catch { /* fall back to idle pose */ }
+      this.frameGroup(undefined);
+      this.renderToTarget(this.scene, this.camera);
+      const blob = await this.toBlob();
+      if (this.idleNorm) { this.rigs.setClip(this.idleNorm); this.rigs.setTime(this.idleT()); } // restore idle
       return blob;
     };
     const p = this.queue.then(run, run);
