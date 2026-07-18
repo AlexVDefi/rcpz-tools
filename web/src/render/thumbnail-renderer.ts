@@ -69,7 +69,11 @@ export class ThumbnailRenderer {
     this.bodyRoot = root; this.bodyGender = gender;
     this.bodySkeleton = null;
     root.traverse((o) => { const sm = o as THREE.SkinnedMesh; if (sm.isSkinnedMesh && !this.bodySkeleton) this.bodySkeleton = sm.skeleton; });
-    this.bodyBox = new THREE.Box3().setFromObject(root);
+    // Use the mesh GEOMETRY's local bounds (the true Y-up body, ~Y 0..0.98), NOT
+    // Box3.setFromObject: the skeleton root carries an Rx+90, so the world-space box is
+    // rotated and would throw off the framing.
+    this.bodyBox = new THREE.Box3();
+    root.traverse((o) => { const m = o as THREE.Mesh; if (m.isMesh && m.geometry) { if (!m.geometry.boundingBox) m.geometry.computeBoundingBox(); this.bodyBox!.union(m.geometry.boundingBox!); } });
     this.frameGroup(undefined);
   }
 
@@ -77,17 +81,16 @@ export class ThumbnailRenderer {
    *  thumbnails show useful detail (a hat fills the frame, not a tiny full-body figure). */
   private frameGroup(group?: string) {
     const box = this.bodyBox!;
-    const top = box.max.y, bot = box.min.y, H = top - bot || 1, mid = (top + bot) / 2;
-    // half = ortho half-height as a fraction of body height; smaller = more zoom. Tight
-    // enough that the garment fills the square card (arm-tips may clip on torso items in
-    // T-pose, which is fine for identification).
+    const bot = box.min.y, H = box.max.y - box.min.y || 1, mid = box.min.y + H / 2;
+    // cy = look-at height (fraction UP from the feet); half = ortho half-height as a
+    // fraction of body height (smaller = more zoom). Tuned to fill the square card.
     let cy = mid, half = 0.55 * H;
     switch (group) {
-      case 'head': cy = top - 0.08 * H; half = 0.13 * H; break;
-      case 'feet': cy = bot + 0.07 * H; half = 0.14 * H; break;
-      case 'legs': case 'skirts': cy = bot + 0.26 * H; half = 0.30 * H; break;
-      case 'torso': case 'arms': case 'accessories': cy = top - 0.26 * H; half = 0.30 * H; break;
-      case 'hands': cy = mid; half = 0.48 * H; break; // hands are at the sides in T-pose
+      case 'head': cy = bot + 0.90 * H; half = 0.13 * H; break;
+      case 'feet': cy = bot + 0.06 * H; half = 0.11 * H; break;
+      case 'legs': case 'skirts': cy = bot + 0.28 * H; half = 0.26 * H; break;
+      case 'torso': case 'arms': case 'accessories': cy = bot + 0.72 * H; half = 0.20 * H; break;
+      case 'hands': cy = bot + 0.55 * H; half = 0.42 * H; break; // hands at the sides
       default: cy = mid; half = 0.55 * H; break; // outfits, backpacks, other, unknown
     }
     this.camera.left = -half; this.camera.right = half; this.camera.top = half; this.camera.bottom = -half;
