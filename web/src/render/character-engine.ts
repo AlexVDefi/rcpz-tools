@@ -14,10 +14,15 @@ type Clip = { id: string; name: string; format: string; rel: string };
 
 interface Equip { kind: string; maskTextures: Uint8Array[]; baseTextures: Uint8Array[]; tint: number[] | null; hatCategory: string | null; }
 
+type IsoCam = THREE.OrthographicCamera & { __aspect?: number };
+
 export class CharacterEngine {
   renderer: THREE.WebGLRenderer;
   scene = new THREE.Scene();
-  camera = new THREE.PerspectiveCamera(35, 1, 0.01, 100);
+  perspCam = new THREE.PerspectiveCamera(35, 1, 0.01, 100);
+  isoCam: IsoCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.01, 100);
+  camera: THREE.Camera = this.perspCam;
+  camMode: 'orbit' | 'iso' = 'orbit';
   orbit: ReturnType<typeof makeOrbit>;
   rigs = new RigSet(this.scene);
   clock = new THREE.Clock();
@@ -25,7 +30,10 @@ export class CharacterEngine {
   gender: 'male' | 'female' = 'male';
   playing = true;
   speed = 1;
+  // live-adjustable lighting (matches the desktop app's defaults)
+  light = { ambient: CHAR_LIGHTING.ambient[0], keyBright: CHAR_LIGHTING.keyColour[0], keyDir: [...CHAR_LIGHTING.keyDir] as number[] };
 
+  private grid: THREE.GridHelper;
   private raf = 0;
   private disposed = false;
   private bodyRest = new Map<string, THREE.Quaternion>();
@@ -35,19 +43,22 @@ export class CharacterEngine {
   private held = new Map<string, { holder: THREE.Object3D }>();
   private whiteTex: THREE.Texture | null = null;
   onClipName?: (s: string) => void;
+  onFrame?: (time: number, duration: number) => void;
 
   constructor(canvas: HTMLCanvasElement, ctx: Ctx) {
     this.ctx = ctx;
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false, preserveDrawingBuffer: true });
     this.renderer.setClearColor(0x14141a, 1);
-    this.scene.add(new THREE.GridHelper(4, 16, 0x2b2b34, 0x24242c));
-    this.orbit = makeOrbit(() => this.camera, canvas);
+    this.grid = new THREE.GridHelper(4, 16, 0x2b2b34, 0x24242c);
+    this.scene.add(this.grid);
+    this.orbit = makeOrbit(() => this.camera as THREE.PerspectiveCamera, canvas);
     this.fit();
     const loop = () => {
       if (this.disposed) return;
       this.raf = requestAnimationFrame(loop);
       const dt = this.clock.getDelta();
       if (this.rigs.clip && this.playing) this.rigs.update(dt * this.speed);
+      if (this.rigs.clip) this.onFrame?.(this.rigs.time(), this.rigs.duration());
       this.renderer.render(this.scene, this.camera);
     };
     loop();
@@ -59,9 +70,56 @@ export class CharacterEngine {
     const w = wrap.clientWidth, h = wrap.clientHeight;
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
     this.renderer.setSize(w, h, false);
-    this.camera.aspect = w / h; this.camera.updateProjectionMatrix();
+    this.perspCam.aspect = w / h; this.perspCam.updateProjectionMatrix();
+    this.isoCam.__aspect = w / h;
     this.orbit.apply();
   }
+
+  // ---- scene controls (port of character.js setCamMode / bindView / bindLighting) ----
+
+  /** Switch between free perspective orbit and the vanilla PZ iso camera (pitch 30, yaw 45). */
+  setCamMode(mode: 'orbit' | 'iso') {
+    this.camMode = mode;
+    this.camera = mode === 'iso' ? this.isoCam : this.perspCam;
+    if (mode === 'iso') { this.orbit.state.theta = Math.PI / 4; this.orbit.state.phi = Math.PI / 3; }
+    this.fit();
+  }
+
+  setFacing(deg: number) { this.rigs.setFacing(deg * Math.PI / 180); }
+  setGridVisible(on: boolean) { this.grid.visible = on; }
+
+  lightingObj() {
+    const l = this.light;
+    return { ambient: [l.ambient, l.ambient, l.ambient], keyDir: l.keyDir.slice(), keyColour: [l.keyBright, l.keyBright, l.keyBright] };
+  }
+  applyLighting() {
+    const set = (o: THREE.Object3D) => {
+      const u = (o as THREE.Mesh & { material?: THREE.ShaderMaterial }).material?.uniforms;
+      if (!u) return;
+      u.ambient?.value.set(this.light.ambient, this.light.ambient, this.light.ambient);
+      u.keyColour?.value.set(this.light.keyBright, this.light.keyBright, this.light.keyBright);
+      u.keyDir?.value.set(this.light.keyDir[0], this.light.keyDir[1], this.light.keyDir[2]);
+    };
+    for (const rig of this.rigs.rigs) rig.root.traverse(set);
+    for (const s of this.statics.values()) s.traverse(set);
+    for (const h of this.held.values()) h.holder.traverse(set);
+  }
+  setLight(key: 'ambient' | 'keyBright' | 'kx' | 'ky' | 'kz', v: number) {
+    if (key === 'kx') this.light.keyDir[0] = v; else if (key === 'ky') this.light.keyDir[1] = v; else if (key === 'kz') this.light.keyDir[2] = v;
+    else this.light[key] = v;
+    this.applyLighting();
+  }
+  resetLight() {
+    this.light = { ambient: CHAR_LIGHTING.ambient[0], keyBright: CHAR_LIGHTING.keyColour[0], keyDir: [...CHAR_LIGHTING.keyDir] };
+    this.applyLighting();
+  }
+
+  // ---- transport ----
+  seek(frac: number) { this.rigs.setTime(frac * this.rigs.duration()); }
+  getTime() { return this.rigs.time(); }
+  getDuration() { return this.rigs.duration(); }
+  setLoop(on: boolean) { this.rigs.setLoop(on); }
+  setSpeed(s: number) { this.speed = s; }
 
   dispose() {
     this.disposed = true;
@@ -82,7 +140,7 @@ export class CharacterEngine {
     const gltf = await glbToGltf(glb);
     const root = gltf.scene;
     if (normalize) normalizeClothingRig(root);
-    const mat = makeSkinnedMaterial(tex, CHAR_LIGHTING);
+    const mat = makeSkinnedMaterial(tex, this.lightingObj());
     if (tint) mat.uniforms.tint.value.set(tint[0], tint[1], tint[2]);
     root.traverse((o) => {
       const m = o as THREE.Mesh;
@@ -188,7 +246,7 @@ export class CharacterEngine {
     const gltf = await glbToGltf(r.meshGlb);
     const obj = gltf.scene;
     const tex = r.texture ? await bytesToTexture(r.texture, false) : this.white();
-    const mat = makeMaterial(tex, CHAR_LIGHTING, true);
+    const mat = makeMaterial(tex, this.lightingObj(), true);
     obj.traverse((o) => { const m = o as THREE.Mesh; if (m.isMesh) { if (!m.geometry.getAttribute('normal')) m.geometry.computeVertexNormals(); m.material = mat; m.frustumCulled = false; } });
     bone.add(obj);
     this.statics.set(name, obj);
@@ -214,7 +272,7 @@ export class CharacterEngine {
     const gltf = await glbToGltf(r.meshGlb);
     const obj = gltf.scene;
     const tex = r.texture ? await bytesToTexture(r.texture, true) : this.white();
-    const mat = makeMaterial(tex, CHAR_LIGHTING, true);
+    const mat = makeMaterial(tex, this.lightingObj(), true);
     obj.traverse((o) => { const m = o as THREE.Mesh; if (m.isMesh) { if (!m.geometry.getAttribute('normal')) m.geometry.computeVertexNormals(); m.material = mat; m.frustumCulled = false; } });
     if (r.scale && r.scale !== 1) obj.scale.setScalar(r.scale);
     const holder = new THREE.Object3D();

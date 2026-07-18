@@ -5,7 +5,7 @@ import { ThumbnailProvider } from './render/thumbnail-provider';
 import { AssetGrid, type GridItem } from './AssetGrid';
 import { Thumb } from './Thumb';
 
-type Tab = 'animate' | 'clothing' | 'held' | 'hair';
+type Tab = 'animate' | 'clothing' | 'held' | 'hair' | 'scene';
 interface Clip { id: string; name: string; actor: string; format: string; isMod: boolean; rel: string }
 
 const firstLetter = (s: string) => (/[a-z]/i.test(s[0]) ? s[0].toUpperCase() : '#');
@@ -25,6 +25,10 @@ export function CharacterViewer({ ctx, index }: { ctx: Ctx; index: unknown }) {
   const [, setBusy] = useState('');
   const [panelW, setPanelW] = useState(() => Number(localStorage.getItem('pz-panel-w')) || 420);
   const [clothOnBody, setClothOnBody] = useState(true);
+  const [loop, setLoop] = useState(true);
+  const [speed, setSpeed] = useState(1);
+  const scrubRef = useRef<HTMLInputElement>(null);
+  const scrubbingRef = useRef(false);
 
   const clips: Clip[] = useMemo(() => listClips(index), [index]);
   const clothing = useMemo(() => (listClothing(index) as Array<{ name: string; kind: string; location: string; isMod: boolean; modName?: string | null }>)
@@ -49,6 +53,7 @@ export function CharacterViewer({ ctx, index }: { ctx: Ctx; index: unknown }) {
   useEffect(() => {
     const eng = new CharacterEngine(canvasRef.current!, ctx);
     eng.onClipName = setNowPlaying;
+    eng.onFrame = (t, dur) => { const el = scrubRef.current; if (el && !scrubbingRef.current) el.value = String(dur ? ((t % dur) / dur) * 1000 : 0); };
     engineRef.current = eng;
     const ro = new ResizeObserver(() => eng.fit());
     if (canvasRef.current?.parentElement) ro.observe(canvasRef.current.parentElement);
@@ -95,7 +100,7 @@ export function CharacterViewer({ ctx, index }: { ctx: Ctx; index: unknown }) {
     window.addEventListener('mouseup', onUp);
   }
 
-  const tabs: [Tab, string][] = [['animate', 'Animate'], ['clothing', 'Clothing'], ['held', 'Held'], ['hair', 'Hair']];
+  const tabs: [Tab, string][] = [['animate', 'Animate'], ['clothing', 'Clothing'], ['held', 'Held'], ['hair', 'Hair'], ['scene', 'Scene']];
   const segBtn = (on: boolean) => ({ borderRadius: 0, padding: '6px 9px', background: on ? 'var(--accent)' : 'var(--panel)', color: on ? '#fff' : 'var(--muted)' }) as const;
 
   return (
@@ -109,10 +114,20 @@ export function CharacterViewer({ ctx, index }: { ctx: Ctx; index: unknown }) {
             ))}
           </div>
           {status && <span style={{ color: 'var(--muted)', background: '#00000099', padding: '4px 8px', borderRadius: 6 }}>{status}</span>}
+          <span style={{ color: 'var(--muted)', background: '#00000099', padding: '4px 8px', borderRadius: 6, maxWidth: 340, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{nowPlaying || 'pick a clip →'}</span>
         </div>
-        <div style={{ position: 'absolute', left: 12, bottom: 12, right: 12, display: 'flex', gap: 8, alignItems: 'center' }}>
-          <button className="secondary" onClick={togglePlay}>{playing ? '❚❚' : '▶'}</button>
-          <span style={{ color: 'var(--muted)', background: '#00000099', padding: '4px 8px', borderRadius: 6, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', flex: 1 }}>{nowPlaying || 'pick a clip →'}</span>
+        <div style={{ position: 'absolute', left: 12, bottom: 12, right: 12, display: 'flex', gap: 8, alignItems: 'center', background: '#000000aa', borderRadius: 8, padding: '6px 10px' }}>
+          <button className="secondary" onClick={togglePlay} style={{ padding: '4px 12px' }}>{playing ? '❚❚' : '▶'}</button>
+          <input ref={scrubRef} type="range" min={0} max={1000} defaultValue={0}
+            onMouseDown={() => { scrubbingRef.current = true; }} onMouseUp={() => { scrubbingRef.current = false; }}
+            onInput={(e) => engineRef.current?.seek(Number((e.target as HTMLInputElement).value) / 1000)}
+            style={{ flex: 1, accentColor: '#5b8cff' }} />
+          <button className="secondary" onClick={() => { const n = !loop; setLoop(n); engineRef.current?.setLoop(n); }}
+            style={{ padding: '4px 10px', background: loop ? 'var(--accent)' : 'var(--panel)', color: loop ? '#fff' : 'var(--text)' }}>loop</button>
+          <select value={speed} onChange={(e) => { const s = Number(e.target.value); setSpeed(s); engineRef.current?.setSpeed(s); }}
+            style={{ background: 'var(--panel)', color: 'var(--text)', border: '1px solid var(--line)', borderRadius: 6, padding: '4px 6px' }}>
+            {[0.25, 0.5, 1, 2].map((s) => <option key={s} value={s}>{s}×</option>)}
+          </select>
         </div>
       </div>
 
@@ -172,8 +187,71 @@ export function CharacterViewer({ ctx, index }: { ctx: Ctx; index: unknown }) {
           )}
 
           {tab === 'hair' && <HairTab hairData={hairData} gender={gender} engineRef={engineRef} />}
+
+          {tab === 'scene' && <SceneTab engineRef={engineRef} />}
         </div>
       </div>
+    </div>
+  );
+}
+
+// 3x3 compass; S (0deg) faces the camera, matching the default idle.
+const FACING_GRID: ([string, number] | null)[] = [
+  ['NW', 135], ['N', 180], ['NE', 225],
+  ['W', 90], null, ['E', 270],
+  ['SW', 45], ['S', 0], ['SE', 315],
+];
+const LIGHT_DEFAULT = { ambient: 0.55, keyBright: 0.5, kx: 0.12, ky: 0.28, kz: 1.0 };
+
+function SceneTab({ engineRef }: { engineRef: React.MutableRefObject<CharacterEngine | null> }) {
+  const [camMode, setCamMode] = useState<'orbit' | 'iso'>('orbit');
+  const [facing, setFacing] = useState<number | null>(0);
+  const [grid, setGrid] = useState(true);
+  const [light, setLight] = useState({ ...LIGHT_DEFAULT });
+
+  const setCam = (m: 'orbit' | 'iso') => { setCamMode(m); engineRef.current?.setCamMode(m); };
+  const setL = (k: keyof typeof LIGHT_DEFAULT, v: number) => { setLight((s) => ({ ...s, [k]: v })); engineRef.current?.setLight(k as 'ambient' | 'keyBright' | 'kx' | 'ky' | 'kz', v); };
+  const resetL = () => { setLight({ ...LIGHT_DEFAULT }); engineRef.current?.resetLight(); };
+
+  const seg = (on: boolean) => ({ borderRadius: 0, padding: '6px 12px', background: on ? 'var(--accent)' : 'var(--panel)', color: on ? '#fff' : 'var(--text)' }) as const;
+  const label = { color: 'var(--muted)', fontSize: 12, display: 'block', margin: '14px 0 6px' } as const;
+  const slider = (k: keyof typeof LIGHT_DEFAULT, name: string, min: number, max: number) => (
+    <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 6 }}>
+      <span style={{ width: 66, fontSize: 12, color: 'var(--muted)' }}>{name}</span>
+      <input type="range" min={min} max={max} step={0.01} value={light[k]} onChange={(e) => setL(k, Number(e.target.value))} style={{ flex: 1, accentColor: '#5b8cff' }} />
+      <span style={{ width: 38, fontSize: 12, textAlign: 'right', fontFamily: 'monospace' }}>{light[k].toFixed(2)}</span>
+    </div>
+  );
+
+  return (
+    <div style={{ padding: 12, overflow: 'auto', height: '100%' }}>
+      <label style={label}>Camera</label>
+      <div style={{ display: 'flex', border: '1px solid var(--line)', borderRadius: 6, overflow: 'hidden', width: 'fit-content' }}>
+        <button className="secondary" onClick={() => setCam('orbit')} style={seg(camMode === 'orbit')}>Free orbit</button>
+        <button className="secondary" onClick={() => setCam('iso')} style={seg(camMode === 'iso')}>PZ iso</button>
+      </div>
+
+      <label style={label}>Facing</label>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 52px)', gap: 4 }}>
+        {FACING_GRID.map((cell, i) => cell === null ? <span key={i} /> : (
+          <button key={i} className="secondary" onClick={() => { setFacing(cell[1]); engineRef.current?.setFacing(cell[1]); }}
+            style={{ padding: '8px 0', background: facing === cell[1] ? 'var(--accent)' : 'var(--panel)', color: facing === cell[1] ? '#fff' : 'var(--text)' }}>{cell[0]}</button>
+        ))}
+      </div>
+
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', margin: '18px 0 6px' }}>
+        <span style={{ color: 'var(--muted)', fontSize: 12 }}>Lighting</span>
+        <button className="secondary" onClick={resetL} style={{ padding: '3px 10px', fontSize: 12 }}>Reset</button>
+      </div>
+      {slider('ambient', 'ambient', 0, 1)}
+      {slider('keyBright', 'key light', 0, 1)}
+      {slider('kx', 'key X', -2, 2)}
+      {slider('ky', 'key Y', -2, 2)}
+      {slider('kz', 'key Z', -2, 2)}
+
+      <label style={label}>Scene</label>
+      <button className="secondary" onClick={() => { const n = !grid; setGrid(n); engineRef.current?.setGridVisible(n); }}
+        style={{ padding: '6px 12px', background: grid ? 'var(--accent)' : 'var(--panel)', color: grid ? '#fff' : 'var(--text)' }}>Floor grid</button>
     </div>
   );
 }
