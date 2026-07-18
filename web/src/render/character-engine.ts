@@ -360,7 +360,7 @@ export class CharacterEngine {
   }
 
   /** kind = 'hair' | 'beard'. style=null or {name:'None'} removes the part. */
-  async applyPart(kind: 'hair' | 'beard', style: { name: string } | null, color: number[] | null) {
+  async applyPart(kind: 'hair' | 'beard', style: { name: string; model?: string; texture?: string } | null, color: number[] | null) {
     this.rigs.removeKind(kind);
     if (!style || style.name === 'None') return;
     const r = await resolveHairStyle(this.ctx, style);
@@ -368,5 +368,18 @@ export class CharacterEngine {
     const tex = await bytesToTexture(r.texture, false);
     const root = await this.loadSkinnedRoot(r.meshGlb, tex, color, true);
     this.rigs.add(kind, root);
+  }
+
+  /** Recolour an already-loaded hair/beard rig by updating its tint uniform only — no
+   *  mesh/texture reload, so colour-picker dragging stays smooth. Returns false if the
+   *  part isn't currently loaded (caller should fall back to applyPart). */
+  setPartTint(kind: 'hair' | 'beard', color: number[]) {
+    const rig = this.rigs.get(kind);
+    if (!rig) return false;
+    rig.root.traverse((o) => {
+      const m = o as THREE.Mesh & { material: THREE.ShaderMaterial };
+      if (m.isMesh && m.material?.uniforms?.tint) m.material.uniforms.tint.value.set(color[0], color[1], color[2]);
+    });
+    return true;
   }
 }

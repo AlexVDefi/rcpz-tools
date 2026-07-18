@@ -24,6 +24,9 @@ const FLOOR_PRESETS: [string, string[]][] = [
   ['Wood', P('floors_interior_tilesandwood_01', 47)],
 ];
 interface Clip { id: string; name: string; actor: string; format: string; isMod: boolean; rel: string; modName?: string | null }
+interface HairStyle { name: string; model?: string; texture?: string }
+interface HairData { hair: { male: HairStyle[]; female: HairStyle[] }; beards: HairStyle[] }
+type HairItem = HairStyle & GridItem;
 
 const firstLetter = (s: string) => (/[a-z]/i.test(s[0]) ? s[0].toUpperCase() : '#');
 
@@ -75,7 +78,7 @@ export function CharacterViewer({ ctx, index }: { ctx: Ctx; index: unknown }) {
     .map((c) => ({ ...c, key: c.name, label: c.name, facet: clothingGroup(c), source: c.modName || 'Vanilla' })), [index]);
   const held = useMemo(() => (listHeldItems(index) as Array<{ name: string; isMod?: boolean; modName?: string | null }>)
     .map((h) => ({ ...h, key: h.name, label: h.name, facet: firstLetter(h.name), isMod: !!h.isMod, source: h.modName || 'Vanilla' })), [index]);
-  const hairData = useMemo(() => listHair(index) as { hair: { male: { name: string }[]; female: { name: string }[] }; beards: { name: string }[] }, [index]);
+  const hairData = useMemo(() => listHair(index) as HairData, [index]);
 
   const idleClip = useMemo(() =>
     clips.find((c) => c.name === 'Bob_Idle') || clips.find((c) => /^bob_idle\b/i.test(c.name)) || clips.find((c) => c.actor.toLowerCase() === 'bob' && /idle/i.test(c.name)),
@@ -235,7 +238,7 @@ export function CharacterViewer({ ctx, index }: { ctx: Ctx; index: unknown }) {
               renderThumb={(it) => <Thumb depKey={`h:${it.name}`} getUrl={() => thumbs.held(it)} />} />
           )}
 
-          {tab === 'character' && <CharacterTab hairData={hairData} gender={gender} setGender={setGender} skin={skin} tones={tones} onSkin={(t) => { setSkin(t); engineRef.current?.setSkin(t); }} engineRef={engineRef} />}
+          {tab === 'character' && <CharacterTab hairData={hairData} gender={gender} setGender={setGender} skin={skin} tones={tones} onSkin={(t) => { setSkin(t); engineRef.current?.setSkin(t); }} thumbs={thumbs} engineRef={engineRef} />}
 
           {tab === 'floor' && (
             <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
@@ -345,62 +348,86 @@ function SceneTab({ engineRef, floorSel, onPreset, onClear }: {
   );
 }
 
-// Character tab: identity (gender + skin texture) above appearance (hair + beard).
-function CharacterTab({ hairData, gender, setGender, skin, tones, onSkin, engineRef }: {
-  hairData: { hair: { male: { name: string }[]; female: { name: string }[] }; beards: { name: string }[] };
+const hexRgb = (hex: string) => { const n = parseInt(hex.slice(1), 16); return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255]; };
+const toHairItem = (s: HairStyle): HairItem => ({ ...s, key: s.name, label: s.name, facet: firstLetter(s.name), isMod: false });
+const NONE_HAIR: HairItem = { name: 'None', key: 'None', label: 'None', facet: '·', isMod: false };
+
+// Character tab: identity (gender + skin texture) as a compact header, then a browsable
+// thumbnail grid for the active appearance kind (Hair or Beard) filling the rest.
+function CharacterTab({ hairData, gender, setGender, skin, tones, onSkin, thumbs, engineRef }: {
+  hairData: HairData;
   gender: 'male' | 'female';
   setGender: (g: 'male' | 'female') => void;
   skin: string;
   tones: string[];
   onSkin: (tone: string) => void;
+  thumbs: ThumbnailProvider;
   engineRef: React.MutableRefObject<CharacterEngine | null>;
 }) {
+  const [kind, setKind] = useState<'hair' | 'beard'>('hair');
   const [hair, setHair] = useState('None');
   const [beard, setBeard] = useState('None');
   const [hairColor, setHairColor] = useState('#5a3a20');
   const [beardColor, setBeardColor] = useState('#5a3a20');
-  const hairList = gender === 'female' ? hairData.hair.female : hairData.hair.male;
-  const hexRgb = (hex: string) => { const n = parseInt(hex.slice(1), 16); return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255]; };
-  const apply = (kind: 'hair' | 'beard', name: string, color: string) => {
-    const list = kind === 'beard' ? hairData.beards : hairList;
-    const style = name === 'None' ? { name: 'None' } : list.find((s) => s.name === name) || { name };
-    engineRef.current?.applyPart(kind, style, hexRgb(color)).catch(() => {});
+
+  const hairItems = useMemo(() => [NONE_HAIR, ...(gender === 'female' ? hairData.hair.female : hairData.hair.male).map(toHairItem)], [hairData, gender]);
+  const beardItems = useMemo(() => [NONE_HAIR, ...hairData.beards.map(toHairItem)], [hairData]);
+  const items = kind === 'hair' ? hairItems : beardItems;
+  const selected = kind === 'hair' ? hair : beard;
+  const color = kind === 'hair' ? hairColor : beardColor;
+
+  const pick = (it: HairItem) => {
+    if (kind === 'hair') setHair(it.name); else setBeard(it.name);
+    engineRef.current?.applyPart(kind, { name: it.name, model: it.model, texture: it.texture }, hexRgb(color)).catch(() => {});
   };
+  // Colour is a shader tint: recolour the live rig in place (no mesh reload -> no flicker/lag).
+  const recolour = (hex: string) => {
+    if (kind === 'hair') setHairColor(hex); else setBeardColor(hex);
+    engineRef.current?.setPartTint(kind, hexRgb(hex));
+  };
+
   // 'MaleBody03a' -> '3h' (body-hair variant), 'FemaleBody02' -> '2'
   const toneLabel = (t: string) => { const m = t.match(/(\d+)(a?)$/); return m ? String(parseInt(m[1], 10)) + (m[2] ? 'h' : '') : t; };
-  const row = { display: 'flex', gap: 8, alignItems: 'center', marginBottom: 12 } as const;
-  const sel = { flex: 1, background: '#14141a', color: 'var(--text)', border: '1px solid var(--line)', borderRadius: 6, padding: '7px 9px' } as const;
   const seg = (on: boolean) => ({ borderRadius: 0, padding: '6px 14px', background: on ? 'var(--accent)' : 'var(--panel)', color: on ? '#fff' : 'var(--muted)' }) as const;
   const chip = (on: boolean) => ({ minWidth: 34, borderRadius: 6, padding: '7px 8px', background: on ? 'var(--accent)' : '#14141a', color: on ? '#fff' : 'var(--text)', border: '1px solid var(--line)' }) as const;
+
   return (
-    <div style={{ padding: 12 }}>
-      <label style={{ color: 'var(--muted)', fontSize: 12 }}>Gender</label>
-      <div style={{ ...row, marginTop: 4 }}>
-        <div style={{ display: 'flex', border: '1px solid var(--line)', borderRadius: 6, overflow: 'hidden' }}>
-          {(['male', 'female'] as const).map((g) => (
-            <button key={g} className="secondary" onClick={() => setGender(g)} style={seg(gender === g)}>{g}</button>
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
+      <div style={{ padding: 12, borderBottom: '1px solid var(--line)' }}>
+        <label style={{ color: 'var(--muted)', fontSize: 12 }}>Gender</label>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', margin: '4px 0 12px' }}>
+          <div style={{ display: 'flex', border: '1px solid var(--line)', borderRadius: 6, overflow: 'hidden' }}>
+            {(['male', 'female'] as const).map((g) => (
+              <button key={g} className="secondary" onClick={() => setGender(g)} style={seg(gender === g)}>{g}</button>
+            ))}
+          </div>
+        </div>
+        <label style={{ color: 'var(--muted)', fontSize: 12 }}>Skin</label>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 4 }}>
+          {tones.map((t) => (
+            <button key={t} className="secondary" title={t} onClick={() => onSkin(t)} style={chip(skin === t)}>{toneLabel(t)}</button>
           ))}
         </div>
       </div>
-      <label style={{ color: 'var(--muted)', fontSize: 12 }}>Skin</label>
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, margin: '4px 0 14px' }}>
-        {tones.map((t) => (
-          <button key={t} className="secondary" title={t} onClick={() => onSkin(t)} style={chip(skin === t)}>{toneLabel(t)}</button>
-        ))}
-      </div>
-      <label style={{ color: 'var(--muted)', fontSize: 12 }}>Hair</label>
-      <div style={row}>
-        <select style={sel} value={hair} onChange={(e) => { setHair(e.target.value); apply('hair', e.target.value, hairColor); }}>
-          <option>None</option>{hairList.map((s) => <option key={s.name}>{s.name}</option>)}
-        </select>
-        <input type="color" value={hairColor} onChange={(e) => { setHairColor(e.target.value); apply('hair', hair, e.target.value); }} />
-      </div>
-      <label style={{ color: 'var(--muted)', fontSize: 12 }}>Beard</label>
-      <div style={row}>
-        <select style={sel} value={beard} onChange={(e) => { setBeard(e.target.value); apply('beard', e.target.value, beardColor); }}>
-          <option>None</option>{hairData.beards.map((s) => <option key={s.name}>{s.name}</option>)}
-        </select>
-        <input type="color" value={beardColor} onChange={(e) => { setBeardColor(e.target.value); apply('beard', beard, e.target.value); }} />
+      <div style={{ flex: 1, minHeight: 0 }}>
+        <AssetGrid<HairItem>
+          key={kind}
+          items={items}
+          facetLabel="letters"
+          active={(it) => it.name === selected}
+          onPick={pick}
+          extraControls={(
+            <>
+              <div style={{ display: 'flex', border: '1px solid var(--line)', borderRadius: 6, overflow: 'hidden' }} title="hair or beard">
+                <button className="secondary" onClick={() => setKind('hair')} style={seg(kind === 'hair')}>hair</button>
+                <button className="secondary" onClick={() => setKind('beard')} style={seg(kind === 'beard')}>beard</button>
+              </div>
+              <input type="color" value={color} onChange={(e) => recolour(e.target.value)} title="colour" style={{ width: 34, height: 30, padding: 0, border: '1px solid var(--line)', borderRadius: 6, background: 'transparent' }} />
+            </>
+          )}
+          renderThumb={(it) => it.name === 'None'
+            ? <span style={{ color: 'var(--muted)', fontSize: 13 }}>None</span>
+            : <Thumb depKey={`hair:${kind}:${it.name}:${gender}`} getUrl={() => thumbs.hair(it, kind, gender)} />} />
       </div>
     </div>
   );

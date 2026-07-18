@@ -5,7 +5,7 @@
 // a T-pose. Two modes per clothing item: on-body, or the garment mesh alone. Held items
 // render at an iso icon angle. Renders serialize (one context); results are cached by the
 // provider, so this is a cold-path cost.
-import { resolveBody, resolveClothing, resolveHeldItem, resolveClip } from '@shared/character-core.js';
+import { resolveBody, resolveClothing, resolveHeldItem, resolveClip, resolveHairStyle } from '@shared/character-core.js';
 import { THREE, makeSkinnedMaterial, makeMaterial, CHAR_LIGHTING } from './three-core';
 import { glbToGltf, bytesToTexture, sourceToTexture } from './loaders';
 import { normaliseClip, normalizeClothingRig, boneRestMap } from './anim';
@@ -209,6 +209,36 @@ export class ThumbnailRenderer {
       this.renderToTarget(this.scene, this.camera);
       const blob = await this.toBlob();
       if (this.idleNorm) { this.rigs.setClip(this.idleNorm); this.rigs.setTime(this.idleT()); } // restore idle
+      return blob;
+    };
+    const p = this.queue.then(run, run);
+    this.queue = p.catch(() => {});
+    return p as Promise<Blob>;
+  }
+
+  /** Hair/beard style on the idle-posed head. Skinned like a mesh garment; tinted a neutral
+   *  colour so the shape reads (the live rig recolours separately). 'None'/model-less styles
+   *  render the bare head. */
+  hairThumb(style: { name: string; model?: string; texture?: string }, gender: 'male' | 'female', tint: number[]): Promise<Blob> {
+    const run = async (): Promise<Blob> => {
+      await this.ensureBody(gender);
+      this.setBodyTexture(this.skinTex!);
+      let hair: THREE.Object3D | null = null;
+      const r = await resolveHairStyle(this.ctx, style);
+      if (r.hasMesh && r.meshGlb) {
+        hair = (await glbToGltf(r.meshGlb)).scene;
+        normalizeClothingRig(hair);
+        const tex = r.texture ? await bytesToTexture(r.texture, false) : this.skinTex!;
+        const mat = this.material(tex, true) as THREE.ShaderMaterial;
+        mat.uniforms.tint.value.set(tint[0], tint[1], tint[2]);
+        this.applyMat(hair, mat);
+        this.rigs.add('thumb', hair); // bound to idle, poses with the body head
+      }
+      this.poseIdle();
+      this.frameGroup('head');
+      this.renderToTarget(this.scene, this.camera);
+      const blob = await this.toBlob();
+      if (hair) { this.rigs.removeKind('thumb'); this.disposeTree(hair); }
       return blob;
     };
     const p = this.queue.then(run, run);

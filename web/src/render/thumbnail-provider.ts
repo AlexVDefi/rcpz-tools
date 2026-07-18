@@ -5,6 +5,7 @@ import { ThumbnailRenderer, type Ctx, type IdleClip } from './thumbnail-renderer
 import { idbCache } from '../platform/idb';
 
 const VERSION = 7; // bump to invalidate all cached thumbnails (v7: idle-posed body)
+const HAIR_TINT = [0.353, 0.227, 0.125]; // neutral brown (#5a3a20) so hair/beard shapes read
 
 export class ThumbnailProvider {
   private renderer: ThumbnailRenderer;
@@ -37,6 +38,10 @@ export class ThumbnailProvider {
 
   held(item: { name: string }): Promise<string> {
     return this.resolveKey(`thumb:held:${item.name}:v${VERSION}`, () => this.renderer.heldThumb(item));
+  }
+
+  hair(style: { name: string; model?: string; texture?: string }, kind: 'hair' | 'beard', gender: 'male' | 'female'): Promise<string> {
+    return this.resolveKey(`thumb:hair:${kind}:${gender}:${style.name}:v${VERSION}`, () => this.renderer.hairThumb(style, gender, HAIR_TINT));
   }
 
   clip(clip: { id: string; rel: string; format: string }): Promise<string> {
