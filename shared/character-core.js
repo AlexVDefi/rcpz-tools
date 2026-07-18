@@ -228,4 +228,94 @@ export async function resolveHairStyle(ctx, style) {
   return { name: style.name, hasMesh: true, meshGlb: mesh.glb, texture: await readResolved(texHit) };
 }
 
+// ============================ CLOTHING GROUPING ============================
+// Collapse PZ's ~110 raw BodyLocations into a handful of focused, browsable groups.
+// Primary signal: the item's BodyLocation, mapped via a curated table built from the
+// game's own BodyLocations.lua (authoritative slot semantics). Fallback for modded /
+// unmapped locations: the m_Masks coverage regions (mod-safe, since a garment must mask
+// the skin it covers), then keywords in the item name. Order below is body top->bottom.
+export const CLOTHING_GROUP_ORDER = ['head', 'torso', 'arms', 'hands', 'legs', 'feet', 'skirts', 'outfits', 'backpacks', 'accessories', 'other'];
+
+// lowercased BodyLocation -> group
+const LOCATION_GROUP = {
+  // head / face
+  hat: 'head', fullhat: 'head', mask: 'head', maskeyes: 'head', maskfull: 'head',
+  eyes: 'head', left_eye: 'head', right_eye: 'head',
+  makeup_fullface: 'head', makeup_eyes: 'head', makeup_eyesshadow: 'head', makeup_lips: 'head',
+  // torso
+  torso1: 'torso', tanktop: 'torso', tshirt: 'torso', shortsleeveshirt: 'torso', shirt: 'torso',
+  sweater: 'torso', sweaterhat: 'torso', jacket: 'torso', jacket_down: 'torso', jacket_bulky: 'torso',
+  jackethat: 'torso', jacket_hat_bulky: 'torso', jacketsuit: 'torso', jersey: 'torso', gorget: 'torso',
+  cuirass: 'torso', vesttexture: 'torso', torsoextra: 'torso', torsoextravest: 'torso',
+  torsoextravestbullet: 'torso', underweartop: 'torso', underwear: 'torso', fulltop: 'torso',
+  neck: 'torso', scba: 'torso', scbanotank: 'torso', shoulderpadleft: 'torso', shoulderpadright: 'torso',
+  sportshoulderpad: 'torso', sportshoulderpadontop: 'torso', ammostrap: 'torso',
+  // arms (both underscore and bare CamelCase-lowered forms appear in the wild)
+  left_arm: 'arms', right_arm: 'arms', leftarm: 'arms', rightarm: 'arms',
+  forearm_left: 'arms', forearm_right: 'arms', elbow_left: 'arms', elbow_right: 'arms',
+  // hands
+  hands: 'hands', hands_left: 'hands', hands_right: 'hands', handsleft: 'hands', handsright: 'hands',
+  // legs
+  pants: 'legs', pants_skinny: 'legs', pants_extra: 'legs', shortpants: 'legs', shortsshort: 'legs',
+  legs1: 'legs', codpiece: 'legs', knee_left: 'legs', knee_right: 'legs', calf_left: 'legs',
+  calf_right: 'legs', calf_left_texture: 'legs', calf_right_texture: 'legs', thigh_left: 'legs',
+  thigh_right: 'legs', gaiter_left: 'legs', gaiter_right: 'legs', underwearbottom: 'legs',
+  underwearextra1: 'legs', underwearextra2: 'legs',
+  // feet
+  shoes: 'feet', socks: 'feet',
+  // skirts
+  skirt: 'skirts', longskirt: 'skirts',
+  // full-body outfits
+  fullsuit: 'outfits', fullsuithead: 'outfits', fullsuitheadscba: 'outfits', boilersuit: 'outfits',
+  bodycostume: 'outfits', fullrobe: 'outfits', full_robe: 'outfits', dress: 'outfits', longdress: 'outfits',
+  torso1legs1: 'outfits', bathrobe: 'outfits',
+  // bags
+  back: 'backpacks', satchel: 'backpacks', fannypackfront: 'backpacks', fannypackback: 'backpacks', webbing: 'backpacks',
+  // accessories (jewellery, belts, small add-ons)
+  belt: 'accessories', beltextra: 'accessories', leftwrist: 'accessories', rightwrist: 'accessories',
+  necklace: 'accessories', necklace_long: 'accessories', neck_texture: 'accessories', scarf: 'accessories',
+  ears: 'accessories', ear_top: 'accessories', nose: 'accessories', bellybutton: 'accessories',
+  left_middlefinger: 'accessories', right_middlefinger: 'accessories', left_ringfinger: 'accessories',
+  right_ringfinger: 'accessories', shoulder_holster: 'accessories', ankle_holster: 'accessories', tail: 'accessories',
+  // non-wearable overlays
+  bandage: 'other', wound: 'other', zeddmg: 'other',
+};
+
+function groupFromMasks(maskNames) {
+  const has = (n) => maskNames.has(n);
+  const legs = has('LeftLeg') || has('RightLeg');
+  const torso = has('Torso') || has('Chest');
+  if (has('Head')) return 'head';
+  if (has('LeftFoot') || has('RightFoot')) return 'feet';
+  if (has('LeftHand') || has('RightHand')) return 'hands';
+  if (legs && torso) return 'outfits';
+  if (has('Dress')) return 'skirts';
+  if (legs) return 'legs';
+  if (torso) return 'torso';
+  return null;
+}
+
+function groupFromName(name) {
+  const n = String(name).toLowerCase();
+  if (/(^|_)(bag|backpack|rucksack|knapsack|satchel|duffel)/.test(n)) return 'backpacks';
+  if (/(boilersuit|jumpsuit|coverall|overall|hazmat|\bdress\b|gown|\brobe\b|costume|onesie|catsuit|wetsuit|fullsuit|ghillie)/.test(n)) return 'outfits';
+  if (/skirt/.test(n)) return 'skirts';
+  if (/(shoe|boot|sneaker|sandal|\bsock)/.test(n)) return 'feet';
+  if (/(glove|gauntlet|mitten)/.test(n)) return 'hands';
+  if (/(hat|helmet|\bcap\b|mask|hood|beanie|balaclava|bandana|glasses|goggle|visor|crown|tiara|headband|earmuff)/.test(n)) return 'head';
+  if (/(vambrace|bracer|armband|elbow|forearm|\bsleeve)/.test(n)) return 'arms';
+  if (/(pants|trouser|jean|short|legging|\bthigh|shin|kneepad|greave|stocking|codpiece)/.test(n)) return 'legs';
+  if (/(shirt|jacket|\bvest|\bcoat|sweater|hoodie|apron|armou?r|cuirass|tunic|blouse|poncho|cardigan|corset|jersey|shoulderpad|ammostrap|webbing|holster|bandolier)/.test(n)) return 'torso';
+  if (/(belt|watch|necklace|\bring\b|earring|bracelet|scarf|\btie\b|pendant|choker|piercing|brooch)/.test(n)) return 'accessories';
+  return null;
+}
+
+/** Map one clothing item (from listClothing) to a focused browse group. */
+export function clothingGroup(item) {
+  const loc = String(item.location || '').toLowerCase();
+  if (LOCATION_GROUP[loc]) return LOCATION_GROUP[loc];
+  const maskNames = new Set((item.masks || []).map((m) => MASK_PART[m]).filter(Boolean));
+  return groupFromName(item.name) || groupFromMasks(maskNames) || 'other';
+}
+
 export { SKIN_TONES, BODY_MESH, MASK_PART, HUMAN_ACTORS };

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { listClips, listClothing, listHeldItems, listHair } from '@shared/character-core.js';
+import { listClips, listClothing, listHeldItems, listHair, clothingGroup, CLOTHING_GROUP_ORDER } from '@shared/character-core.js';
 import { CharacterEngine, type Ctx } from './render/character-engine';
 import { AssetGrid, type GridItem } from './AssetGrid';
 
@@ -22,7 +22,7 @@ export function CharacterViewer({ ctx, index }: { ctx: Ctx; index: unknown }) {
 
   const clips: Clip[] = useMemo(() => listClips(index), [index]);
   const clothing = useMemo(() => (listClothing(index) as Array<{ name: string; kind: string; location: string; isMod: boolean }>)
-    .map((c) => ({ ...c, key: c.name, label: c.name, facet: c.location })), [index]);
+    .map((c) => ({ ...c, key: c.name, label: c.name, facet: clothingGroup(c) })), [index]);
   const held = useMemo(() => (listHeldItems(index) as Array<{ name: string }>)
     .map((h) => ({ ...h, key: h.name, label: h.name, facet: firstLetter(h.name), isMod: false })), [index]);
   const hairData = useMemo(() => listHair(index) as { hair: { male: { name: string }[]; female: { name: string }[] }; beards: { name: string }[] }, [index]);
@@ -121,7 +121,8 @@ export function CharacterViewer({ ctx, index }: { ctx: Ctx; index: unknown }) {
           {tab === 'clothing' && (
             <AssetGrid<typeof clothing[number] & GridItem>
               items={clothing as (typeof clothing[number] & GridItem)[]}
-              facetLabel="locations"
+              facetLabel="groups"
+              facetOrder={CLOTHING_GROUP_ORDER as string[]}
               active={(it) => { void equipTick; return !!engineRef.current?.isEquipped(it.name); }}
               onPick={(it) => toggleCloth(it)} />
           )}

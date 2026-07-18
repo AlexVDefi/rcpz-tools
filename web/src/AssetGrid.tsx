@@ -7,7 +7,7 @@ export interface GridItem { key: string; label: string; facet: string; isMod: bo
 // vanilla/modded toggle — the replacement for the old capped flat list. Thumbnails are
 // rendered lazily into each card via `renderThumb` (async, cached by the caller).
 export function AssetGrid<T extends GridItem>({
-  items, facetLabel, active, onPick, renderThumb, cardHeight = 132, minCard = 116,
+  items, facetLabel, active, onPick, renderThumb, cardHeight = 132, minCard = 116, facetOrder,
 }: {
   items: T[];
   facetLabel: string;
@@ -16,6 +16,7 @@ export function AssetGrid<T extends GridItem>({
   renderThumb?: (item: T) => ReactNode;
   cardHeight?: number;
   minCard?: number;
+  facetOrder?: string[];
 }) {
   const [q, setQ] = useState('');
   const [facet, setFacet] = useState('');
@@ -27,8 +28,9 @@ export function AssetGrid<T extends GridItem>({
   const facets = useMemo(() => {
     const counts = new Map<string, number>();
     for (const it of items) counts.set(it.facet, (counts.get(it.facet) || 0) + 1);
-    return [...counts.entries()].sort((a, b) => a[0].localeCompare(b[0]));
-  }, [items]);
+    const rank = (f: string) => { const i = facetOrder?.indexOf(f) ?? -1; return i < 0 ? 999 : i; };
+    return [...counts.entries()].sort((a, b) => (rank(a[0]) - rank(b[0])) || a[0].localeCompare(b[0]));
+  }, [items, facetOrder]);
 
   const filtered = useMemo(() => {
     const f = q.trim().toLowerCase();
