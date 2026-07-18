@@ -231,6 +231,15 @@ export class CharacterEngine {
     await this.recompositeBody();
   }
 
+  /** Swap the body skin tone (texture only, no mesh reload); recomposites so clothing stays. */
+  async setSkin(tone: string) {
+    if (!this.currentBody) return;
+    const hit = await (this.ctx.resolver as { resolveTexture(n: string): Promise<{ src: { readBytes(p: string): Promise<Uint8Array> }; realPath: string } | null> }).resolveTexture(`Body/${tone}`);
+    if (!hit) return;
+    this.currentBody.skinTexture = await hit.src.readBytes(hit.realPath);
+    await this.recompositeBody();
+  }
+
   async playClip(clip: Clip) {
     const r = await resolveClip(this.ctx, clip);
     if (r.error) throw new Error(r.error);

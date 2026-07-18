@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { listClips, listClothing, listHeldItems, listHair, clothingGroup, CLOTHING_GROUP_ORDER } from '@shared/character-core.js';
+import { listClips, listClothing, listHeldItems, listHair, clothingGroup, CLOTHING_GROUP_ORDER, SKIN_TONES } from '@shared/character-core.js';
 import { CharacterEngine, type Ctx } from './render/character-engine';
 import { ThumbnailProvider } from './render/thumbnail-provider';
 import { ClipPreview } from './render/clip-preview';
@@ -7,7 +7,7 @@ import { FloorLibrary } from './render/floor';
 import { AssetGrid, type GridItem } from './AssetGrid';
 import { Thumb } from './Thumb';
 
-type Tab = 'animate' | 'clothing' | 'held' | 'hair' | 'scene' | 'floor';
+type Tab = 'animate' | 'clothing' | 'held' | 'character' | 'scene' | 'floor';
 const floorCategory = (name: string) => name.replace(/(_\d+)+$/, '').replace(/^(floors_|blends_)/, '');
 // Curated material presets: each scatters random variants into a baked, non-repetitive floor.
 // blends_natural_01 is grouped in 16-index material blocks; the SOLID tiles are at offsets
@@ -52,6 +52,8 @@ export function CharacterViewer({ ctx, index }: { ctx: Ctx; index: unknown }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const startedRef = useRef(false);
   const [gender, setGender] = useState<'male' | 'female'>('male');
+  const [skin, setSkin] = useState<string>((SKIN_TONES as Record<string, string[]>).male[0]);
+  const tones = (SKIN_TONES as Record<string, string[]>)[gender];
   const [status, setStatus] = useState('loading body…');
   const [nowPlaying, setNowPlaying] = useState('');
   const [playing, setPlaying] = useState(true);
@@ -123,6 +125,7 @@ export function CharacterViewer({ ctx, index }: { ctx: Ctx; index: unknown }) {
         await eng.loadBody(gender);
         if (cancelled) return;
         setStatus(''); setEquipTick((t) => t + 1);
+        setSkin((SKIN_TONES as Record<string, string[]>)[gender][0]); // gender load resets to the default tone
         if (!startedRef.current && idleClip) {
           startedRef.current = true;
           try { await eng.playClip(idleClip); setPlaying(true); } catch { /* non-fatal */ }
@@ -154,7 +157,7 @@ export function CharacterViewer({ ctx, index }: { ctx: Ctx; index: unknown }) {
     window.addEventListener('mouseup', onUp);
   }
 
-  const tabs: [Tab, string][] = [['animate', 'Animate'], ['clothing', 'Clothing'], ['held', 'Held'], ['hair', 'Hair'], ['floor', 'Floor'], ['scene', 'Scene']];
+  const tabs: [Tab, string][] = [['animate', 'Animate'], ['clothing', 'Clothing'], ['held', 'Held'], ['character', 'Character'], ['floor', 'Floor'], ['scene', 'Scene']];
   const segBtn = (on: boolean) => ({ borderRadius: 0, padding: '6px 9px', background: on ? 'var(--accent)' : 'var(--panel)', color: on ? '#fff' : 'var(--muted)' }) as const;
 
   return (
@@ -162,19 +165,14 @@ export function CharacterViewer({ ctx, index }: { ctx: Ctx; index: unknown }) {
       <div style={{ flex: 1, minWidth: 320, position: 'relative', background: '#14141a', border: '1px solid var(--line)', borderRadius: 8, overflow: 'hidden' }}>
         <canvas ref={canvasRef} style={{ width: '100%', height: '100%', display: 'block' }} />
         <div style={{ position: 'absolute', left: 12, top: 12, display: 'flex', gap: 8, alignItems: 'center' }}>
-          <div style={{ display: 'flex', border: '1px solid var(--line)', borderRadius: 6, overflow: 'hidden' }}>
-            {(['male', 'female'] as const).map((g) => (
-              <button key={g} className="secondary" onClick={() => setGender(g)} style={segBtn(gender === g)}>{g}</button>
-            ))}
-          </div>
           {status && <span style={{ color: 'var(--muted)', background: '#00000099', padding: '4px 8px', borderRadius: 6 }}>{status}</span>}
           <span style={{ color: 'var(--muted)', background: '#00000099', padding: '4px 8px', borderRadius: 6, maxWidth: 340, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{nowPlaying || 'pick a clip →'}</span>
         </div>
         <div style={{ position: 'absolute', right: 12, top: 12, display: 'flex', border: '1px solid var(--line)', borderRadius: 6, overflow: 'hidden' }}>
           <button className="secondary" title="Free orbit" onClick={() => engineRef.current?.setCamMode('orbit')}
-            style={{ borderRadius: 0, padding: '6px 10px', fontSize: 16, lineHeight: 1, background: camMode === 'orbit' ? 'var(--accent)' : 'var(--panel)', color: camMode === 'orbit' ? '#fff' : 'var(--text)' }}>⟳</button>
+            style={{ borderRadius: 0, padding: '5px 11px', fontSize: 24, lineHeight: 1, background: camMode === 'orbit' ? 'var(--accent)' : 'var(--panel)', color: camMode === 'orbit' ? '#fff' : 'var(--text)' }}>⟳</button>
           <button className="secondary" title="PZ iso" onClick={() => engineRef.current?.setCamMode('iso')}
-            style={{ borderRadius: 0, padding: '6px 10px', fontSize: 16, lineHeight: 1, background: camMode === 'iso' ? 'var(--accent)' : 'var(--panel)', color: camMode === 'iso' ? '#fff' : 'var(--text)' }}>◈</button>
+            style={{ borderRadius: 0, padding: '5px 11px', fontSize: 24, lineHeight: 1, background: camMode === 'iso' ? 'var(--accent)' : 'var(--panel)', color: camMode === 'iso' ? '#fff' : 'var(--text)' }}>◈</button>
         </div>
         <div style={{ position: 'absolute', left: 12, bottom: 12, right: 12, display: 'flex', gap: 8, alignItems: 'center', background: '#000000aa', borderRadius: 8, padding: '6px 10px' }}>
           <button className="secondary" onClick={togglePlay} style={{ padding: '4px 12px' }}>{playing ? '❚❚' : '▶'}</button>
@@ -237,7 +235,7 @@ export function CharacterViewer({ ctx, index }: { ctx: Ctx; index: unknown }) {
               renderThumb={(it) => <Thumb depKey={`h:${it.name}`} getUrl={() => thumbs.held(it)} />} />
           )}
 
-          {tab === 'hair' && <HairTab hairData={hairData} gender={gender} engineRef={engineRef} />}
+          {tab === 'character' && <CharacterTab hairData={hairData} gender={gender} setGender={setGender} skin={skin} tones={tones} onSkin={(t) => { setSkin(t); engineRef.current?.setSkin(t); }} engineRef={engineRef} />}
 
           {tab === 'floor' && (
             <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
@@ -347,9 +345,14 @@ function SceneTab({ engineRef, floorSel, onPreset, onClear }: {
   );
 }
 
-function HairTab({ hairData, gender, engineRef }: {
+// Character tab: identity (gender + skin texture) above appearance (hair + beard).
+function CharacterTab({ hairData, gender, setGender, skin, tones, onSkin, engineRef }: {
   hairData: { hair: { male: { name: string }[]; female: { name: string }[] }; beards: { name: string }[] };
   gender: 'male' | 'female';
+  setGender: (g: 'male' | 'female') => void;
+  skin: string;
+  tones: string[];
+  onSkin: (tone: string) => void;
   engineRef: React.MutableRefObject<CharacterEngine | null>;
 }) {
   const [hair, setHair] = useState('None');
@@ -363,10 +366,28 @@ function HairTab({ hairData, gender, engineRef }: {
     const style = name === 'None' ? { name: 'None' } : list.find((s) => s.name === name) || { name };
     engineRef.current?.applyPart(kind, style, hexRgb(color)).catch(() => {});
   };
+  // 'MaleBody03a' -> '3h' (body-hair variant), 'FemaleBody02' -> '2'
+  const toneLabel = (t: string) => { const m = t.match(/(\d+)(a?)$/); return m ? String(parseInt(m[1], 10)) + (m[2] ? 'h' : '') : t; };
   const row = { display: 'flex', gap: 8, alignItems: 'center', marginBottom: 12 } as const;
   const sel = { flex: 1, background: '#14141a', color: 'var(--text)', border: '1px solid var(--line)', borderRadius: 6, padding: '7px 9px' } as const;
+  const seg = (on: boolean) => ({ borderRadius: 0, padding: '6px 14px', background: on ? 'var(--accent)' : 'var(--panel)', color: on ? '#fff' : 'var(--muted)' }) as const;
+  const chip = (on: boolean) => ({ minWidth: 34, borderRadius: 6, padding: '7px 8px', background: on ? 'var(--accent)' : '#14141a', color: on ? '#fff' : 'var(--text)', border: '1px solid var(--line)' }) as const;
   return (
     <div style={{ padding: 12 }}>
+      <label style={{ color: 'var(--muted)', fontSize: 12 }}>Gender</label>
+      <div style={{ ...row, marginTop: 4 }}>
+        <div style={{ display: 'flex', border: '1px solid var(--line)', borderRadius: 6, overflow: 'hidden' }}>
+          {(['male', 'female'] as const).map((g) => (
+            <button key={g} className="secondary" onClick={() => setGender(g)} style={seg(gender === g)}>{g}</button>
+          ))}
+        </div>
+      </div>
+      <label style={{ color: 'var(--muted)', fontSize: 12 }}>Skin</label>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, margin: '4px 0 14px' }}>
+        {tones.map((t) => (
+          <button key={t} className="secondary" title={t} onClick={() => onSkin(t)} style={chip(skin === t)}>{toneLabel(t)}</button>
+        ))}
+      </div>
       <label style={{ color: 'var(--muted)', fontSize: 12 }}>Hair</label>
       <div style={row}>
         <select style={sel} value={hair} onChange={(e) => { setHair(e.target.value); apply('hair', e.target.value, hairColor); }}>
