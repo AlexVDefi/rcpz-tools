@@ -4,7 +4,7 @@
 import { ThumbnailRenderer, type Ctx } from './thumbnail-renderer';
 import { idbCache } from '../platform/idb';
 
-const VERSION = 1; // bump to invalidate all cached thumbnails
+const VERSION = 2; // bump to invalidate all cached thumbnails (v2: per-region framing, 256px)
 
 export class ThumbnailProvider {
   private renderer: ThumbnailRenderer;
@@ -30,7 +30,7 @@ export class ThumbnailProvider {
     return p;
   }
 
-  clothing(item: { name: string; kind: string }, gender: 'male' | 'female', onBody: boolean): Promise<string> {
+  clothing(item: { name: string; kind: string; facet?: string }, gender: 'male' | 'female', onBody: boolean): Promise<string> {
     const mode = onBody ? 'body' : 'solo';
     return this.resolveKey(`thumb:cloth:${mode}:${gender}:${item.name}:v${VERSION}`, () => this.renderer.clothingThumb(item, gender, onBody));
   }

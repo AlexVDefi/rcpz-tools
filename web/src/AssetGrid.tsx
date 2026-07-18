@@ -59,6 +59,9 @@ export function AssetGrid<T extends GridItem>({
   const rowH = cardW + LABEL_H;
   const rowCount = Math.ceil(filtered.length / cols);
   const rowVirt = useVirtualizer({ count: rowCount, getScrollElement: () => scrollRef.current, estimateSize: () => rowH + GAP, overscan: 3 });
+  // the estimateSize closure changes when card size changes (panel drag / column count);
+  // force the virtualizer to recompute row positions so the layout reflows live
+  useEffect(() => { rowVirt.measure(); }, [rowH, cols, rowVirt]);
 
   const inputStyle = { background: '#14141a', color: 'var(--text)', border: '1px solid var(--line)', borderRadius: 6, padding: '6px 8px' } as const;
 

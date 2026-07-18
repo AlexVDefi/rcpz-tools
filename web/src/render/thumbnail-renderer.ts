@@ -12,7 +12,7 @@ import { normalizeClothingRig } from './anim';
 import { composeBody } from './canvas-image-ops';
 
 export interface Ctx { resolver: unknown; converter: unknown; }
-const SIZE = 192;
+const SIZE = 256;
 
 export class ThumbnailRenderer {
   private ctx: Ctx;
@@ -27,6 +27,7 @@ export class ThumbnailRenderer {
 
   private bodyGender: 'male' | 'female' | null = null;
   private bodyRoot: THREE.Object3D | null = null;
+  private bodyBox: THREE.Box3 | null = null;
   private bodySkeleton: THREE.Skeleton | null = null;
   private skinBytes: Uint8Array | null = null;
   private skinTex: THREE.Texture | null = null;
@@ -68,11 +69,25 @@ export class ThumbnailRenderer {
     this.bodyRoot = root; this.bodyGender = gender;
     this.bodySkeleton = null;
     root.traverse((o) => { const sm = o as THREE.SkinnedMesh; if (sm.isSkinnedMesh && !this.bodySkeleton) this.bodySkeleton = sm.skeleton; });
-    const box = new THREE.Box3().setFromObject(root);
-    const size = box.getSize(new THREE.Vector3()), center = box.getCenter(new THREE.Vector3());
-    const half = Math.max(size.x, size.y) / 2 * 1.1;
+    this.bodyBox = new THREE.Box3().setFromObject(root);
+    this.frameGroup(undefined);
+  }
+
+  /** Aim the shared ortho camera at the body region a garment group occupies, so bigger
+   *  thumbnails show useful detail (a hat fills the frame, not a tiny full-body figure). */
+  private frameGroup(group?: string) {
+    const box = this.bodyBox!;
+    const top = box.max.y, bot = box.min.y, H = top - bot || 1, mid = (top + bot) / 2;
+    let cy = mid, half = 0.58 * H;
+    switch (group) {
+      case 'head': cy = top - 0.10 * H; half = 0.17 * H; break;
+      case 'feet': cy = bot + 0.10 * H; half = 0.18 * H; break;
+      case 'legs': case 'skirts': cy = bot + 0.34 * H; half = 0.42 * H; break;
+      case 'torso': case 'arms': case 'hands': case 'accessories': cy = top - 0.34 * H; half = 0.54 * H; break;
+      default: cy = mid; half = 0.58 * H; break; // outfits, backpacks, other, unknown
+    }
     this.camera.left = -half; this.camera.right = half; this.camera.top = half; this.camera.bottom = -half;
-    this.camera.position.set(0, center.y, 6); this.camera.lookAt(0, center.y, 0); this.camera.updateProjectionMatrix();
+    this.camera.position.set(0, cy, 6); this.camera.lookAt(0, cy, 0); this.camera.updateProjectionMatrix();
   }
 
   private renderToTarget(scene: THREE.Scene, camera: THREE.Camera) {
@@ -104,7 +119,7 @@ export class ThumbnailRenderer {
     return blob;
   }
 
-  clothingThumb(item: { name: string; kind: string }, gender: 'male' | 'female', onBody: boolean): Promise<Blob> {
+  clothingThumb(item: { name: string; kind: string; facet?: string }, gender: 'male' | 'female', onBody: boolean): Promise<Blob> {
     const run = async (): Promise<Blob> => {
       const r = await resolveClothing(this.ctx, item, gender);
 
@@ -144,6 +159,7 @@ export class ThumbnailRenderer {
         const cv = await composeBody(this.skinBytes!, layers, masks);
         this.setBodyTexture(sourceToTexture(cv, false));
       }
+      this.frameGroup(item.facet);
       this.renderToTarget(this.scene, this.camera);
       const blob = await this.toBlob();
       if (garment) { garment.parent?.remove(garment); this.disposeTree(garment); }
