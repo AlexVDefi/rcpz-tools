@@ -88,7 +88,7 @@ export class FloorLibrary {
     const cached = this.texCache.get(ck); if (cached) return cached;
     const recs = names.map((n) => this.recs.get(n)).filter(Boolean) as Rec[];
     if (!recs.length) return null;
-    const T = 128, PAD = 12, F = T + 2 * PAD, W = N * T;
+    const T = 128, PAD = 9, F = T + 2 * PAD, W = N * T;
     const big = document.createElement('canvas'); big.width = W; big.height = W;
     const ctx = big.getContext('2d')!;
     let seed = 0; for (let i = 0; i < key.length; i++) seed = (seed * 31 + key.charCodeAt(i)) & 0x7fffffff;
@@ -110,8 +110,8 @@ export class FloorLibrary {
     const mctx = mask.getContext('2d')!;
     const g = mctx.createRadialGradient(F / 2, F / 2, 0, F / 2, F / 2, F / 2);
     g.addColorStop(0, 'rgba(255,255,255,0)');
-    g.addColorStop(0.60, 'rgba(255,255,255,0)');
-    g.addColorStop(0.86, 'rgba(255,255,255,0.9)'); // annulus (probability field) peaked at the seam
+    g.addColorStop(0.84, 'rgba(255,255,255,0)'); // keep the dither OUT of the tile interior
+    g.addColorStop(0.93, 'rgba(255,255,255,0.85)'); // thin band right at the seam only
     g.addColorStop(1, 'rgba(255,255,255,0)');
     mctx.fillStyle = g; mctx.fillRect(0, 0, F, F);
     const md = mctx.getImageData(0, 0, F, F);
