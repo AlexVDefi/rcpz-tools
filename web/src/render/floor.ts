@@ -103,7 +103,7 @@ export class FloorLibrary {
     // soft transitions (drawn over the opaque base, so no transparency shows). Edges wrap.
     const mask = document.createElement('canvas'); mask.width = F; mask.height = F;
     const mctx = mask.getContext('2d')!;
-    mctx.filter = `blur(${PAD * 0.32}px)`; mctx.fillStyle = '#fff'; mctx.fillRect(PAD, PAD, T, T); mctx.filter = 'none';
+    mctx.filter = `blur(${PAD * 0.16}px)`; mctx.fillStyle = '#fff'; mctx.fillRect(PAD, PAD, T, T); mctx.filter = 'none';
     const cell = document.createElement('canvas'); cell.width = F; cell.height = F;
     const cctx = cell.getContext('2d')!;
     for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) {
