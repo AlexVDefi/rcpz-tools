@@ -40,13 +40,36 @@ export interface SkeletonBind {
   bindWorld: Map<string, THREE.Quaternion>;   // ANY node name -> bind world rotation
 }
 
+// The TRUE bind-world rotation per joint, from the skin's inverseBindMatrices (= bind world
+// matrix inverse). This is authoritative: a node's default TRS is NOT the bind pose for
+// exports (e.g. AnimForge/Blender) that leave the node at animation frame 0 — only the skin's
+// inverse-bind encodes the pose the mesh was rigged in, which is what skinning actually uses.
+function bindWorldFromSkin(root: THREE.Object3D): Map<string, THREE.Quaternion> {
+  const m = new Map<string, THREE.Quaternion>();
+  const p = new THREE.Vector3(), s = new THREE.Vector3();
+  root.traverse((o) => {
+    const sm = o as THREE.SkinnedMesh;
+    if (!sm.isSkinnedMesh || !sm.skeleton) return;
+    sm.skeleton.bones.forEach((bone, i) => {
+      if (!bone.name) return;
+      const q = new THREE.Quaternion();
+      sm.skeleton.boneInverses[i].clone().invert().decompose(p, q, s);
+      m.set(bone.name, q);
+    });
+  });
+  return m;
+}
+
 export function captureSkeletonBind(root: THREE.Object3D): SkeletonBind {
   root.updateMatrixWorld(true);
   const order: string[] = [];
   const parentName = new Map<string, string>();
   const bindLocal = new Map<string, THREE.Quaternion>();
   const bindWorld = new Map<string, THREE.Quaternion>();
+  // node-default world for EVERY node (covers non-joint ancestors like Dummy01 for parent frames)
   root.traverse((o) => { if (o.name) bindWorld.set(o.name, o.getWorldQuaternion(new THREE.Quaternion())); });
+  // then override joints with the authoritative inverse-bind pose
+  for (const [name, q] of bindWorldFromSkin(root)) bindWorld.set(name, q);
   root.traverse((o) => {
     if (!(o as THREE.Bone).isBone || !o.name) return;
     order.push(o.name);
@@ -72,7 +95,7 @@ const boneWorldMap = (root: THREE.Object3D) => {
 // has a different bind pose / root chain than the body — the case custom .glb exports hit,
 // which the per-bone rest-delta cannot handle. Rotation only (positions/scale dropped).
 function retargetWorld(clip: THREE.AnimationClip, clipScene: THREE.Object3D, body: SkeletonBind): THREE.AnimationClip {
-  const clipBindWorld = boneWorldMap(clipScene);
+  const clipBindWorld = bindWorldFromSkin(clipScene); // authoritative bind (NOT node defaults)
   const timeSet = new Set<number>();
   for (const t of clip.tracks) if (QUAT_TRACK.test(t.name)) for (const time of t.times) timeSet.add(time);
   const times = [...timeSet].sort((a, b) => a - b);
