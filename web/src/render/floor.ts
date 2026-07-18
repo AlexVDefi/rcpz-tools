@@ -49,7 +49,9 @@ export class FloorLibrary {
     ctx.save();
     ctx.imageSmoothingEnabled = false; // keep the grass pixels crisp, like the game (no bilinear blur)
     const { w, h } = e;
-    const fill = (S * Math.SQRT2) / w; // de-sheared square side = w/√2 -> scale to fill S
+    // overscan ~1px each side so the rotated square bleeds past the edges (closes the sub-pixel
+    // transparent slivers that show as thin black gaps between tiles when repeated)
+    const fill = ((S + 2) * Math.SQRT2) / w;
     ctx.translate(S / 2, S / 2);
     ctx.scale(-fill, fill); // negative X mirrors horizontally to match the scene's handedness
     ctx.rotate(Math.PI / 4);

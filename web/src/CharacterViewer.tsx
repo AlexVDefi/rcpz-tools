@@ -20,9 +20,8 @@ const FLOOR_PRESETS: [string, string[]][] = [
   ['Dry grass', NB(48)],
   ['Dirt', NB(64)],
   ['Sand', NB(0)],
-  ['Mud', NB(112)],
   ['Asphalt', P('floors_exterior_street_01', 0, 1, 2, 3, 4, 5, 6, 7, 8)],
-  ['Wood', P('floors_interior_tilesandwood_01', 6)],
+  ['Wood', P('floors_interior_tilesandwood_01', 47)],
 ];
 interface Clip { id: string; name: string; actor: string; format: string; isMod: boolean; rel: string; modName?: string | null }
 
@@ -229,14 +228,10 @@ export function CharacterViewer({ ctx, index }: { ctx: Ctx; index: unknown }) {
 
           {tab === 'floor' && (
             <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-              <div style={{ padding: 8, borderBottom: '1px solid var(--line)', display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+              <div style={{ padding: 8, borderBottom: '1px solid var(--line)', display: 'flex', gap: 6, alignItems: 'center' }}>
                 <button className="secondary" onClick={clearFloor} style={{ background: !floorSel ? 'var(--accent)' : 'var(--panel)', color: !floorSel ? '#fff' : 'var(--text)' }}>None</button>
-                {FLOOR_PRESETS.map(([name, tiles]) => (
-                  <button key={name} className="secondary" onClick={() => pickPreset(name, tiles)}
-                    style={{ background: floorSel === 'preset:' + name ? 'var(--accent)' : 'var(--panel)', color: floorSel === 'preset:' + name ? '#fff' : 'var(--text)' }}>{name}</button>
-                ))}
+                <span style={{ color: 'var(--muted)', fontSize: 12 }}>Browse any single floor tile (material presets are in the Scene tab)</span>
               </div>
-              <div style={{ padding: '4px 8px', color: 'var(--muted)', fontSize: 11, borderBottom: '1px solid var(--line)' }}>…or pick any single tile:</div>
               <div style={{ flex: 1, minHeight: 0 }}>
                 {floorItems.length ? (
                   <AssetGrid<typeof floorItems[number] & GridItem>
@@ -250,7 +245,8 @@ export function CharacterViewer({ ctx, index }: { ctx: Ctx; index: unknown }) {
             </div>
           )}
 
-          {tab === 'scene' && <SceneTab engineRef={engineRef} camMode={camMode} setCam={(m) => engineRef.current?.setCamMode(m)} />}
+          {tab === 'scene' && <SceneTab engineRef={engineRef} camMode={camMode} setCam={(m) => engineRef.current?.setCamMode(m)}
+            floorSel={floorSel} onPreset={pickPreset} onClear={clearFloor} />}
         </div>
       </div>
     </div>
@@ -278,7 +274,10 @@ const FACING_GRID: ([string, number] | null)[] = [
 ];
 const LIGHT_DEFAULT = { ambient: 0.55, keyBright: 0.5, kx: 0.12, ky: 0.28, kz: 1.0 };
 
-function SceneTab({ engineRef, camMode, setCam }: { engineRef: React.MutableRefObject<CharacterEngine | null>; camMode: 'orbit' | 'iso'; setCam: (m: 'orbit' | 'iso') => void }) {
+function SceneTab({ engineRef, camMode, setCam, floorSel, onPreset, onClear }: {
+  engineRef: React.MutableRefObject<CharacterEngine | null>; camMode: 'orbit' | 'iso'; setCam: (m: 'orbit' | 'iso') => void;
+  floorSel: string | null; onPreset: (name: string, tiles: string[]) => void; onClear: () => void;
+}) {
   const [facing, setFacing] = useState<number | null>(0);
   const [grid, setGrid] = useState(true);
   const [shadow, setShadow] = useState(true);
@@ -303,6 +302,15 @@ function SceneTab({ engineRef, camMode, setCam }: { engineRef: React.MutableRefO
       <div style={{ display: 'flex', border: '1px solid var(--line)', borderRadius: 6, overflow: 'hidden', width: 'fit-content' }}>
         <button className="secondary" onClick={() => setCam('orbit')} style={seg(camMode === 'orbit')}>Free orbit</button>
         <button className="secondary" onClick={() => setCam('iso')} style={seg(camMode === 'iso')}>PZ iso</button>
+      </div>
+
+      <label style={label}>Floor</label>
+      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+        <button className="secondary" onClick={onClear} style={{ padding: '6px 12px', background: !floorSel ? 'var(--accent)' : 'var(--panel)', color: !floorSel ? '#fff' : 'var(--text)' }}>None</button>
+        {FLOOR_PRESETS.map(([name, tiles]) => (
+          <button key={name} className="secondary" onClick={() => onPreset(name, tiles)}
+            style={{ padding: '6px 12px', background: floorSel === 'preset:' + name ? 'var(--accent)' : 'var(--panel)', color: floorSel === 'preset:' + name ? '#fff' : 'var(--text)' }}>{name}</button>
+        ))}
       </div>
 
       <label style={label}>Facing</label>
