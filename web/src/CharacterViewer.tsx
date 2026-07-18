@@ -87,7 +87,14 @@ export function CharacterViewer({ ctx, index }: { ctx: Ctx; index: unknown }) {
   const [floorSel, setFloorSel] = useState<string | null>(null);
   const floorItems = useMemo(() => floorTiles.map((t) => ({ ...t, key: t.name, label: t.name.replace(/^(floors_|blends_)/, ''), facet: floorCategory(t.name), isMod: false, source: 'Vanilla' })), [floorTiles]);
   const pickFloor = async (name: string) => { setFloorSel(name); try { engineRef.current?.setFloor(await floorLib.texture(name), 1); } catch { /* ignore */ } };
-  const pickPreset = async (name: string, tiles: string[]) => { setFloorSel('preset:' + name); try { engineRef.current?.setFloor(await floorLib.presetTexture(tiles, name, 8), 8); } catch { /* ignore */ } };
+  const pickPreset = async (name: string, tiles: string[]) => {
+    setFloorSel('preset:' + name);
+    try {
+      // a single-variant preset (e.g. Wood) needs no variation/blend — use the clean single-tile path
+      if (tiles.length === 1) engineRef.current?.setFloor(await floorLib.texture(tiles[0]), 1);
+      else engineRef.current?.setFloor(await floorLib.presetTexture(tiles, name, 8), 8);
+    } catch { /* ignore */ }
+  };
   const clearFloor = () => { setFloorSel(null); engineRef.current?.setFloor(null); };
   useEffect(() => { if (tab === 'floor' && !floorTiles.length) floorLib.list().then((ts) => setFloorTiles(ts as { name: string }[])).catch(() => {}); }, [tab, floorLib, floorTiles.length]);
   // scrolling detaches the fixed-position hover preview from its cell — hide it
