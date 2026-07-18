@@ -47,8 +47,7 @@ export class FloorLibrary {
   /** De-shear a tile into ctx, filling an S×S region (mirrored X for scene handedness). */
   private deshearInto(ctx: CanvasRenderingContext2D, atlas: HTMLImageElement, e: FloorTile, S: number) {
     ctx.save();
-    ctx.imageSmoothingEnabled = true;
-    ctx.imageSmoothingQuality = 'high';
+    ctx.imageSmoothingEnabled = false; // keep the grass pixels crisp, like the game (no bilinear blur)
     const { w, h } = e;
     const fill = (S * Math.SQRT2) / w; // de-sheared square side = w/√2 -> scale to fill S
     ctx.translate(S / 2, S / 2);
@@ -71,7 +70,9 @@ export class FloorLibrary {
     const tex = new THREE.CanvasTexture(this.deshear(await this.pageImage(rec.page), rec.tile, TEX_SIZE));
     tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
     tex.colorSpace = THREE.NoColorSpace;
-    tex.anisotropy = 8;
+    tex.magFilter = THREE.NearestFilter;
+    tex.minFilter = THREE.NearestFilter; // crisp pixel grass like the game (no mipmap/bilinear blur)
+    tex.generateMipmaps = false;
     tex.needsUpdate = true;
     this.texCache.set(name, tex);
     return tex;
@@ -117,7 +118,9 @@ export class FloorLibrary {
     const tex = new THREE.CanvasTexture(big);
     tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
     tex.colorSpace = THREE.NoColorSpace;
-    tex.anisotropy = 8;
+    tex.magFilter = THREE.NearestFilter;
+    tex.minFilter = THREE.NearestFilter; // crisp pixel grass like the game (no mipmap/bilinear blur)
+    tex.generateMipmaps = false;
     tex.needsUpdate = true;
     this.texCache.set(ck, tex);
     return tex;
