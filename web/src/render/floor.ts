@@ -49,9 +49,9 @@ export class FloorLibrary {
     ctx.save();
     ctx.imageSmoothingEnabled = false; // keep the grass pixels crisp, like the game (no bilinear blur)
     const { w, h } = e;
-    // overscan ~1px each side so the rotated square bleeds past the edges (closes the sub-pixel
+    // overscan ~2px each side so the rotated square bleeds past the edges (closes the sub-pixel
     // transparent slivers that show as thin black gaps between tiles when repeated)
-    const fill = ((S + 2) * Math.SQRT2) / w;
+    const fill = ((S + 4) * Math.SQRT2) / w;
     ctx.translate(S / 2, S / 2);
     ctx.scale(-fill, fill); // negative X mirrors horizontally to match the scene's handedness
     ctx.rotate(Math.PI / 4);
@@ -88,7 +88,7 @@ export class FloorLibrary {
     const cached = this.texCache.get(ck); if (cached) return cached;
     const recs = names.map((n) => this.recs.get(n)).filter(Boolean) as Rec[];
     if (!recs.length) return null;
-    const T = 128, PAD = 30, F = T + 2 * PAD, W = N * T;
+    const T = 128, PAD = 22, F = T + 2 * PAD, W = N * T;
     const big = document.createElement('canvas'); big.width = W; big.height = W;
     const ctx = big.getContext('2d')!;
     let seed = 0; for (let i = 0; i < key.length; i++) seed = (seed * 31 + key.charCodeAt(i)) & 0x7fffffff;
@@ -102,11 +102,18 @@ export class FloorLibrary {
     for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) {
       ctx.save(); ctx.translate(c * T, r * T); this.deshearInto(ctx, img(picks[r * N + c]), picks[r * N + c].tile, T); ctx.restore();
     }
-    // Pass 2: same tiles drawn OVERSIZED + feathered, overlapping so the seams cross-fade into
-    // soft transitions (drawn over the opaque base, so no transparency shows). Edges wrap.
+    // Pass 2: blend ONLY the seam zone. A RING mask (transparent center + outer edge, opaque
+    // annulus straddling the tile boundary) means pass-1's correct-scale centers show through,
+    // while the overlapping oversized tiles cross-fade just at the seams. Edges wrap.
     const mask = document.createElement('canvas'); mask.width = F; mask.height = F;
     const mctx = mask.getContext('2d')!;
-    mctx.filter = `blur(${PAD * 0.16}px)`; mctx.fillStyle = '#fff'; mctx.fillRect(PAD, PAD, T, T); mctx.filter = 'none';
+    const g = mctx.createRadialGradient(F / 2, F / 2, 0, F / 2, F / 2, F / 2);
+    g.addColorStop(0, 'rgba(255,255,255,0)');
+    g.addColorStop(0.42, 'rgba(255,255,255,0)');
+    g.addColorStop(0.62, 'rgba(255,255,255,0.85)');
+    g.addColorStop(0.84, 'rgba(255,255,255,0.85)');
+    g.addColorStop(1, 'rgba(255,255,255,0)');
+    mctx.fillStyle = g; mctx.fillRect(0, 0, F, F);
     const cell = document.createElement('canvas'); cell.width = F; cell.height = F;
     const cctx = cell.getContext('2d')!;
     for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) {
