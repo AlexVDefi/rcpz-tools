@@ -136,7 +136,7 @@ export class CharacterEngine {
     g.addColorStop(1, 'rgba(0,0,0,0)');
     ctx.fillStyle = g; ctx.fillRect(0, 0, S, S);
     const mat = new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(c), transparent: true, depthWrite: false });
-    const D = 0.8; // shadow diameter (~character footprint)
+    const D = 0.4; // shadow diameter (~character footprint)
     const mesh = new THREE.Mesh(new THREE.PlaneGeometry(D, D), mat);
     mesh.rotation.x = -Math.PI / 2;
     mesh.position.y = 0.006; // just above the floor to avoid z-fighting
