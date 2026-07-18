@@ -85,7 +85,9 @@ export class CharacterEngine {
     this.fit();
   }
 
-  setFacing(deg: number) { this.rigs.setFacing(deg * Math.PI / 180); }
+  // Negate: the compass degrees are mirrored east-west relative to three's Y rotation
+  // (N/S sit on the axis, so they're unaffected; E/W and diagonals need the flip).
+  setFacing(deg: number) { this.rigs.setFacing(-deg * Math.PI / 180); }
   setGridVisible(on: boolean) { this.grid.visible = on; }
 
   lightingObj() {
