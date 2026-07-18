@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { listClips, listClothing, listHeldItems, listHair, clothingGroup, CLOTHING_GROUP_ORDER } from '@shared/character-core.js';
 import { CharacterEngine, type Ctx } from './render/character-engine';
+import { ThumbnailProvider } from './render/thumbnail-provider';
 import { AssetGrid, type GridItem } from './AssetGrid';
+import { Thumb } from './Thumb';
 
 type Tab = 'animate' | 'clothing' | 'held' | 'hair';
 interface Clip { id: string; name: string; actor: string; format: string; isMod: boolean; rel: string }
@@ -11,6 +13,7 @@ const firstLetter = (s: string) => (/[a-z]/i.test(s[0]) ? s[0].toUpperCase() : '
 export function CharacterViewer({ ctx, index }: { ctx: Ctx; index: unknown }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const engineRef = useRef<CharacterEngine | null>(null);
+  const startedRef = useRef(false);
   const [gender, setGender] = useState<'male' | 'female'>('male');
   const [status, setStatus] = useState('loading body…');
   const [nowPlaying, setNowPlaying] = useState('');
@@ -26,6 +29,10 @@ export function CharacterViewer({ ctx, index }: { ctx: Ctx; index: unknown }) {
   const held = useMemo(() => (listHeldItems(index) as Array<{ name: string }>)
     .map((h) => ({ ...h, key: h.name, label: h.name, facet: firstLetter(h.name), isMod: false })), [index]);
   const hairData = useMemo(() => listHair(index) as { hair: { male: { name: string }[]; female: { name: string }[] }; beards: { name: string }[] }, [index]);
+
+  // one shared thumbnail renderer (its own GL context), IDB-cached, for the grids
+  const thumbs = useMemo(() => new ThumbnailProvider(ctx), [ctx]);
+  useEffect(() => () => thumbs.dispose(), [thumbs]);
 
   const shownClips = useMemo(() => {
     const f = clipFilter.trim().toLowerCase();
@@ -48,11 +55,24 @@ export function CharacterViewer({ ctx, index }: { ctx: Ctx; index: unknown }) {
     (async () => {
       const eng = engineRef.current; if (!eng) return;
       setStatus('loading body…');
-      try { await eng.loadBody(gender); if (!cancelled) { setStatus(''); setEquipTick((t) => t + 1); } }
-      catch (e) { if (!cancelled) setStatus('body error: ' + (e instanceof Error ? e.message : String(e))); }
+      try {
+        await eng.loadBody(gender);
+        if (cancelled) return;
+        setStatus(''); setEquipTick((t) => t + 1);
+        // Play a default idle once, like the desktop app: the character stands naturally
+        // AND every added rig (hair/beard/clothing) seats against a common clip pose
+        // instead of the unaligned raw bind pose.
+        if (!startedRef.current) {
+          startedRef.current = true;
+          const idle = clips.find((c) => c.name === 'Bob_Idle')
+            || clips.find((c) => /^bob_idle\b/i.test(c.name))
+            || clips.find((c) => c.actor.toLowerCase() === 'bob' && /idle/i.test(c.name));
+          if (idle) { try { await eng.playClip(idle); setPlaying(true); } catch { /* non-fatal */ } }
+        }
+      } catch (e) { if (!cancelled) setStatus('body error: ' + (e instanceof Error ? e.message : String(e))); }
     })();
     return () => { cancelled = true; };
-  }, [gender]);
+  }, [gender, clips]);
 
   async function guard(label: string, fn: () => Promise<unknown>) {
     setBusy(label);
@@ -124,7 +144,8 @@ export function CharacterViewer({ ctx, index }: { ctx: Ctx; index: unknown }) {
               facetLabel="groups"
               facetOrder={CLOTHING_GROUP_ORDER as string[]}
               active={(it) => { void equipTick; return !!engineRef.current?.isEquipped(it.name); }}
-              onPick={(it) => toggleCloth(it)} />
+              onPick={(it) => toggleCloth(it)}
+              renderThumb={(it) => <Thumb depKey={`c:${it.name}:${gender}`} getUrl={() => thumbs.clothing(it, gender)} />} />
           )}
 
           {tab === 'held' && (
@@ -132,7 +153,8 @@ export function CharacterViewer({ ctx, index }: { ctx: Ctx; index: unknown }) {
               items={held as (typeof held[number] & GridItem)[]}
               facetLabel="letters"
               active={(it) => { void equipTick; return !!engineRef.current?.isHeld(it.name); }}
-              onPick={(it) => toggleHeld(it)} />
+              onPick={(it) => toggleHeld(it)}
+              renderThumb={(it) => <Thumb depKey={`h:${it.name}`} getUrl={() => thumbs.held(it)} />} />
           )}
 
           {tab === 'hair' && <HairTab hairData={hairData} gender={gender} engineRef={engineRef} />}

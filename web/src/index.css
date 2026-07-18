@@ -27,3 +27,4 @@ button.secondary { background: var(--panel); color: var(--text); border: 1px sol
 button:disabled { opacity: 0.5; cursor: default; }
 a { color: var(--accent); }
 code { background: #00000055; padding: 1px 5px; border-radius: 4px; }
+@keyframes thumbspin { to { transform: rotate(360deg); } }
