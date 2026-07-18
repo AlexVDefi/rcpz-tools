@@ -1,17 +1,17 @@
 // Caches thumbnails: memory (object URLs) -> IndexedDB (blobs) -> render. Dedups
 // in-flight requests so scrolling a card back into view never re-renders. One shared
 // ThumbnailRenderer (single GL context) does the work, serialized internally.
-import { ThumbnailRenderer, type Ctx } from './thumbnail-renderer';
+import { ThumbnailRenderer, type Ctx, type IdleClip } from './thumbnail-renderer';
 import { idbCache } from '../platform/idb';
 
-const VERSION = 6; // bump to invalidate all cached thumbnails (v6: 512px render)
+const VERSION = 7; // bump to invalidate all cached thumbnails (v7: idle-posed body)
 
 export class ThumbnailProvider {
   private renderer: ThumbnailRenderer;
   private urls = new Map<string, string>();
   private inflight = new Map<string, Promise<string>>();
 
-  constructor(ctx: Ctx) { this.renderer = new ThumbnailRenderer(ctx); }
+  constructor(ctx: Ctx, idleClip?: IdleClip) { this.renderer = new ThumbnailRenderer(ctx, idleClip); }
 
   private resolveKey(key: string, render: () => Promise<Blob>): Promise<string> {
     const cached = this.urls.get(key);

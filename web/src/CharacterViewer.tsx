@@ -33,7 +33,10 @@ export function CharacterViewer({ ctx, index }: { ctx: Ctx; index: unknown }) {
     .map((h) => ({ ...h, key: h.name, label: h.name, facet: firstLetter(h.name), isMod: false })), [index]);
   const hairData = useMemo(() => listHair(index) as { hair: { male: { name: string }[]; female: { name: string }[] }; beards: { name: string }[] }, [index]);
 
-  const thumbs = useMemo(() => new ThumbnailProvider(ctx), [ctx]);
+  const idleClip = useMemo(() =>
+    clips.find((c) => c.name === 'Bob_Idle') || clips.find((c) => /^bob_idle\b/i.test(c.name)) || clips.find((c) => c.actor.toLowerCase() === 'bob' && /idle/i.test(c.name)),
+    [clips]);
+  const thumbs = useMemo(() => new ThumbnailProvider(ctx, idleClip), [ctx, idleClip]);
   useEffect(() => () => thumbs.dispose(), [thumbs]);
   useEffect(() => { localStorage.setItem('pz-panel-w', String(panelW)); }, [panelW]);
 
@@ -61,15 +64,14 @@ export function CharacterViewer({ ctx, index }: { ctx: Ctx; index: unknown }) {
         await eng.loadBody(gender);
         if (cancelled) return;
         setStatus(''); setEquipTick((t) => t + 1);
-        if (!startedRef.current) {
+        if (!startedRef.current && idleClip) {
           startedRef.current = true;
-          const idle = clips.find((c) => c.name === 'Bob_Idle') || clips.find((c) => /^bob_idle\b/i.test(c.name)) || clips.find((c) => c.actor.toLowerCase() === 'bob' && /idle/i.test(c.name));
-          if (idle) { try { await eng.playClip(idle); setPlaying(true); } catch { /* non-fatal */ } }
+          try { await eng.playClip(idleClip); setPlaying(true); } catch { /* non-fatal */ }
         }
       } catch (e) { if (!cancelled) setStatus('body error: ' + (e instanceof Error ? e.message : String(e))); }
     })();
     return () => { cancelled = true; };
-  }, [gender, clips]);
+  }, [gender, idleClip]);
 
   async function guard(fn: () => Promise<unknown>) {
     try { await fn(); } catch (e) { setNowPlaying('error: ' + (e instanceof Error ? e.message : String(e))); }

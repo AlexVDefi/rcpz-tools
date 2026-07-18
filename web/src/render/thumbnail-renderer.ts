@@ -1,23 +1,24 @@
-// Offscreen thumbnail renderer: one shared WebGL context. Two modes per clothing item:
-//  - on-body: a reference body (loaded once per gender) wearing the garment in bind/T-pose
-//  - item-only: just the garment mesh, framed to itself
-// Static items (hats/glasses) are authored in BONE-LOCAL space, so on-body they must be
-// attached to the body's actual head bone (not the scene root) or they land at the origin
-// rotated wrong. Held items render at an iso icon angle. Renders serialize (one context)
-// and results are cached by the provider, so this is a cold-path cost.
-import { resolveBody, resolveClothing, resolveHeldItem } from '@shared/character-core.js';
+// Offscreen thumbnail renderer: one shared WebGL context. The reference body is posed by
+// the IDLE clip (same as the live rig), not the raw bind pose — otherwise bone-attached
+// static items (hats/helmets) and skinned garments seat wrong, because a mod authors them
+// against the posed head, and bind vs idle differ. Idle also reads better (arms down) than
+// a T-pose. Two modes per clothing item: on-body, or the garment mesh alone. Held items
+// render at an iso icon angle. Renders serialize (one context); results are cached by the
+// provider, so this is a cold-path cost.
+import { resolveBody, resolveClothing, resolveHeldItem, resolveClip } from '@shared/character-core.js';
 import { THREE, makeSkinnedMaterial, makeMaterial, CHAR_LIGHTING } from './three-core';
 import { glbToGltf, bytesToTexture, sourceToTexture } from './loaders';
-import { normalizeClothingRig } from './anim';
+import { normaliseClip, normalizeClothingRig } from './anim';
+import { RigSet } from './rigset';
 import { composeBody } from './canvas-image-ops';
 
 export interface Ctx { resolver: unknown; converter: unknown; }
-// Rendered once, cached, and CSS-scaled per card. Render high (512) so large 1-2 column
-// cards on a big monitor stay crisp; the browser downsamples cleanly for small cards.
+export interface IdleClip { rel: string; format: string; name?: string }
 const SIZE = 512;
 
 export class ThumbnailRenderer {
   private ctx: Ctx;
+  private idleClip?: IdleClip;
   private renderer: THREE.WebGLRenderer;
   private scene = new THREE.Scene();
   private camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.01, 100);
@@ -26,6 +27,7 @@ export class ThumbnailRenderer {
   private canvas = document.createElement('canvas');
   private c2d: CanvasRenderingContext2D;
   private queue: Promise<unknown> = Promise.resolve();
+  private rigs = new RigSet(this.scene);
 
   private bodyGender: 'male' | 'female' | null = null;
   private bodyRoot: THREE.Object3D | null = null;
@@ -33,9 +35,10 @@ export class ThumbnailRenderer {
   private bodySkeleton: THREE.Skeleton | null = null;
   private skinBytes: Uint8Array | null = null;
   private skinTex: THREE.Texture | null = null;
+  private idleNorm: ReturnType<typeof normaliseClip> | null = null;
 
-  constructor(ctx: Ctx) {
-    this.ctx = ctx;
+  constructor(ctx: Ctx, idleClip?: IdleClip) {
+    this.ctx = ctx; this.idleClip = idleClip;
     const gl = document.createElement('canvas');
     gl.width = SIZE; gl.height = SIZE;
     this.renderer = new THREE.WebGLRenderer({ canvas: gl, antialias: true, alpha: true, preserveDrawingBuffer: true });
@@ -52,54 +55,63 @@ export class ThumbnailRenderer {
   private applyMat(root: THREE.Object3D, mat: THREE.Material) {
     root.traverse((o) => { const m = o as THREE.Mesh; if (m.isMesh) { if (!m.geometry.getAttribute('normal')) m.geometry.computeVertexNormals(); m.material = mat; m.frustumCulled = false; } });
   }
-  private disposeTree(root: THREE.Object3D) {
-    root.traverse((o) => { const m = o as THREE.Mesh; if (m.isMesh) m.geometry.dispose(); });
-  }
+  private disposeTree(root: THREE.Object3D) { root.traverse((o) => { const m = o as THREE.Mesh; if (m.isMesh) m.geometry.dispose(); }); }
   private setBodyTexture(tex: THREE.Texture) {
     this.bodyRoot?.traverse((o) => { const sm = o as THREE.SkinnedMesh & { material: THREE.ShaderMaterial }; if (sm.isSkinnedMesh && sm.material?.uniforms?.map) sm.material.uniforms.map.value = tex; });
   }
 
+  private async ensureIdle() {
+    if (this.idleNorm || !this.idleClip) return;
+    try {
+      const r = await resolveClip(this.ctx, this.idleClip);
+      if (r.error || !r.glb) return;
+      const gltf = await glbToGltf(r.glb);
+      if (gltf.animations?.length) this.idleNorm = normaliseClip(gltf.animations[0], this.idleClip.format, {});
+    } catch { /* no idle -> bind pose fallback */ }
+  }
+  private idleT() { const d = this.idleNorm ? (this.idleNorm.clip.duration || 1) : 1; return d * 0.35; }
+  private poseIdle() { if (this.idleNorm) { this.rigs.setTime(this.idleT()); this.bodyRoot?.updateMatrixWorld(true); } }
+
   private async ensureBody(gender: 'male' | 'female') {
     if (this.bodyGender === gender && this.bodyRoot) return;
-    if (this.bodyRoot) { this.scene.remove(this.bodyRoot); this.disposeTree(this.bodyRoot); }
+    this.rigs.removeKind('thumb'); this.rigs.removeKind('body');
+    if (this.bodyRoot) this.disposeTree(this.bodyRoot);
     const body = await resolveBody(this.ctx, { gender });
     this.skinBytes = body.skinTexture;
     this.skinTex = await bytesToTexture(body.skinTexture, false);
     const root = (await glbToGltf(body.meshGlb)).scene;
     this.applyMat(root, this.material(this.skinTex, true));
-    this.scene.add(root); root.updateMatrixWorld(true);
     this.bodyRoot = root; this.bodyGender = gender;
     this.bodySkeleton = null;
     root.traverse((o) => { const sm = o as THREE.SkinnedMesh; if (sm.isSkinnedMesh && !this.bodySkeleton) this.bodySkeleton = sm.skeleton; });
-    // Use the mesh GEOMETRY's local bounds (the true Y-up body, ~Y 0..0.98), NOT
-    // Box3.setFromObject: the skeleton root carries an Rx+90, so the world-space box is
-    // rotated and would throw off the framing.
+    // geometry-local bounds (true Y-up body); Box3.setFromObject would be rotated by the
+    // skeleton root's Rx+90
     this.bodyBox = new THREE.Box3();
     root.traverse((o) => { const m = o as THREE.Mesh; if (m.isMesh && m.geometry) { if (!m.geometry.boundingBox) m.geometry.computeBoundingBox(); this.bodyBox!.union(m.geometry.boundingBox!); } });
-    this.frameGroup(undefined);
+    // add + pose with idle
+    await this.ensureIdle();
+    this.rigs.add('body', root);
+    if (this.idleNorm) { this.rigs.setClip(this.idleNorm); this.rigs.setTime(this.idleT()); }
+    root.updateMatrixWorld(true);
   }
 
-  /** Aim the shared ortho camera at the body region a garment group occupies, so bigger
-   *  thumbnails show useful detail (a hat fills the frame, not a tiny full-body figure). */
+  /** Aim the shared ortho camera: whole body fits the square vertically (head near top,
+   *  feet near bottom); hats/shoes zoom to a region since those items are tiny. */
   private frameGroup(group?: string) {
     const box = this.bodyBox!;
     const bot = box.min.y, H = box.max.y - box.min.y || 1, mid = box.min.y + H / 2;
-    // Default: WHOLE body fits the square vertically — head near the top edge, feet near the
-    // bottom (a standing figure is narrow, so horizontal margins are expected). Only hats and
-    // shoes zoom to a region, since those items would be a tiny dot on a full-body shot.
     let cy = mid, half = 0.52 * H;
     switch (group) {
       case 'head': cy = bot + 0.88 * H; half = 0.15 * H; break;
       case 'feet': cy = bot + 0.07 * H; half = 0.13 * H; break;
-      default: cy = mid; half = 0.52 * H; break; // torso, legs, arms, outfits, bags, accessories…
+      default: cy = mid; half = 0.52 * H; break;
     }
     this.camera.left = -half; this.camera.right = half; this.camera.top = half; this.camera.bottom = -half;
     this.camera.position.set(0, cy, 6); this.camera.lookAt(0, cy, 0); this.camera.updateProjectionMatrix();
   }
 
   private renderToTarget(scene: THREE.Scene, camera: THREE.Camera) {
-    const r = this.renderer;
-    r.setRenderTarget(this.target); r.clear(); r.render(scene, camera); r.setRenderTarget(null);
+    const r = this.renderer; r.setRenderTarget(this.target); r.clear(); r.render(scene, camera); r.setRenderTarget(null);
   }
   private toBlob(): Promise<Blob> {
     this.renderer.readRenderTargetPixels(this.target, 0, 0, SIZE, SIZE, this.buf);
@@ -109,7 +121,6 @@ export class ThumbnailRenderer {
     return new Promise((res) => this.canvas.toBlob((b) => res(b!), 'image/png'));
   }
 
-  /** Frame a standalone object to a square and render it (front, or iso for weapons). */
   private async renderAlone(root: THREE.Object3D, iso: boolean): Promise<Blob> {
     const group = new THREE.Group(); group.add(root); group.updateMatrixWorld(true);
     const box = new THREE.Box3().setFromObject(group);
@@ -130,7 +141,6 @@ export class ThumbnailRenderer {
     const run = async (): Promise<Blob> => {
       const r = await resolveClothing(this.ctx, item, gender);
 
-      // item-only: just the garment mesh (mesh/static). Composite has no mesh -> on-body.
       if (!onBody && r.meshGlb && (r.kind === 'mesh' || r.kind === 'static')) {
         const root = (await glbToGltf(r.meshGlb)).scene;
         if (r.kind === 'mesh') normalizeClothingRig(root);
@@ -139,10 +149,10 @@ export class ThumbnailRenderer {
         return this.renderAlone(root, false);
       }
 
-      // on-body
       await this.ensureBody(gender);
       this.setBodyTexture(this.skinTex!);
       let garment: THREE.Object3D | null = null;
+      let garmentKind = r.kind;
       const layers: { bytes: Uint8Array; tint: number[] | null }[] = [];
       const masks: Uint8Array[] = r.maskTextures || [];
       if (r.kind === 'composite') for (const b of (r.baseTextures || [])) layers.push({ bytes: b, tint: null });
@@ -150,18 +160,15 @@ export class ThumbnailRenderer {
       if (r.kind === 'mesh' && r.meshGlb) {
         garment = (await glbToGltf(r.meshGlb)).scene;
         normalizeClothingRig(garment);
-        const tex = r.texture ? await bytesToTexture(r.texture, false) : this.skinTex!;
-        this.applyMat(garment, this.material(tex, true));
-        this.scene.add(garment); garment.updateMatrixWorld(true);
+        this.applyMat(garment, this.material(r.texture ? await bytesToTexture(r.texture, false) : this.skinTex!, true));
+        this.rigs.add('thumb', garment); // bound to idle, poses with the body
       } else if (r.kind === 'static' && r.meshGlb) {
         garment = (await glbToGltf(r.meshGlb)).scene;
-        const tex = r.texture ? await bytesToTexture(r.texture, false) : this.skinTex!;
-        this.applyMat(garment, this.material(tex, false));
-        // authored in bone-local space -> attach to the actual head/attach bone
+        this.applyMat(garment, this.material(r.texture ? await bytesToTexture(r.texture, false) : this.skinTex!, false));
         const bone = this.bodySkeleton?.bones.find((b) => b.name === (r.attachBone || 'Bip01_Head'));
-        if (bone) bone.add(garment); else this.scene.add(garment);
-        this.bodyRoot!.updateMatrixWorld(true);
+        if (bone) bone.add(garment); else this.scene.add(garment); // follows the idle-posed bone
       }
+      this.poseIdle(); // re-pose so the freshly-added rig/bone reflects the idle frame
       if (layers.length || masks.length) {
         const cv = await composeBody(this.skinBytes!, layers, masks);
         this.setBodyTexture(sourceToTexture(cv, false));
@@ -169,7 +176,9 @@ export class ThumbnailRenderer {
       this.frameGroup(item.facet);
       this.renderToTarget(this.scene, this.camera);
       const blob = await this.toBlob();
-      if (garment) { garment.parent?.remove(garment); this.disposeTree(garment); }
+      if (garmentKind === 'mesh') this.rigs.removeKind('thumb');
+      else if (garment) garment.parent?.remove(garment);
+      if (garment) this.disposeTree(garment);
       this.setBodyTexture(this.skinTex!);
       return blob;
     };
