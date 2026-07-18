@@ -102,17 +102,21 @@ export class FloorLibrary {
     for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) {
       ctx.save(); ctx.translate(c * T, r * T); this.deshearInto(ctx, img(picks[r * N + c]), picks[r * N + c].tile, T); ctx.restore();
     }
-    // Pass 2: blend ONLY the seam zone. A RING mask (transparent center + outer edge, opaque
-    // annulus straddling the tile boundary) means pass-1's correct-scale centers show through,
-    // while the overlapping oversized tiles cross-fade just at the seams. Edges wrap.
+    // Pass 2: blend ONLY the seam zone with a DITHER (noise), not a blur. A ring alpha peaked at
+    // the tile boundary is thresholded per-pixel into a crisp 0/1 scatter, so at the seam the
+    // overlapping neighbours' pixels interleave randomly — an organic, still-sharp transition
+    // (pass-1's correct-scale centres show through where the scatter is 0). Edges wrap.
     const mask = document.createElement('canvas'); mask.width = F; mask.height = F;
     const mctx = mask.getContext('2d')!;
     const g = mctx.createRadialGradient(F / 2, F / 2, 0, F / 2, F / 2, F / 2);
     g.addColorStop(0, 'rgba(255,255,255,0)');
-    g.addColorStop(0.68, 'rgba(255,255,255,0)');
-    g.addColorStop(0.86, 'rgba(255,255,255,0.85)'); // narrow annulus peaked at the seam
+    g.addColorStop(0.60, 'rgba(255,255,255,0)');
+    g.addColorStop(0.86, 'rgba(255,255,255,0.9)'); // annulus (probability field) peaked at the seam
     g.addColorStop(1, 'rgba(255,255,255,0)');
     mctx.fillStyle = g; mctx.fillRect(0, 0, F, F);
+    const md = mctx.getImageData(0, 0, F, F);
+    for (let i = 3; i < md.data.length; i += 4) md.data[i] = Math.random() * 255 < md.data[i] ? 255 : 0; // dither
+    mctx.putImageData(md, 0, 0);
     const cell = document.createElement('canvas'); cell.width = F; cell.height = F;
     const cctx = cell.getContext('2d')!;
     for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) {
