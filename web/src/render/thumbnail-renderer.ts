@@ -8,7 +8,7 @@
 import { resolveBody, resolveClothing, resolveHeldItem, resolveClip, resolveHairStyle } from '@shared/character-core.js';
 import { THREE, makeSkinnedMaterial, makeMaterial, CHAR_LIGHTING } from './three-core';
 import { glbToGltf, bytesToTexture, sourceToTexture } from './loaders';
-import { normaliseClip, normalizeClothingRig, boneRestMap } from './anim';
+import { normaliseClip, normalizeClothingRig, boneRestMap, captureSkeletonBind, type SkeletonBind } from './anim';
 import { RigSet } from './rigset';
 import { composeBody } from './canvas-image-ops';
 
@@ -36,6 +36,7 @@ export class ThumbnailRenderer {
   private skinBytes: Uint8Array | null = null;
   private skinTex: THREE.Texture | null = null;
   private bodyRest = new Map<string, THREE.Quaternion>();
+  private bodySkel: SkeletonBind | null = null;
   private idleNorm: ReturnType<typeof normaliseClip> | null = null;
 
   constructor(ctx: Ctx, idleClip?: IdleClip) {
@@ -83,6 +84,7 @@ export class ThumbnailRenderer {
     const root = (await glbToGltf(body.meshGlb)).scene;
     this.applyMat(root, this.material(this.skinTex, true));
     this.bodyRest = boneRestMap(root); // capture bind pose before posing, for clip retarget
+    this.bodySkel = captureSkeletonBind(root);
     this.bodyRoot = root; this.bodyGender = gender;
     this.bodySkeleton = null;
     root.traverse((o) => { const sm = o as THREE.SkinnedMesh; if (sm.isSkinnedMesh && !this.bodySkeleton) this.bodySkeleton = sm.skeleton; });
@@ -198,7 +200,7 @@ export class ThumbnailRenderer {
         if (!r.error && r.glb) {
           const gltf = await glbToGltf(r.glb);
           if (gltf.animations?.length) {
-            const norm = normaliseClip(gltf.animations[0], clip.format, { clipRest: boneRestMap(gltf.scene), bodyRest: this.bodyRest });
+            const norm = normaliseClip(gltf.animations[0], clip.format, { clipScene: gltf.scene, bodySkel: this.bodySkel ?? undefined, clipRest: boneRestMap(gltf.scene), bodyRest: this.bodyRest });
             this.rigs.setClip(norm);
             this.rigs.setTime((norm.clip.duration || 1) * 0.4);
             this.bodyRoot!.updateMatrixWorld(true);

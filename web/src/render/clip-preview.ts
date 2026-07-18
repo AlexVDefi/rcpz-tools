@@ -5,7 +5,7 @@
 import { resolveBody, resolveClip } from '@shared/character-core.js';
 import { THREE, makeSkinnedMaterial, CHAR_LIGHTING } from './three-core';
 import { glbToGltf, bytesToTexture } from './loaders';
-import { normaliseClip, boneRestMap } from './anim';
+import { normaliseClip, boneRestMap, captureSkeletonBind, type SkeletonBind } from './anim';
 import { RigSet } from './rigset';
 
 export interface Ctx { resolver: unknown; converter: unknown; }
@@ -21,6 +21,7 @@ export class ClipPreview {
   private rigs = new RigSet(this.scene);
   private clock = new THREE.Clock();
   private bodyRest = new Map<string, THREE.Quaternion>();
+  private bodySkel: SkeletonBind | null = null;
   private ready = false;
   private playing = false;
   private raf = 0;
@@ -43,6 +44,7 @@ export class ClipPreview {
     const mat = makeSkinnedMaterial(tex, CHAR_LIGHTING);
     root.traverse((o) => { const m = o as THREE.Mesh; if (m.isMesh) { if (!m.geometry.getAttribute('normal')) m.geometry.computeVertexNormals(); m.material = mat; m.frustumCulled = false; } });
     this.bodyRest = boneRestMap(root);
+    this.bodySkel = captureSkeletonBind(root);
     this.rigs.add('body', root);
     root.updateMatrixWorld(true);
     const box = new THREE.Box3();
@@ -72,7 +74,7 @@ export class ClipPreview {
       if (tok !== this.token || r.error || !r.glb) return;
       const gltf = await glbToGltf(r.glb);
       if (tok !== this.token || !gltf.animations?.length) return;
-      const norm = normaliseClip(gltf.animations[0], clip.format, { clipRest: boneRestMap(gltf.scene), bodyRest: this.bodyRest });
+      const norm = normaliseClip(gltf.animations[0], clip.format, { clipScene: gltf.scene, bodySkel: this.bodySkel ?? undefined, clipRest: boneRestMap(gltf.scene), bodyRest: this.bodyRest });
       this.rigs.setLoop(true);
       this.rigs.setClip(norm);
       this.playing = true;

@@ -5,7 +5,7 @@
 import { resolveBody, resolveClip, resolveClothing, resolveHeldItem, resolveHairStyle } from '@shared/character-core.js';
 import { THREE, makeSkinnedMaterial, makeMaterial, CHAR_LIGHTING, partMatrix, makeOrbit } from './three-core';
 import { glbToGltf, bytesToTexture, sourceToTexture } from './loaders';
-import { normaliseClip, boneRestMap, normalizeClothingRig } from './anim';
+import { normaliseClip, boneRestMap, normalizeClothingRig, captureSkeletonBind, type SkeletonBind } from './anim';
 import { composeBody } from './canvas-image-ops';
 import { RigSet } from './rigset';
 
@@ -39,6 +39,7 @@ export class CharacterEngine {
   private raf = 0;
   private disposed = false;
   private bodyRest = new Map<string, THREE.Quaternion>();
+  private bodySkel: SkeletonBind | null = null;
   private currentBody: { skinTexture: Uint8Array } | null = null;
   private equipped = new Map<string, Equip>();
   private statics = new Map<string, THREE.Object3D>();
@@ -217,6 +218,7 @@ export class CharacterEngine {
     const tex = await bytesToTexture(body.skinTexture, false);
     const root = await this.loadSkinnedRoot(body.meshGlb, tex, null, false);
     this.bodyRest = boneRestMap(root);
+    this.bodySkel = captureSkeletonBind(root); // bind-pose skeleton for world-space glb retarget
     const hadBody = !!this.rigs.bodyRig();
     this.rigs.removeKind('body');
     this.rigs.add('body', root);
@@ -246,7 +248,7 @@ export class CharacterEngine {
     if (r.error) throw new Error(r.error);
     const gltf = await glbToGltf(r.glb);
     if (!gltf.animations?.length) throw new Error('no animation in ' + clip.name);
-    const norm = normaliseClip(gltf.animations[0], clip.format, { clipRest: boneRestMap(gltf.scene), bodyRest: this.bodyRest });
+    const norm = normaliseClip(gltf.animations[0], clip.format, { clipScene: gltf.scene, bodySkel: this.bodySkel ?? undefined, clipRest: boneRestMap(gltf.scene), bodyRest: this.bodyRest });
     this.rigs.setLoop(true);
     this.rigs.setClip(norm);
     this.playing = true;

@@ -29,13 +29,101 @@ function retargetRestDelta(clip: THREE.AnimationClip, clipRest: Map<string, THRE
 
 export interface NormalisedClip { clip: THREE.AnimationClip; rootRotationX: number; best: boolean; }
 
+// The body's bind pose, captured once from a freshly-loaded (unposed) rig: enough to
+// world-space retarget a foreign-skeleton glb clip onto it. `bindWorld` covers EVERY named
+// node (so a bone's static ancestor — e.g. Dummy01's Rx+90 — is available for the parent
+// frame); the bone-only maps drive the retarget walk in hierarchy order.
+export interface SkeletonBind {
+  order: string[];                            // bone names, parent-before-child
+  parentName: Map<string, string>;            // bone name -> parent node name
+  bindLocal: Map<string, THREE.Quaternion>;   // bone name -> bind local rotation
+  bindWorld: Map<string, THREE.Quaternion>;   // ANY node name -> bind world rotation
+}
+
+export function captureSkeletonBind(root: THREE.Object3D): SkeletonBind {
+  root.updateMatrixWorld(true);
+  const order: string[] = [];
+  const parentName = new Map<string, string>();
+  const bindLocal = new Map<string, THREE.Quaternion>();
+  const bindWorld = new Map<string, THREE.Quaternion>();
+  root.traverse((o) => { if (o.name) bindWorld.set(o.name, o.getWorldQuaternion(new THREE.Quaternion())); });
+  root.traverse((o) => {
+    if (!(o as THREE.Bone).isBone || !o.name) return;
+    order.push(o.name);
+    if (o.parent?.name) parentName.set(o.name, o.parent.name);
+    bindLocal.set(o.name, o.quaternion.clone());
+  });
+  return { order, parentName, bindLocal, bindWorld };
+}
+
+const IDENTITY_Q = new THREE.Quaternion();
+const boneWorldMap = (root: THREE.Object3D) => {
+  const m = new Map<string, THREE.Quaternion>();
+  root.updateMatrixWorld(true);
+  root.traverse((o) => { if (o.name && (o as THREE.Bone).isBone) m.set(o.name, o.getWorldQuaternion(new THREE.Quaternion())); });
+  return m; // deepest duplicate-named node wins (the real joint, not a scale/root proxy)
+};
+
+// World-space delta retarget: bake body-local rotation tracks so that each bone reproduces
+// the clip's bind-RELATIVE world rotation on the BODY's own bind pose —
+//   bodyWorld_b(t) = (clipWorld_b(t) . clipBindWorld_b^-1) . bodyBindWorld_b
+//   bodyLocal_b(t) = bodyWorldParent(t)^-1 . bodyWorld_b(t)
+// This transfers MOTION (not absolute pose), so it is correct even when the clip's skeleton
+// has a different bind pose / root chain than the body — the case custom .glb exports hit,
+// which the per-bone rest-delta cannot handle. Rotation only (positions/scale dropped).
+function retargetWorld(clip: THREE.AnimationClip, clipScene: THREE.Object3D, body: SkeletonBind): THREE.AnimationClip {
+  const clipBindWorld = boneWorldMap(clipScene);
+  const timeSet = new Set<number>();
+  for (const t of clip.tracks) if (QUAT_TRACK.test(t.name)) for (const time of t.times) timeSet.add(time);
+  const times = [...timeSet].sort((a, b) => a - b);
+  if (!times.length) return clip;
+
+  const mixer = new THREE.AnimationMixer(clipScene);
+  mixer.clipAction(clip).play();
+
+  const mapped = body.order.filter((n) => clipBindWorld.has(n));
+  const values = new Map<string, number[]>();
+  for (const n of mapped) values.set(n, []);
+
+  const world = new Map<string, THREE.Quaternion>();
+  const delta = new THREE.Quaternion(), target = new THREE.Quaternion(), invBind = new THREE.Quaternion(), local = new THREE.Quaternion();
+
+  for (const time of times) {
+    mixer.setTime(time);
+    const clipNow = boneWorldMap(clipScene);
+    world.clear();
+    for (const b of body.order) {
+      const parent = body.parentName.get(b);
+      const pw = (parent && (world.get(parent) || body.bindWorld.get(parent))) || IDENTITY_Q;
+      const cBind = clipBindWorld.get(b), cNow = clipNow.get(b), bBind = body.bindWorld.get(b);
+      if (cBind && cNow && bBind) {
+        invBind.copy(cBind).invert();
+        delta.copy(cNow).multiply(invBind);      // clip world delta from its bind
+        target.copy(delta).multiply(bBind);      // re-anchored on the body's bind world
+        world.set(b, target.clone());
+        local.copy(pw).invert().multiply(target);
+        values.get(b)!.push(local.x, local.y, local.z, local.w);
+      } else {
+        world.set(b, pw.clone().multiply(body.bindLocal.get(b)!)); // static bone: keep bind
+      }
+    }
+  }
+  mixer.stopAllAction(); mixer.uncacheRoot(clipScene);
+  const tracks = mapped.map((n) => new THREE.QuaternionKeyframeTrack(n + '.quaternion', times, values.get(n)!));
+  return new THREE.AnimationClip(clip.name, clip.duration, tracks);
+}
+
 export function normaliseClip(
   clip: THREE.AnimationClip,
   format: string,
-  ctx: { clipRest?: Map<string, THREE.Quaternion>; bodyRest?: Map<string, THREE.Quaternion> } = {},
+  ctx: { clipRest?: Map<string, THREE.Quaternion>; bodyRest?: Map<string, THREE.Quaternion>; clipScene?: THREE.Object3D; bodySkel?: SkeletonBind } = {},
 ): NormalisedClip {
   const fmt = String(format).toLowerCase();
   if (fmt === 'glb' || fmt === 'gltf') {
+    // preferred: world-space retarget (handles foreign-skeleton exports correctly)
+    if (ctx.clipScene && ctx.bodySkel) {
+      return { clip: retargetWorld(clip, ctx.clipScene, ctx.bodySkel), rootRotationX: 0, best: false };
+    }
     const c = clip.clone();
     c.tracks = c.tracks.filter((t) => QUAT_TRACK.test(t.name));
     if (ctx.clipRest && ctx.bodyRest) {
