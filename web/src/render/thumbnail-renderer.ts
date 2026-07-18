@@ -78,13 +78,17 @@ export class ThumbnailRenderer {
   private frameGroup(group?: string) {
     const box = this.bodyBox!;
     const top = box.max.y, bot = box.min.y, H = top - bot || 1, mid = (top + bot) / 2;
-    let cy = mid, half = 0.58 * H;
+    // half = ortho half-height as a fraction of body height; smaller = more zoom. Tight
+    // enough that the garment fills the square card (arm-tips may clip on torso items in
+    // T-pose, which is fine for identification).
+    let cy = mid, half = 0.55 * H;
     switch (group) {
-      case 'head': cy = top - 0.10 * H; half = 0.17 * H; break;
-      case 'feet': cy = bot + 0.10 * H; half = 0.18 * H; break;
-      case 'legs': case 'skirts': cy = bot + 0.34 * H; half = 0.42 * H; break;
-      case 'torso': case 'arms': case 'hands': case 'accessories': cy = top - 0.34 * H; half = 0.54 * H; break;
-      default: cy = mid; half = 0.58 * H; break; // outfits, backpacks, other, unknown
+      case 'head': cy = top - 0.08 * H; half = 0.13 * H; break;
+      case 'feet': cy = bot + 0.07 * H; half = 0.14 * H; break;
+      case 'legs': case 'skirts': cy = bot + 0.26 * H; half = 0.30 * H; break;
+      case 'torso': case 'arms': case 'accessories': cy = top - 0.26 * H; half = 0.30 * H; break;
+      case 'hands': cy = mid; half = 0.48 * H; break; // hands are at the sides in T-pose
+      default: cy = mid; half = 0.55 * H; break; // outfits, backpacks, other, unknown
     }
     this.camera.left = -half; this.camera.right = half; this.camera.top = half; this.camera.bottom = -half;
     this.camera.position.set(0, cy, 6); this.camera.lookAt(0, cy, 0); this.camera.updateProjectionMatrix();
