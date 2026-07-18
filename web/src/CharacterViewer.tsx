@@ -46,6 +46,7 @@ export function CharacterViewer({ ctx, index }: { ctx: Ctx; index: unknown }) {
   const [clothOnBody, setClothOnBody] = useState(true);
   const [loop, setLoop] = useState(true);
   const [speed, setSpeed] = useState(1);
+  const [camMode, setCamMode] = useState<'orbit' | 'iso'>('orbit');
   const scrubRef = useRef<HTMLInputElement>(null);
   const scrubbingRef = useRef(false);
 
@@ -75,6 +76,7 @@ export function CharacterViewer({ ctx, index }: { ctx: Ctx; index: unknown }) {
     const eng = new CharacterEngine(canvasRef.current!, ctx);
     eng.onClipName = setNowPlaying;
     eng.onFrame = (t, dur) => { const el = scrubRef.current; if (el && !scrubbingRef.current) el.value = String(dur ? ((t % dur) / dur) * 1000 : 0); };
+    eng.onCamMode = setCamMode; // keep the Scene-tab toggle in sync with auto-switches
     engineRef.current = eng;
     const ro = new ResizeObserver(() => eng.fit());
     if (canvasRef.current?.parentElement) ro.observe(canvasRef.current.parentElement);
@@ -200,7 +202,7 @@ export function CharacterViewer({ ctx, index }: { ctx: Ctx; index: unknown }) {
 
           {tab === 'hair' && <HairTab hairData={hairData} gender={gender} engineRef={engineRef} />}
 
-          {tab === 'scene' && <SceneTab engineRef={engineRef} />}
+          {tab === 'scene' && <SceneTab engineRef={engineRef} camMode={camMode} setCam={(m) => engineRef.current?.setCamMode(m)} />}
         </div>
       </div>
     </div>
@@ -227,13 +229,11 @@ const FACING_GRID: ([string, number] | null)[] = [
 ];
 const LIGHT_DEFAULT = { ambient: 0.55, keyBright: 0.5, kx: 0.12, ky: 0.28, kz: 1.0 };
 
-function SceneTab({ engineRef }: { engineRef: React.MutableRefObject<CharacterEngine | null> }) {
-  const [camMode, setCamMode] = useState<'orbit' | 'iso'>('orbit');
+function SceneTab({ engineRef, camMode, setCam }: { engineRef: React.MutableRefObject<CharacterEngine | null>; camMode: 'orbit' | 'iso'; setCam: (m: 'orbit' | 'iso') => void }) {
   const [facing, setFacing] = useState<number | null>(0);
   const [grid, setGrid] = useState(true);
   const [light, setLight] = useState({ ...LIGHT_DEFAULT });
 
-  const setCam = (m: 'orbit' | 'iso') => { setCamMode(m); engineRef.current?.setCamMode(m); };
   const setL = (k: keyof typeof LIGHT_DEFAULT, v: number) => { setLight((s) => ({ ...s, [k]: v })); engineRef.current?.setLight(k as 'ambient' | 'keyBright' | 'kx' | 'ky' | 'kz', v); };
   const resetL = () => { setLight({ ...LIGHT_DEFAULT }); engineRef.current?.resetLight(); };
 

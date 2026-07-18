@@ -114,10 +114,15 @@ export function partMatrix(parentAttachment: Attachment | null, selfAttachment: 
   return m;
 }
 
-// Minimal orbit controller (port of charCore.makeOrbit).
+// Orbit controller: left-drag rotates, right-drag pans, wheel zooms. `onInteract` fires
+// on drag start (the viewer uses it to leave the locked PZ-iso camera). Suppresses the
+// right-click context menu so panning doesn't pop the native menu.
 export function makeOrbit(getCamera: () => THREE.Camera, dom: HTMLElement, target = new THREE.Vector3(0, 0.5, 0)) {
   const state = { radius: 2.2, theta: Math.PI * 0.5, phi: Math.PI * 0.42, target };
-  let dragging = false, lastX = 0, lastY = 0;
+  let mode: 'none' | 'rotate' | 'pan' = 'none';
+  let lastX = 0, lastY = 0;
+  const api = { state, apply, setTarget, dispose, onInteract: undefined as (() => void) | undefined };
+
   function apply() {
     const camera = getCamera() as THREE.PerspectiveCamera & THREE.OrthographicCamera & { __aspect?: number };
     const { radius, theta, phi } = state;
@@ -134,31 +139,58 @@ export function makeOrbit(getCamera: () => THREE.Camera, dom: HTMLElement, targe
       camera.updateProjectionMatrix();
     }
   }
-  const onDown = (e: MouseEvent) => { dragging = true; lastX = e.clientX; lastY = e.clientY; };
-  const onUp = () => { dragging = false; };
+
+  const right = new THREE.Vector3(), up = new THREE.Vector3();
+  function pan(dx: number, dy: number) {
+    const cam = getCamera() as THREE.PerspectiveCamera & THREE.OrthographicCamera;
+    cam.updateMatrixWorld();
+    right.setFromMatrixColumn(cam.matrixWorld, 0);
+    up.setFromMatrixColumn(cam.matrixWorld, 1);
+    const h = (dom as HTMLElement).clientHeight || 1;
+    const scale = cam.isOrthographicCamera ? (cam.top - cam.bottom) / h : (2 * state.radius * Math.tan((cam.fov * Math.PI / 180) / 2)) / h;
+    target.addScaledVector(right, -dx * scale);
+    target.addScaledVector(up, dy * scale);
+    apply();
+  }
+
+  const onDown = (e: MouseEvent) => {
+    if (e.button === 2) { mode = 'pan'; e.preventDefault(); }
+    else if (e.button === 0) mode = 'rotate';
+    else return;
+    lastX = e.clientX; lastY = e.clientY;
+    api.onInteract?.();
+  };
+  const onUp = () => { mode = 'none'; };
   const onMove = (e: MouseEvent) => {
-    if (!dragging) return;
-    state.theta -= (e.clientX - lastX) * 0.01;
-    state.phi -= (e.clientY - lastY) * 0.01;
-    lastX = e.clientX; lastY = e.clientY; apply();
+    if (mode === 'none') return;
+    const dx = e.clientX - lastX, dy = e.clientY - lastY;
+    lastX = e.clientX; lastY = e.clientY;
+    if (mode === 'rotate') { state.theta -= dx * 0.01; state.phi -= dy * 0.01; apply(); }
+    else pan(dx, dy);
   };
   const onWheel = (e: WheelEvent) => {
     e.preventDefault();
     state.radius = Math.max(0.6, Math.min(8, state.radius * (1 + Math.sign(e.deltaY) * 0.1)));
     apply();
   };
+  const onContext = (e: Event) => e.preventDefault();
+
   dom.addEventListener('mousedown', onDown);
   window.addEventListener('mouseup', onUp);
   window.addEventListener('mousemove', onMove);
   dom.addEventListener('wheel', onWheel, { passive: false });
+  dom.addEventListener('contextmenu', onContext);
   apply();
-  const dispose = () => {
+
+  function setTarget(t: THREE.Vector3) { target.copy(t); apply(); }
+  function dispose() {
     dom.removeEventListener('mousedown', onDown);
     window.removeEventListener('mouseup', onUp);
     window.removeEventListener('mousemove', onMove);
     dom.removeEventListener('wheel', onWheel);
-  };
-  return { state, apply, setTarget: (t: THREE.Vector3) => { target.copy(t); apply(); }, dispose };
+    dom.removeEventListener('contextmenu', onContext);
+  }
+  return api;
 }
 
 export { THREE };

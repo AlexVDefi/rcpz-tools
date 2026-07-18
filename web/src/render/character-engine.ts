@@ -44,6 +44,7 @@ export class CharacterEngine {
   private whiteTex: THREE.Texture | null = null;
   onClipName?: (s: string) => void;
   onFrame?: (time: number, duration: number) => void;
+  onCamMode?: (mode: 'orbit' | 'iso') => void;
 
   constructor(canvas: HTMLCanvasElement, ctx: Ctx) {
     this.ctx = ctx;
@@ -52,6 +53,8 @@ export class CharacterEngine {
     this.grid = new THREE.GridHelper(4, 16, 0x2b2b34, 0x24242c);
     this.scene.add(this.grid);
     this.orbit = makeOrbit(() => this.camera as THREE.PerspectiveCamera, canvas);
+    // dragging the mouse in the locked PZ-iso view drops back to free orbit
+    this.orbit.onInteract = () => { if (this.camMode === 'iso') this.setCamMode('orbit'); };
     this.fit();
     const loop = () => {
       if (this.disposed) return;
@@ -83,6 +86,7 @@ export class CharacterEngine {
     this.camera = mode === 'iso' ? this.isoCam : this.perspCam;
     if (mode === 'iso') { this.orbit.state.theta = Math.PI / 4; this.orbit.state.phi = Math.PI / 3; }
     this.fit();
+    this.onCamMode?.(mode);
   }
 
   // Negate: the compass degrees are mirrored east-west relative to three's Y rotation
