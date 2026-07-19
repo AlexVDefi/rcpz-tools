@@ -45,5 +45,7 @@ details[open] .chev { transform: rotate(180deg); }
 .infoi .tip { display: none; position: absolute; top: 21px; left: -9px; width: 268px; background: #0e0e13; border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; font: 400 12px/1.5 system-ui, sans-serif; color: var(--muted); z-index: 30; box-shadow: 0 8px 22px #00000077; }
 .infoi:hover .tip { display: block; }
 .infoi .tip b { color: var(--text); }
+.watermark { position: fixed; right: 10px; bottom: 8px; z-index: 60; font-size: 11px; color: var(--muted); text-decoration: none; background: #00000073; padding: 3px 9px; border-radius: 6px; transition: color .12s ease, background .12s ease; }
+.watermark:hover { color: var(--text); background: #000000b3; }
 @keyframes spin { to { transform: rotate(360deg); } }
 .spinner { display: inline-block; width: 13px; height: 13px; border: 2px solid var(--line); border-top-color: var(--accent); border-radius: 50%; animation: spin .7s linear infinite; vertical-align: -2px; }

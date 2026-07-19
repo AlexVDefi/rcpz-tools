@@ -240,6 +240,9 @@ export function App() {
       {index != null && view === 'character' && ctx && (
         <div style={{ marginTop: 12 }}><CharacterViewer ctx={ctx} index={index} /></div>
       )}
+
+      <a className="watermark" href="https://steamcommunity.com/id/mreastman/myworkshopfiles/?appid=108600"
+        target="_blank" rel="noopener noreferrer" title="RedChili on the Steam Workshop">Made by RedChili</a>
     </div>
   );
 }
