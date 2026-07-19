@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { listClips, listClothing, listHeldItems, listHair, clothingGroup, CLOTHING_GROUP_ORDER, HELD_GROUP_ORDER, SKIN_TONES } from '@shared/character-core.js';
-import { CharacterEngine, type Ctx } from './render/character-engine';
+import { CharacterEngine, type Ctx, type AttachOption } from './render/character-engine';
+
+type AttachSlot = { slot: string; options: AttachOption[] };
 import { ThumbnailProvider } from './render/thumbnail-provider';
 import { ClipPreview } from './render/clip-preview';
 import { FloorLibrary } from './render/floor';
@@ -96,6 +98,7 @@ export function CharacterViewer({ ctx, index }: { ctx: Ctx; index: unknown }) {
   const [hairColor, setHairColor] = useState('#5a3a20');
   const [beardColor, setBeardColor] = useState('#5a3a20');
   const [equipOpen, setEquipOpen] = useState(false);
+  const [attachOpen, setAttachOpen] = useState<string | null>(null); // held item whose attachment picker is expanded
   // studio / export
   const [camPreset, setCamPreset] = useState<CamPreset>('orbit');
   const [studioAspect, setStudioAspect] = useState<number | null>(null);
@@ -117,8 +120,9 @@ export function CharacterViewer({ ctx, index }: { ctx: Ctx; index: unknown }) {
   const [currentClipId, setCurrentClipId] = useState<string | null>(null);
   const clothing = useMemo(() => (listClothing(index) as Array<{ name: string; kind: string; location: string; isMod: boolean; modName?: string | null }>)
     .map((c) => ({ ...c, key: c.name, label: c.name, facet: clothingGroup(c), source: c.modName || 'Vanilla' })), [index]);
-  const held = useMemo(() => (listHeldItems(index) as Array<{ name: string; isMod?: boolean; modName?: string | null; group: string; tags: string[] }>)
+  const held = useMemo(() => (listHeldItems(index) as Array<{ name: string; isMod?: boolean; modName?: string | null; group: string; tags: string[]; attachSlots?: AttachSlot[] }>)
     .map((h) => ({ ...h, key: h.name, label: h.name, facet: h.group, isMod: !!h.isMod, source: h.modName || 'Vanilla' })), [index]);
+  const heldSlots = useMemo(() => { const m = new Map<string, AttachSlot[]>(); for (const h of held) if (h.attachSlots?.length) m.set(h.name, h.attachSlots); return m; }, [held]);
   const hairData = useMemo(() => listHair(index) as HairData, [index]);
 
   const idleClip = useMemo(() =>
@@ -189,6 +193,7 @@ export function CharacterViewer({ ctx, index }: { ctx: Ctx; index: unknown }) {
   const toggleCloth = (it: { name: string }) => guard(() => engineRef.current!.toggleClothing(it));
   const toggleHeld = (it: { name: string }) => guard(() => engineRef.current!.toggleHeld(it));
   const setHeldHand = (name: string, hand: 'right' | 'left') => guard(() => engineRef.current!.setHeldHand(name, hand));
+  const setAttachment = (name: string, slot: string, option: AttachOption | null) => guard(() => engineRef.current!.setHeldAttachment(name, slot, option));
   const togglePlay = () => { const e = engineRef.current; if (e) setPlaying(e.togglePlay()); };
   // hair/beard apply + recolour (shared by the Character and Favorites tabs)
   const applyHairPart = (kind: 'hair' | 'beard', style: HairStyle) => {
@@ -348,19 +353,49 @@ export function CharacterViewer({ ctx, index }: { ctx: Ctx; index: unknown }) {
               <span role="button" onClick={() => setEquipOpen(false)} title="close" style={{ cursor: 'pointer', color: 'var(--muted)', padding: '0 4px' }}>✕</span>
             </div>
             {!equipList.length && <div style={{ color: 'var(--muted)', fontSize: 12, padding: '8px 4px' }}>Nothing equipped.</div>}
-            {equipList.map((e) => (
-              <div key={e.type + ':' + e.name} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 2px' }}>
-                <span style={{ flex: 1, fontSize: 12, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', opacity: e.hidden ? 0.45 : 1 }} title={e.name}>{e.name}</span>
-                <span style={{ fontSize: 9, color: 'var(--muted)', border: '1px solid var(--line)', borderRadius: 3, padding: '0 3px' }}>{e.type === 'held' ? 'held' : 'worn'}</span>
-                {e.type === 'held' && (
-                  <button className="secondary" title={`held in ${e.hand === 'left' ? 'left' : 'right'} hand (click to switch)`}
-                    onClick={() => setHeldHand(e.name, e.hand === 'left' ? 'right' : 'left')}
-                    style={{ padding: '2px 8px', fontSize: 11, minWidth: 26 }}>{e.hand === 'left' ? 'L' : 'R'}</button>
-                )}
-                <button className="secondary" title={e.hidden ? 'show in scene' : 'hide from scene'} onClick={() => toggleHide(e.name, !e.hidden)} style={{ padding: '2px 8px', fontSize: 11, minWidth: 44 }}>{e.hidden ? 'show' : 'hide'}</button>
-                <button className="secondary" title="remove (unequip)" onClick={() => removeEquip(e.name, e.type)} style={{ padding: '2px 8px', fontSize: 12, color: '#ff6b6b' }}>✕</button>
-              </div>
-            ))}
+            {equipList.map((e) => {
+              const slots = e.type === 'held' ? heldSlots.get(e.name) : undefined;
+              const open = attachOpen === e.name;
+              const chip = (active: boolean): React.CSSProperties => ({ padding: '2px 8px', fontSize: 11, maxWidth: 118, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', background: active ? 'var(--accent)' : 'var(--panel)', color: active ? '#fff' : 'var(--text)' });
+              return (
+                <div key={e.type + ':' + e.name}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 2px' }}>
+                    <span style={{ flex: 1, fontSize: 12, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', opacity: e.hidden ? 0.45 : 1 }} title={e.name}>{e.name}</span>
+                    <span style={{ fontSize: 9, color: 'var(--muted)', border: '1px solid var(--line)', borderRadius: 3, padding: '0 3px' }}>{e.type === 'held' ? 'held' : 'worn'}</span>
+                    {e.type === 'held' && (
+                      <button className="secondary" title={`held in ${e.hand === 'left' ? 'left' : 'right'} hand (click to switch)`}
+                        onClick={() => setHeldHand(e.name, e.hand === 'left' ? 'right' : 'left')}
+                        style={{ padding: '2px 8px', fontSize: 11, minWidth: 26 }}>{e.hand === 'left' ? 'L' : 'R'}</button>
+                    )}
+                    {!!slots?.length && (
+                      <button className="secondary" title="attachments" onClick={() => setAttachOpen(open ? null : e.name)}
+                        style={{ padding: '2px 8px', fontSize: 13, lineHeight: 1, background: open ? 'var(--accent)' : 'var(--panel)', color: open ? '#fff' : 'var(--text)' }}>⛭</button>
+                    )}
+                    <button className="secondary" title={e.hidden ? 'show in scene' : 'hide from scene'} onClick={() => toggleHide(e.name, !e.hidden)} style={{ padding: '2px 8px', fontSize: 11, minWidth: 44 }}>{e.hidden ? 'show' : 'hide'}</button>
+                    <button className="secondary" title="remove (unequip)" onClick={() => removeEquip(e.name, e.type)} style={{ padding: '2px 8px', fontSize: 12, color: '#ff6b6b' }}>✕</button>
+                  </div>
+                  {open && slots && (
+                    <div style={{ padding: '2px 2px 8px 8px', margin: '0 0 4px 4px', borderLeft: '2px solid var(--accent)' }}>
+                      {slots.map((s) => {
+                        void equipTick;
+                        const cur = engineRef.current?.heldAttachment(e.name, s.slot) ?? null;
+                        return (
+                          <div key={s.slot} style={{ marginTop: 6 }}>
+                            <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '.05em', color: 'var(--muted)', marginBottom: 3 }}>{s.slot}</div>
+                            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                              <button className="secondary" onClick={() => setAttachment(e.name, s.slot, null)} style={chip(cur === null)}>None</button>
+                              {s.options.map((o) => (
+                                <button key={o.partName} className="secondary" title={o.partName} onClick={() => setAttachment(e.name, s.slot, o)} style={chip(cur === o.partName)}>{o.partName}</button>
+                              ))}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
           </div>
         )}
         <div style={{ position: 'absolute', left: 12, bottom: 12, right: 12, display: 'flex', gap: 8, alignItems: 'center', background: '#000000aa', borderRadius: 8, padding: '6px 10px' }}>

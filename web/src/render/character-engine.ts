@@ -2,7 +2,7 @@
 // browser port of src/characterApp/character.js's equip logic, driven by the async
 // resolve* fns (which return glb/png BYTES) and the Canvas body compositor. The React
 // viewer creates one of these and calls its methods; all Three.js lives here.
-import { resolveBody, resolveClip, resolveClothing, resolveHeldItem, resolveHairStyle } from '@shared/character-core.js';
+import { resolveBody, resolveClip, resolveClothing, resolveHeldItem, resolveHairStyle, resolveAttachmentPart } from '@shared/character-core.js';
 import { THREE, makeSkinnedMaterial, makeMaterial, CHAR_LIGHTING, partMatrix, makeOrbit } from './three-core';
 import { glbToGltf, bytesToTexture, sourceToTexture } from './loaders';
 import { normaliseClip, retargetAttachments, boneRestMap, normalizeClothingRig, captureSkeletonBind, type SkeletonBind } from './anim';
@@ -13,6 +13,10 @@ export interface Ctx { resolver: unknown; converter: unknown; }
 type Clip = { id: string; name: string; format: string; rel: string };
 
 interface Equip { kind: string; maskTextures: Uint8Array[]; baseTextures: Uint8Array[]; tint: number[] | null; hatCategory: string | null; }
+type Socket = { offset: number[]; rotate: number[]; scale?: number };
+// One weapon-part option from a held item's attachSlots (shared/character-core.js).
+export type AttachOption = { partName: string; mesh: string; texture?: string; parentAttachment: Socket; selfAttachment: Socket | null };
+type HeldEntry = { holder: THREE.Object3D; prop: string; item: { name: string }; gunObj: THREE.Object3D; parts: Map<string, THREE.Object3D>; attachSel: Map<string, AttachOption> };
 
 type IsoCam = THREE.OrthographicCamera & { __aspect?: number };
 
@@ -55,7 +59,7 @@ export class CharacterEngine {
   private currentBody: { skinTexture: Uint8Array } | null = null;
   private equipped = new Map<string, Equip>();
   private statics = new Map<string, THREE.Object3D>();
-  private held = new Map<string, { holder: THREE.Object3D; prop: string; item: { name: string } }>();
+  private held = new Map<string, HeldEntry>();
   private static readonly RIGHT_PROP = 'Bip01_Prop1';
   private static readonly LEFT_PROP = 'Bip01_Prop2';
   private hidden = new Set<string>(); // equipped-but-temporarily-hidden clothing/held names
@@ -543,17 +547,18 @@ export class CharacterEngine {
     return h ? (h.prop === CharacterEngine.LEFT_PROP ? 'left' : 'right') : null;
   }
 
-  /** Move an already-held item to the other hand, preserving its hidden state. */
+  /** Move an already-held item to the other hand, preserving its hidden state + attachments. */
   async setHeldHand(name: string, hand: 'right' | 'left') {
     const h = this.held.get(name);
     if (!h || this.heldHand(name) === hand) return;
     const item = h.item;
+    const keep = h.attachSel;
     if (h.holder.parent) h.holder.parent.remove(h.holder);
     this.held.delete(name); // keep this.hidden so attachHeld restores the hidden flag
-    await this.attachHeld(item, hand);
+    await this.attachHeld(item, hand, keep);
   }
 
-  private async attachHeld(item: { name: string }, hand: 'right' | 'left'): Promise<boolean> {
+  private async attachHeld(item: { name: string }, hand: 'right' | 'left', keepAttach?: Map<string, AttachOption>): Promise<boolean> {
     const body = this.rigs.bodyRig();
     if (!body) return false;
     const prop = hand === 'left' ? CharacterEngine.LEFT_PROP : CharacterEngine.RIGHT_PROP;
@@ -581,8 +586,39 @@ export class CharacterEngine {
     holder.add(obj);
     holder.visible = !this.hidden.has(item.name);
     bone.add(holder);
-    this.held.set(item.name, { holder, prop, item });
+    this.held.set(item.name, { holder, prop, item, gunObj: obj, parts: new Map(), attachSel: new Map() });
+    // re-mount attachments carried over (e.g. across a hand swap)
+    if (keepAttach) for (const [slot, opt] of keepAttach) await this.setHeldAttachment(item.name, slot, opt);
     return true;
+  }
+
+  /** Which weapon-part option (if any) is mounted in a held gun's slot, by part name. */
+  heldAttachment(name: string, slot: string): string | null {
+    return this.held.get(name)?.attachSel.get(slot)?.partName ?? null;
+  }
+
+  /** Mount (or, with option=null, clear) a weapon part in the given slot of a held gun. */
+  async setHeldAttachment(name: string, slot: string, option: AttachOption | null) {
+    const h = this.held.get(name);
+    if (!h) return;
+    const prev = h.parts.get(slot);
+    if (prev) { if (prev.parent) prev.parent.remove(prev); h.parts.delete(slot); h.attachSel.delete(slot); }
+    if (!option) return;
+    const r = await resolveAttachmentPart(this.ctx, option);
+    if (r.error) throw new Error(r.error);
+    if (!this.held.has(name)) return; // item was removed mid-load
+    const gltf = await glbToGltf(r.meshGlb);
+    const obj = gltf.scene;
+    const tex = r.texture ? await bytesToTexture(r.texture, false) : this.white();
+    const mat = makeMaterial(tex, this.lightingObj(), true);
+    obj.traverse((o) => { const m = o as THREE.Mesh; if (m.isMesh) { if (!m.geometry.getAttribute('normal')) m.geometry.computeVertexNormals(); m.material = mat; m.frustumCulled = false; } });
+    const partHolder = new THREE.Object3D();
+    partHolder.matrixAutoUpdate = false;
+    partHolder.matrix.copy(partMatrix(r.parentAttachment, r.selfAttachment));
+    partHolder.add(obj);
+    h.gunObj.add(partHolder);          // child of the gun mesh, so it inherits the hold + animation
+    h.parts.set(slot, partHolder);
+    h.attachSel.set(slot, option);
   }
 
   unequipHeld(name: string) {

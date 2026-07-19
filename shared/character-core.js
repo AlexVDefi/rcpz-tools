@@ -151,35 +151,76 @@ const cleanTags = (raw) => raw ? raw.split(';').map((t) => t.trim().replace(/^ba
 // "Apple_GroundCooked" / "BaconStrip_Hand" -> base item name, to inherit its category
 const stripStateSuffix = (n) => n.replace(/_(Ground|Hand)(Cooked|Rotten|Burnt|Overdone|Stale)?$/i, '').replace(/_(Cooked|Rotten|Burnt|Overdone|Stale)$/i, '');
 
+// One `ModelWeaponPart = <partItem> <partModel> <attachmentNameSelf> <attachmentNameParent>` line.
+// field1 is the attached part's item name, field2 the ModelScript to render, fields 3/4 the socket
+// names on the part model (self) and the gun model (parent); "none"/missing -> null.
+function parseModelWeaponPart(line) {
+  const ss = String(line).trim().split(/\s+/);
+  if (ss.length < 2) return null;
+  const nz = (v) => (v && v.toLowerCase() !== 'none' ? v : null);
+  return { partName: stripModule(ss[0]), modelName: stripModule(ss[1]), attachSelf: nz(ss[2]), attachParent: nz(ss[3]) };
+}
+
+/** Attachment slots a held gun model supports: its item's ModelWeaponPart lines, resolved against
+ *  the gun model's sockets + each part model, grouped by PartType (falls back to the socket name).
+ *  Each option carries the data the engine needs to mount the part (mesh/texture + both sockets). */
+function attachmentSlots(gunModelName, models, partsBySprite, weaponParts) {
+  const gun = models.get(gunModelName.toLowerCase());
+  const parts = partsBySprite.get(gunModelName.toLowerCase());
+  if (!gun || !parts || !parts.length) return [];
+  const slots = new Map();
+  for (const p of parts) {
+    if (!p.attachParent) continue;
+    const parentAttachment = gun.attachments[p.attachParent];
+    if (!parentAttachment) continue;                    // gun model has no such socket -> not renderable
+    const pm = models.get(p.modelName.toLowerCase());
+    if (!pm || !pm.mesh) continue;                      // part model / mesh missing
+    const selfAttachment = (p.attachSelf && pm.attachments[p.attachSelf]) || null;
+    const wp = weaponParts.get(p.partName.toLowerCase());
+    const slotKey = wp?.partType || p.attachParent;     // PartType is the real slot; socket is the fallback
+    if (!slots.has(slotKey)) slots.set(slotKey, { slot: slotKey, options: [] });
+    slots.get(slotKey).options.push({
+      partName: p.partName, modelName: p.modelName, mesh: pm.mesh, texture: pm.texture || pm.mesh,
+      parentAttachment, selfAttachment,
+    });
+  }
+  return [...slots.values()];
+}
+
 /** Held items/weapons: a model is "held" if it declares a hand attachment (Bip01_Prop*) OR is
  *  a weapon's equipped sprite (an item's `WeaponSprite = [module.]Model`) - most weapons never
  *  write an explicit attachment (the engine defaults them to Prop1). Floor-display models
  *  (`*_Ground`) are excluded. Each item carries a `group` (facet) + `tags` from its item script. */
 export function listHeldItems(index) {
-  const models = new Map();      // nameLower -> model descriptor (mesh/texture/hand attach)
-  const catBySprite = new Map(); // model name (lower, from WeaponSprite) -> { sc, dc, tags }
-  const catByItem = new Map();   // item name (lower) -> { sc, dc, tags }
+  const models = new Map();        // nameLower -> model descriptor (mesh/texture/ALL attachment sockets)
+  const catBySprite = new Map();   // model name (lower, from WeaponSprite) -> { sc, dc, tags }
+  const catByItem = new Map();     // item name (lower) -> { sc, dc, tags }
+  const partsBySprite = new Map(); // gun model name (lower) -> parsed ModelWeaponPart[]
+  const weaponParts = new Map();   // WeaponPart item name (lower) -> { partType, mountOn[] }
   for (const f of index.scriptFiles) {
     if (!f.text.includes('model ') && !f.text.includes('DisplayCategory') && !f.text.includes('WeaponSprite')) continue;
     let blocks; try { blocks = parseScriptText(f.text); } catch { continue; }
     walkBlocks(blocks, (b) => {
       if (b.type === 'model' && prop(b, 'mesh') && !models.has(b.name.toLowerCase())) {
-        const attachments = {}; let firstProp = null;
+        const attachments = {}; let firstProp = null;    // capture EVERY socket (hand props + scope/canon/...)
         for (const c of b.children) {
-          if (c.type === 'attachment' && PROP_BONES.has(c.name)) {
-            attachments[c.name] = { offset: parseVec3(prop(c, 'offset')), rotate: parseVec3(prop(c, 'rotate')), scale: parseFloat(prop(c, 'scale')) || 1 };
-            if (!firstProp) firstProp = c.name;
-          }
+          if (c.type !== 'attachment' || !c.name) continue;
+          attachments[c.name] = { offset: parseVec3(prop(c, 'offset')), rotate: parseVec3(prop(c, 'rotate')), scale: parseFloat(prop(c, 'scale')) || 1 };
+          if (PROP_BONES.has(c.name) && !firstProp) firstProp = c.name;
         }
         models.set(b.name.toLowerCase(), { name: b.name, mesh: prop(b, 'mesh'), texture: prop(b, 'texture'), scale: parseFloat(prop(b, 'scale')) || 1, attachments, handProp: firstProp, isMod: f.isMod, modName: sourceMod(index, f.sourceIndex) });
       } else if (b.type === 'item') {
         const dc = prop(b, 'DisplayCategory'), sc = prop(b, 'SubCategory');
+        const ws = prop(b, 'WeaponSprite');
         if (dc || sc) {
           const info = { sc, dc, tags: cleanTags(prop(b, 'Tags')) };
           catByItem.set(b.name.toLowerCase(), info);
-          const ws = prop(b, 'WeaponSprite');
           if (ws) catBySprite.set(ws.split('.').pop().toLowerCase(), info);
         }
+        const mwp = b.props.get('ModelWeaponPart');
+        if (mwp && ws) partsBySprite.set(ws.split('.').pop().toLowerCase(), mwp.map(parseModelWeaponPart).filter(Boolean));
+        const partType = prop(b, 'PartType');
+        if (partType) weaponParts.set(b.name.toLowerCase(), { partType, mountOn: (prop(b, 'MountOn') || '').split(';').map((s) => stripModule(s.trim())).filter(Boolean) });
       }
     });
   }
@@ -194,6 +235,7 @@ export function listHeldItems(index) {
       name: m.name, mesh: m.mesh, texture: m.texture, scale: m.scale,
       prop: m.handProp || 'Bip01_Prop1',
       attachments: m.handProp ? m.attachments : DEFAULT_HAND,
+      attachSlots: attachmentSlots(m.name, models, partsBySprite, weaponParts),
       isMod: m.isMod, modName: m.modName,
       group: heldGroup(info.sc, info.dc, tags), tags,
     });
@@ -270,6 +312,15 @@ export async function resolveHeldItem(ctx, item) {
   let texHit = item.texture ? await ctx.resolver.resolveTexture(item.texture) : null;
   if (!texHit) texHit = await ctx.resolver.resolveTexture(item.mesh);
   return { name: item.name, meshGlb: mesh.glb, texture: texHit ? await readResolved(texHit) : null, prop: item.prop, attachments: item.attachments, scale: item.scale };
+}
+
+/** Resolve one weapon-part attachment option (from an item's attachSlots) to mesh + texture bytes. */
+export async function resolveAttachmentPart(ctx, option) {
+  const mesh = await meshToGlb(ctx, option.mesh);
+  if (mesh.error) return { error: mesh.error };
+  let texHit = option.texture ? await ctx.resolver.resolveTexture(option.texture) : null;
+  if (!texHit) texHit = await ctx.resolver.resolveTexture(option.mesh);
+  return { meshGlb: mesh.glb, texture: texHit ? await readResolved(texHit) : null, parentAttachment: option.parentAttachment, selfAttachment: option.selfAttachment };
 }
 
 /** Resolve one hair/beard style's mesh + texture. Model-less (bald/none) -> {hasMesh:false}. */
