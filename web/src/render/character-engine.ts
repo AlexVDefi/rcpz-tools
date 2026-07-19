@@ -408,7 +408,7 @@ export class CharacterEngine {
     if (r.error) throw new Error(r.error);
     const gltf = await glbToGltf(r.glb);
     if (!gltf.animations?.length) throw new Error('no animation in ' + clip.name);
-    const norm = normaliseClip(gltf.animations[0], clip.format, { clipScene: gltf.scene, bodySkel: this.bodySkel ?? undefined, clipRest: boneRestMap(gltf.scene), bodyRest: this.bodyRest });
+    const norm = normaliseClip(gltf.animations[0], clip.format, { clipScene: gltf.scene, bodySkel: this.bodySkel ?? undefined, clipRest: boneRestMap(gltf.scene), bodyRest: this.bodyRest, bodyRoot: this.rigs.bodyRig()?.root });
     this.rigs.setLoop(true);
     this.rigs.setClip(norm);
     this.groundToClip(); // re-ground off this clip's posed feet (formats frame the body differently)
