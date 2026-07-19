@@ -129,7 +129,11 @@ export function listHair(index) {
   return { hair, beards };
 }
 
-const DEFAULT_HAND = { 'Bip01_Prop1': { offset: [0, 0, 0], rotate: [0, 0, 0], scale: 1 } };
+// Weapons without their own prop attachment: PZ meshes run the barrel down local +Y, but the
+// prop bone's weapon axis (what animations point the gun along, e.g. straight up in a reload) is
+// +Z. rotate x=-90 maps the barrel onto that axis through partMatrix's hand-space flip; without it
+// the gun lies sideways. Verified against the musket reload (barrel up-alignment 1.00).
+const DEFAULT_HAND = { 'Bip01_Prop1': { offset: [0, 0, 0], rotate: [-90, 0, 0], scale: 1 } };
 
 // Group a held item for the picker facet, from its item script's SubCategory (weapon kind:
 // Firearm/Swinging/Stab/Spear) and DisplayCategory (purpose: Weapon/Tool/Cooking/Food/...).
