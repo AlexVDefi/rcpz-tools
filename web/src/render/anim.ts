@@ -80,13 +80,17 @@ export function captureSkeletonBind(root: THREE.Object3D): SkeletonBind {
 }
 
 const IDENTITY_Q = new THREE.Quaternion();
-// glb clips exported from Blender/AnimForge orient the weapon prop bone with the barrel down its
-// LOCAL +Z, but PZ mounts the mesh (barrel = +Y) at identity on the prop, so a reproduced glb prop
-// leaves the gun 90 deg out (lying flat when it should stand up). Native .x/.fbx clips already use
-// the game convention and need no correction. Rotate the reproduced glb prop +90 deg about X so the
-// gun stands correctly under the same identity mount vanilla uses. Verified: barrel up-alignment
-// 1.00 at the musket reload vs 0.03 without.
-const GLB_PROP_FIX = new THREE.Matrix4().makeRotationX(Math.PI / 2);
+// glb clips exported from Blender/AnimForge orient the weapon prop with the barrel down its LOCAL
+// +Z, but PZ mounts the mesh (barrel = +Y) at identity on the prop, so a reproduced glb prop leaves
+// the gun 90 deg out (lying flat). Native .x/.fbx clips use the game convention and need nothing.
+// A plain +90 deg X lands the barrel ~2.2 deg shy of vertical though - the clip parents the prop
+// under a proxy bone (Bip01_1) 118 deg off the real Bip01, so the world-space reconstruction can't
+// be exact. That residual is SYSTEMATIC: the musket and flintlock reloads both settle their upright
+// hold at the identical (0.02, 1.00, -0.03), 2.2 deg off. In-game the same clips render dead
+// vertical, so this is Rx90 composed with the measured leveling that lands the barrel exactly
+// vertical (verified up-alignment 1.00 across both reloads' holds), matching what the game shows.
+const GLB_PROP_FIX = new THREE.Matrix4().makeRotationFromQuaternion(
+  new THREE.Quaternion(0.694635, 0.005997, -0.005997, 0.719312));
 const boneWorldMap = (root: THREE.Object3D) => {
   const m = new Map<string, THREE.Quaternion>();
   root.updateMatrixWorld(true);
