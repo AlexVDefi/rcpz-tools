@@ -101,6 +101,7 @@ export function CharacterViewer({ ctx, index }: { ctx: Ctx; index: unknown }) {
   const [studioAspect, setStudioAspect] = useState<number | null>(null);
   const [bg, setBg] = useState<BgConfig>({ mode: 'solid', color1: '#20242c', color2: '#0a0b10', angle: 90 });
   const [turntable, setTurntable] = useState(false);
+  const [gifMode, setGifMode] = useState<'clip' | 'fixed'>('clip');
   const [mp4Seconds, setMp4Seconds] = useState(10);
   const [viewfinder, setViewfinder] = useState<{ left: number; top: number; width: number; height: number } | null>(null);
   const [exporting, setExporting] = useState<{ label: string; progress: number } | null>(null);
@@ -218,7 +219,7 @@ export function CharacterViewer({ ctx, index }: { ctx: Ctx; index: unknown }) {
       } else if (kind === 'gif') {
         setExporting({ label: 'GIF', progress: 0 });
         const [w, h] = evenDims(aspect, 512);
-        const blob = await exportGif(eng, w, h, bg, { seconds: 5, fps: 15, content, onProgress: (p) => setExporting({ label: 'GIF', progress: p }) });
+        const blob = await exportGif(eng, w, h, bg, { mode: gifMode, seconds: 5, fps: gifMode === 'clip' ? 24 : 15, speed, content, onProgress: (p) => setExporting({ label: 'GIF', progress: p }) });
         download(blob, `pz-character-${stamp}.gif`);
       } else {
         setExporting({ label: 'video', progress: 0 });
@@ -432,7 +433,7 @@ export function CharacterViewer({ ctx, index }: { ctx: Ctx; index: unknown }) {
           )}
 
           {tab === 'scene' && <SceneTab engineRef={engineRef} floorSel={floorSel} onPreset={pickPreset} onClear={clearFloor}
-            studio={{ camPreset, setCamPreset, studioAspect, setStudioAspect, bg, setBg, turntable, setTurntable, mp4Seconds, setMp4Seconds, exporting, runExport }} />}
+            studio={{ camPreset, setCamPreset, studioAspect, setStudioAspect, bg, setBg, turntable, setTurntable, gifMode, setGifMode, mp4Seconds, setMp4Seconds, exporting, runExport }} />}
         </div>
       </div>
     </div>
@@ -465,6 +466,7 @@ interface StudioCtl {
   studioAspect: number | null; setStudioAspect: (a: number | null) => void;
   bg: BgConfig; setBg: (b: BgConfig) => void;
   turntable: boolean; setTurntable: (v: boolean) => void;
+  gifMode: 'clip' | 'fixed'; setGifMode: (m: 'clip' | 'fixed') => void;
   mp4Seconds: number; setMp4Seconds: (n: number) => void;
   exporting: { label: string; progress: number } | null;
   runExport: (kind: 'png' | 'gif' | 'mp4') => void;
@@ -573,16 +575,26 @@ function ExportSection({ studio }: { studio: StudioCtl }) {
       <div style={{ color: 'var(--muted)', fontSize: 11, marginTop: 4 }}>{s.turntable ? '360° spin over the clip length' : 'records the current animation'}</div>
 
       <label style={label}>Export</label>
-      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+      {(() => { const selStyle = { background: '#14141a', color: 'var(--text)', border: '1px solid var(--line)', borderRadius: 6, padding: '6px 8px', fontSize: 12 } as const; const grp = { display: 'flex', border: '1px solid var(--line)', borderRadius: 6, overflow: 'hidden' } as const; return (
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
         <button className="secondary" disabled={busy} onClick={() => s.runExport('png')} style={{ padding: '7px 12px', opacity: busy ? 0.5 : 1 }}>PNG</button>
-        <button className="secondary" disabled={busy} onClick={() => s.runExport('gif')} style={{ padding: '7px 12px', opacity: busy ? 0.5 : 1 }}>GIF (5s)</button>
-        <button className="secondary" disabled={busy} onClick={() => s.runExport('mp4')} style={{ padding: '7px 12px', opacity: busy ? 0.5 : 1 }}>MP4</button>
-        <select value={s.mp4Seconds} onChange={(e) => s.setMp4Seconds(Number(e.target.value))} title="video length" style={{ background: '#14141a', color: 'var(--text)', border: '1px solid var(--line)', borderRadius: 6, padding: '6px 8px', fontSize: 12 }}>
-          {[5, 10, 15, 20, 30].map((n) => <option key={n} value={n}>{n}s</option>)}
-        </select>
+        <div style={grp}>
+          <button className="secondary" disabled={busy} onClick={() => s.runExport('gif')} style={{ borderRadius: 0, border: 0, padding: '7px 12px', opacity: busy ? 0.5 : 1 }}>GIF</button>
+          <select value={s.gifMode} onChange={(e) => s.setGifMode(e.target.value as 'clip' | 'fixed')} title="GIF length" style={{ ...selStyle, border: 0, borderLeft: '1px solid var(--line)', borderRadius: 0 }}>
+            <option value="clip">Clip loop</option>
+            <option value="fixed">5s</option>
+          </select>
+        </div>
+        <div style={grp}>
+          <button className="secondary" disabled={busy} onClick={() => s.runExport('mp4')} style={{ borderRadius: 0, border: 0, padding: '7px 12px', opacity: busy ? 0.5 : 1 }}>MP4</button>
+          <select value={s.mp4Seconds} onChange={(e) => s.setMp4Seconds(Number(e.target.value))} title="video length" style={{ ...selStyle, border: 0, borderLeft: '1px solid var(--line)', borderRadius: 0 }}>
+            {[5, 10, 15, 20, 30].map((n) => <option key={n} value={n}>{n}s</option>)}
+          </select>
+        </div>
       </div>
+      ); })()}
       <div style={{ color: 'var(--muted)', fontSize: 11, marginTop: 6 }}>
-        Transparent background applies to PNG + GIF; video always uses the chosen colour. Everything is generated in your browser, and nothing is uploaded.
+        GIF “Clip loop” captures one full loop of the current animation at your chosen playback speed, for seamless loops. Transparent background applies to PNG + GIF; video always uses the chosen colour. Everything is generated in your browser, and nothing is uploaded.
       </div>
     </div>
   );

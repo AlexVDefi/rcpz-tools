@@ -56,9 +56,12 @@ export async function exportPng(eng: ExportEngine, w: number, h: number, bg: BgC
 }
 
 /** Animated GIF, frame-stepped (deterministic, faster than real time). Supports 1-bit
- *  transparency when bg is transparent. */
+ *  transparency when bg is transparent.
+ *  mode 'clip' (anim only): one exact loop of the current clip, sampled evenly from t=0 to just
+ *  before the loop point, with the per-frame delay set so it plays at `speed` (the viewer's
+ *  playback rate). This yields a seamless loop. mode 'fixed': a `seconds`-long real-time GIF. */
 export async function exportGif(eng: ExportEngine, w: number, h: number, bg: BgConfig,
-  opts: { seconds: number; fps: number; content: Content; onProgress?: (p: number) => void }): Promise<Blob> {
+  opts: { mode: 'clip' | 'fixed'; seconds: number; fps: number; speed: number; content: Content; onProgress?: (p: number) => void }): Promise<Blob> {
   const restore = eng.beginExport(w, h);
   const cap = document.createElement('canvas'); cap.width = w; cap.height = h;
   const ctx = cap.getContext('2d', { willReadFrequently: true })!;
@@ -66,20 +69,28 @@ export async function exportGif(eng: ExportEngine, w: number, h: number, bg: BgC
   const transparent = bg.mode === 'transparent';
   const format = transparent ? 'rgba4444' : 'rgb565';
   const dur = eng.getDuration();
+  const speed = opts.speed || 1;
   eng.setLoop(true);
+  const clipLoop = opts.content === 'anim' && opts.mode === 'clip';
+  const frames = clipLoop
+    ? Math.max(2, Math.min(150, Math.round(dur * opts.fps)))          // one loop, ~fps samples per clip-second
+    : Math.max(1, Math.round(opts.seconds * opts.fps));
+  const delay = clipLoop
+    ? Math.max(20, Math.round((dur / speed / frames) * 1000))         // whole loop lasts dur/speed seconds
+    : Math.round(1000 / opts.fps);
   try {
-    const frames = Math.max(1, Math.round(opts.seconds * opts.fps));
     for (let i = 0; i < frames; i++) {
       const p = i / frames;
       if (opts.content === 'turntable') eng.setSpinAngle(p * Math.PI * 2);
-      else eng.seek((((p * opts.seconds) % dur) / dur));
+      else if (clipLoop) eng.seek(p);                                  // clip time = p*dur; last frame is just before the seam
+      else eng.seek(((p * opts.seconds) % dur) / dur);
       eng.renderFrame();
       composite(ctx, w, h, eng, bg);
       const { data } = ctx.getImageData(0, 0, w, h);
       const palette = quantize(data, 256, { format });
       const index = applyPalette(data, palette, format);
       const tIndex = transparent ? palette.findIndex((c) => c[3] === 0) : -1;
-      gif.writeFrame(index, w, h, { palette, delay: Math.round(1000 / opts.fps), transparent: tIndex >= 0, transparentIndex: tIndex >= 0 ? tIndex : 0 });
+      gif.writeFrame(index, w, h, { palette, delay, transparent: tIndex >= 0, transparentIndex: tIndex >= 0 ? tIndex : 0 });
       opts.onProgress?.((i + 1) / frames);
       if (i % 4 === 0) await new Promise((r) => setTimeout(r, 0)); // yield so the UI can paint progress
     }
