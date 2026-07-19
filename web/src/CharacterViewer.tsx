@@ -108,6 +108,7 @@ export function CharacterViewer({ ctx, index }: { ctx: Ctx; index: unknown }) {
   const [loop, setLoop] = useState(true);
   const [speed, setSpeed] = useState(1);
   const [camMode, setCamMode] = useState<'orbit' | 'iso'>('orbit');
+  const [facing, setFacing] = useState<number | null>(0);
   const scrubRef = useRef<HTMLInputElement>(null);
   const scrubbingRef = useRef(false);
 
@@ -317,15 +318,27 @@ export function CharacterViewer({ ctx, index }: { ctx: Ctx; index: unknown }) {
           <span style={{ color: 'var(--muted)', background: '#00000099', padding: '4px 8px', borderRadius: 6, maxWidth: 340, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{nowPlaying || 'pick a clip →'}</span>
           {idleClip && <button className="secondary" title="Reset to idle animation" onClick={() => playClip(idleClip)} style={{ padding: '4px 10px', fontSize: 12, lineHeight: 1 }}>↺ Idle</button>}
         </div>
-        <div style={{ position: 'absolute', right: 12, top: 12, display: 'flex', gap: 8, alignItems: 'flex-start' }}>
-          <button className="secondary" title="Equipped items" onClick={() => setEquipOpen((v) => !v)}
-            style={{ borderRadius: 6, padding: '7px 12px', fontSize: 13, lineHeight: 1, border: '1px solid var(--line)', background: equipOpen ? 'var(--accent)' : 'var(--panel)', color: equipOpen ? '#fff' : 'var(--text)' }}>Equipped{equipList.length ? ` (${equipList.length})` : ''}</button>
-          <div style={{ display: 'flex', border: '1px solid var(--line)', borderRadius: 6, overflow: 'hidden' }}>
-            <button className="secondary" title="Free orbit" onClick={() => setCamPreset('orbit')}
-              style={{ borderRadius: 0, padding: '5px 11px', fontSize: 24, lineHeight: 1, background: camMode === 'orbit' ? 'var(--accent)' : 'var(--panel)', color: camMode === 'orbit' ? '#fff' : 'var(--text)' }}>⟳</button>
-            <button className="secondary" title="PZ iso" onClick={() => setCamPreset('iso')}
-              style={{ borderRadius: 0, padding: '5px 11px', fontSize: 24, lineHeight: 1, background: camMode === 'iso' ? 'var(--accent)' : 'var(--panel)', color: camMode === 'iso' ? '#fff' : 'var(--text)' }}>◈</button>
+        <div style={{ position: 'absolute', right: 12, top: 12, display: 'flex', flexDirection: 'column', gap: 8, alignItems: 'flex-end' }}>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+            <button className="secondary" title="Equipped items" onClick={() => setEquipOpen((v) => !v)}
+              style={{ borderRadius: 6, padding: '7px 12px', fontSize: 13, lineHeight: 1, border: '1px solid var(--line)', background: equipOpen ? 'var(--accent)' : 'var(--panel)', color: equipOpen ? '#fff' : 'var(--text)' }}>Equipped{equipList.length ? ` (${equipList.length})` : ''}</button>
+            <div style={{ display: 'flex', border: '1px solid var(--line)', borderRadius: 6, overflow: 'hidden' }}>
+              <button className="secondary" title="Free orbit" onClick={() => setCamPreset('orbit')}
+                style={{ borderRadius: 0, padding: '5px 11px', fontSize: 24, lineHeight: 1, background: camMode === 'orbit' ? 'var(--accent)' : 'var(--panel)', color: camMode === 'orbit' ? '#fff' : 'var(--text)' }}>⟳</button>
+              <button className="secondary" title="PZ iso" onClick={() => setCamPreset('iso')}
+                style={{ borderRadius: 0, padding: '5px 11px', fontSize: 24, lineHeight: 1, background: camMode === 'iso' ? 'var(--accent)' : 'var(--panel)', color: camMode === 'iso' ? '#fff' : 'var(--text)' }}>◈</button>
+            </div>
           </div>
+          {/* Facing compass: only meaningful under the fixed PZ iso camera, so it appears
+              beneath the iso button and hides in free orbit. */}
+          {camMode === 'iso' && (
+            <div title="Facing" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 34px)', gap: 3, background: '#0e0e13cc', border: '1px solid var(--line)', borderRadius: 8, padding: 5 }}>
+              {FACING_GRID.map((cell, i) => cell === null ? <span key={i} /> : (
+                <button key={i} className="secondary" onClick={() => { setFacing(cell[1]); engineRef.current?.setFacing(cell[1]); }}
+                  style={{ padding: '6px 0', fontSize: 11, lineHeight: 1, background: facing === cell[1] ? 'var(--accent)' : 'var(--panel)', color: facing === cell[1] ? '#fff' : 'var(--text)' }}>{cell[0]}</button>
+              ))}
+            </div>
+          )}
         </div>
         {equipOpen && (
           <div style={{ position: 'absolute', right: 12, top: 54, width: 264, maxHeight: '68%', overflow: 'auto', background: '#0e0e13f2', border: '1px solid var(--line)', borderRadius: 8, padding: 8 }}>
@@ -477,7 +490,6 @@ function SceneTab({ engineRef, floorSel, onPreset, onClear, studio }: {
   floorSel: string | null; onPreset: (name: string, tiles: string[]) => void; onClear: () => void;
   studio: StudioCtl;
 }) {
-  const [facing, setFacing] = useState<number | null>(0);
   const [grid, setGrid] = useState(true);
   const [shadow, setShadow] = useState(true);
   const [light, setLight] = useState({ ...LIGHT_DEFAULT });
@@ -496,15 +508,7 @@ function SceneTab({ engineRef, floorSel, onPreset, onClear, studio }: {
 
   return (
     <div style={{ padding: 12, overflow: 'auto', height: '100%' }}>
-      <label style={{ ...label, marginTop: 0 }}>Facing</label>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 52px)', gap: 4 }}>
-        {FACING_GRID.map((cell, i) => cell === null ? <span key={i} /> : (
-          <button key={i} className="secondary" onClick={() => { setFacing(cell[1]); engineRef.current?.setFacing(cell[1]); }}
-            style={{ padding: '8px 0', background: facing === cell[1] ? 'var(--accent)' : 'var(--panel)', color: facing === cell[1] ? '#fff' : 'var(--text)' }}>{cell[0]}</button>
-        ))}
-      </div>
-
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', margin: '18px 0 6px' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', margin: '0 0 6px' }}>
         <span style={{ color: 'var(--muted)', fontSize: 12 }}>Lighting</span>
         <button className="secondary" onClick={resetL} style={{ padding: '3px 10px', fontSize: 12 }}>Reset</button>
       </div>
