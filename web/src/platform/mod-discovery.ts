@@ -8,6 +8,7 @@ import { createFsaAssetSource, type AssetSource } from './fsa-source';
 export interface DiscoveredMod {
   key: string;          // stable id (modId)
   name: string;         // from mod.info, falls back to modId
+  author?: string;      // from mod.info (author/poster), if present
   workshopId: string;
   modId: string;
   roots: FileSystemDirectoryHandle[]; // highest priority first
@@ -58,18 +59,20 @@ async function modRoots(modDir: FileSystemDirectoryHandle): Promise<FileSystemDi
   return [];
 }
 
-async function readModName(dirs: FileSystemDirectoryHandle[], fallback: string): Promise<string> {
+async function readModInfo(dirs: FileSystemDirectoryHandle[], fallback: string): Promise<{ name: string; author?: string }> {
   for (const d of dirs) {
     const f = await childFileCI(d, 'mod.info');
     if (f) {
       try {
         const text = await (await f.getFile()).text();
-        const m = text.match(/^\s*name\s*=\s*(.+?)\s*$/mi);
-        if (m && m[1]) return m[1].trim();
+        const field = (k: string) => text.match(new RegExp(`^\\s*${k}\\s*=\\s*(.+?)\\s*$`, 'mi'))?.[1]?.trim() || undefined;
+        const name = field('name');
+        const author = field('author'); // `poster` is an image file, not the author
+        if (name) return { name, author };
       } catch { /* ignore */ }
     }
   }
-  return fallback;
+  return { name: fallback };
 }
 
 /** Find the content/108600 dir from whatever the user picked (108600 itself, content,
@@ -110,8 +113,8 @@ export async function discoverWorkshopMods(picked: FileSystemDirectoryHandle, on
         const roots = await modRoots(mod.handle);
         if (!roots.length) continue;
         seen.add(mod.name);
-        const name = await readModName(roots, mod.name);
-        mods.push({ key: mod.name, name, workshopId: ws.name, modId: mod.name, roots });
+        const info = await readModInfo(roots, mod.name);
+        mods.push({ key: mod.name, name: info.name, author: info.author, workshopId: ws.name, modId: mod.name, roots });
         onProgress?.(mods.length);
       }
     }

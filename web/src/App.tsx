@@ -178,42 +178,46 @@ export function App() {
 
           {mods.length > 0 && (
             <div className="card">
-              <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 8, flexWrap: 'wrap' }}>
-                <b>Active mods</b>
-                <span style={{ color: 'var(--muted)', fontSize: 12 }}>{activeMods.length} of {mods.length} · higher = overrides lower & vanilla</span>
+              <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginBottom: 12, flexWrap: 'wrap' }}>
+                <b style={{ fontSize: 13 }}>Mods</b>
+                <span style={{ color: 'var(--muted)', fontSize: 12 }}>{activeMods.length} of {mods.length} active · top of the list overrides those below and vanilla</span>
                 <span style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
-                  <button className="secondary" onClick={addAllMods} disabled={phase === 'scanning'} style={{ padding: '4px 10px', fontSize: 12 }}>Add all</button>
-                  <button className="secondary" onClick={clearMods} disabled={phase === 'scanning'} style={{ padding: '4px 10px', fontSize: 12 }}>Clear</button>
-                  <button onClick={applyMods} disabled={!installHandle || phase === 'scanning'}>Apply & rescan</button>
+                  <button className="secondary" onClick={addAllMods} disabled={phase === 'scanning'} style={{ padding: '5px 11px', fontSize: 12 }}>Add all</button>
+                  <button className="secondary" onClick={clearMods} disabled={phase === 'scanning'} style={{ padding: '5px 11px', fontSize: 12 }}>Clear</button>
+                  <button onClick={applyMods} disabled={!installHandle || phase === 'scanning'} style={{ padding: '5px 13px' }}>Apply & rescan</button>
                 </span>
               </div>
-              <div style={{ maxHeight: 220, overflow: 'auto', display: 'grid', gap: 3 }}>
+
+              <div className="modlabel" style={{ marginBottom: 6 }}>Active</div>
+              <div style={{ maxHeight: 220, overflow: 'auto', display: 'grid', gap: 4 }}>
                 {activeMods.map((m, i) => (
-                  <div key={m.key} style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13, padding: '2px 4px', background: '#14141a', borderRadius: 5 }}>
-                    <span style={{ display: 'flex', gap: 2 }}>
-                      <button className="secondary" onClick={() => moveMod(m.key, -1)} disabled={i === 0} style={{ padding: '0 6px' }}>↑</button>
-                      <button className="secondary" onClick={() => moveMod(m.key, 1)} disabled={i === activeMods.length - 1} style={{ padding: '0 6px' }}>↓</button>
-                    </span>
-                    <span style={{ flex: 1, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{m.name}</span>
-                    <button className="secondary" onClick={() => toggleMod(m.key)} style={{ padding: '2px 8px', fontSize: 12 }}>remove</button>
+                  <div key={m.key} className="modrow">
+                    <div style={{ display: 'flex', gap: 3 }}>
+                      <button className="iconbtn" onClick={() => moveMod(m.key, -1)} disabled={i === 0} title="move up">↑</button>
+                      <button className="iconbtn" onClick={() => moveMod(m.key, 1)} disabled={i === activeMods.length - 1} title="move down">↓</button>
+                    </div>
+                    <ModName mod={m} />
+                    <button className="iconbtn danger" onClick={() => toggleMod(m.key)} title="remove"><TrashIcon /></button>
                   </div>
                 ))}
-                {!activeMods.length && <span style={{ color: 'var(--muted)', fontSize: 13 }}>No active mods. Add some below.</span>}
+                {!activeMods.length && <div style={{ color: 'var(--muted)', fontSize: 12.5, padding: '10px 4px' }}>No active mods yet. Add some from the list below.</div>}
               </div>
+
               {inactiveAll.length > 0 && (
                 <>
-                  <div style={{ display: 'flex', gap: 8, alignItems: 'center', margin: '10px 0 4px' }}>
-                    <span style={{ color: 'var(--muted)', fontSize: 12 }}>Available</span>
-                    <input value={modFilter} onChange={(e) => setModFilter(e.target.value)} placeholder="filter mods…"
-                      style={{ flex: 1, background: '#14141a', color: 'var(--text)', border: '1px solid var(--line)', borderRadius: 6, padding: '4px 8px', fontSize: 12 }} />
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center', margin: '14px 0 6px' }}>
+                    <span className="modlabel">Available</span>
+                    <input value={modFilter} onChange={(e) => setModFilter(e.target.value)} placeholder="filter…"
+                      style={{ marginLeft: 'auto', width: 170, background: '#14141a', color: 'var(--text)', border: '1px solid var(--line)', borderRadius: 6, padding: '5px 8px', fontSize: 12 }} />
                   </div>
-                  <div style={{ maxHeight: 160, overflow: 'auto', display: 'grid', gap: 3 }}>
+                  <div style={{ maxHeight: 200, overflow: 'auto', display: 'grid', gap: 4 }}>
                     {inactiveMods.map((m) => (
-                      <div key={m.key} style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13, padding: '2px 4px' }}>
-                        <span style={{ flex: 1, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', color: 'var(--muted)' }}>{m.name}</span>
-                        <button className="secondary" onClick={() => toggleMod(m.key)} style={{ padding: '2px 8px', fontSize: 12 }}>+ add</button>
+                      <div key={m.key} className="modrow">
+                        <ModName mod={m} />
+                        <button className="iconbtn add" onClick={() => toggleMod(m.key)} title="add">+</button>
                       </div>
                     ))}
+                    {!inactiveMods.length && <div style={{ color: 'var(--muted)', fontSize: 12.5, padding: '10px 4px' }}>No mods match “{modFilter}”.</div>}
                   </div>
                 </>
               )}
@@ -269,6 +273,24 @@ function SafetyInfo() {
         <p><b>You stay in control.</b> Close the tab and all access ends. The only things kept are small local caches (thumbnails and converted meshes) in your browser's own storage, which you can wipe anytime with the <b>Clear</b> button. They are never sent anywhere.</p>
       </div>
     </details>
+  );
+}
+
+const TrashIcon = () => (
+  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+    <path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14M10 11v5M14 11v5" />
+  </svg>
+);
+
+// One mod row's label: name on top, author (from mod.info) below. The second line is always
+// reserved so rows keep a consistent height whether or not an author is known.
+function ModName({ mod }: { mod: DiscoveredMod }) {
+  const ellip = { whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' } as const;
+  return (
+    <div style={{ flex: 1, minWidth: 0 }}>
+      <div style={{ fontSize: 13, ...ellip }}>{mod.name}</div>
+      <div style={{ fontSize: 11, color: 'var(--muted)', minHeight: 14, ...ellip }}>{mod.author ? 'by ' + mod.author : ''}</div>
+    </div>
   );
 }
 
