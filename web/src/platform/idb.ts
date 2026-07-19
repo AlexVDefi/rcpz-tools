@@ -3,7 +3,7 @@
 // across reloads - but its PERMISSION does not. On return we queryPermission first and
 // only requestPermission() from an explicit user gesture (the API requires one).
 
-const DB_NAME = 'pz-icon-maker';
+const DB_NAME = 'pz-character-studio';
 const DB_VERSION = 1;
 const STORE_HANDLES = 'handles';
 const STORE_CACHE = 'cache';

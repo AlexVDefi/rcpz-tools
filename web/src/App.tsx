@@ -117,8 +117,8 @@ export function App() {
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
           <div style={{ width: 38, height: 38, borderRadius: 9, background: 'linear-gradient(135deg,#5b8cff,#9a6bff)', display: 'grid', placeItems: 'center', fontSize: 19, color: '#fff' }}>◈</div>
           <div>
-            <div style={{ fontSize: 19, fontWeight: 700, lineHeight: 1.1 }}>pz-icon-maker</div>
-            <div style={{ color: 'var(--muted)', fontSize: 12.5 }}>Project Zomboid character studio</div>
+            <div style={{ fontSize: 19, fontWeight: 700, lineHeight: 1.1 }}>PZ Character Studio</div>
+            <div style={{ color: 'var(--muted)', fontSize: 12.5 }}>Dress, pose and export your survivors</div>
           </div>
         </div>
         {index != null && (

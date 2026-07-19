@@ -214,17 +214,17 @@ export function CharacterViewer({ ctx, index }: { ctx: Ctx; index: unknown }) {
       if (kind === 'png') {
         setExporting({ label: 'PNG', progress: 1 });
         const [w, h] = evenDims(aspect, 1080);
-        download(await exportPng(eng, w, h, bg), `pz-icon-${stamp}.png`);
+        download(await exportPng(eng, w, h, bg), `pz-character-${stamp}.png`);
       } else if (kind === 'gif') {
         setExporting({ label: 'GIF', progress: 0 });
         const [w, h] = evenDims(aspect, 512);
         const blob = await exportGif(eng, w, h, bg, { seconds: 5, fps: 15, content, onProgress: (p) => setExporting({ label: 'GIF', progress: p }) });
-        download(blob, `pz-icon-${stamp}.gif`);
+        download(blob, `pz-character-${stamp}.gif`);
       } else {
         setExporting({ label: 'video', progress: 0 });
         const [w, h] = evenDims(aspect, 1080);
         const { blob, ext } = await exportVideo(eng, w, h, bg, { seconds: mp4Seconds, fps: 30, content, onProgress: (p) => setExporting({ label: 'video', progress: p }) });
-        download(blob, `pz-icon-${stamp}.${ext}`);
+        download(blob, `pz-character-${stamp}.${ext}`);
       }
     } catch (e) { setNowPlaying('export error: ' + (e instanceof Error ? e.message : String(e))); }
     finally { setExporting(null); }
