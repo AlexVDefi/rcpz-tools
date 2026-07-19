@@ -16,7 +16,7 @@ export interface ParsedChar {
   clothing?: Array<{ fullType: string; clothingItemName: string; tint: number[] | null; textureChoice: number | null; hue: number | null }>;
   warnings: string[];
 }
-export interface SaveEntry { mode: string; save: string; name: string; worldVersion: number; dbFile: FileSystemFileHandle }
+export interface SaveEntry { mode: string; save: string; name: string; worldVersion: number; lastModified: number; dbFile: FileSystemFileHandle }
 
 let sqlPromise: Promise<SqlJsStatic> | null = null;
 const getSql = () => (sqlPromise ??= initSqlJs({ locateFile: () => wasmUrl }));
@@ -44,16 +44,18 @@ export async function discoverSaves(root: FileSystemDirectoryHandle): Promise<Sa
       let dbFile: FileSystemFileHandle;
       try { dbFile = await (save as FileSystemDirectoryHandle).getFileHandle('players.db'); } catch { continue; }
       try {
-        const db = await openDb(dbFile);
+        const file = await dbFile.getFile();
+        const SQL = await getSql();
+        const db = new SQL.Database(new Uint8Array(await file.arrayBuffer()));
         try {
           const res = db.exec('SELECT name, worldversion FROM localPlayers LIMIT 1');
           const row = res[0]?.values?.[0];
-          if (row) out.push({ mode: mode.name, save: save.name, name: String(row[0] ?? '?'), worldVersion: Number(row[1] ?? 0), dbFile });
+          if (row) out.push({ mode: mode.name, save: save.name, name: String(row[0] ?? '?'), worldVersion: Number(row[1] ?? 0), lastModified: file.lastModified, dbFile });
         } finally { db.close(); }
       } catch { /* skip unreadable/locked db */ }
     }
   }
-  out.sort((a, b) => a.mode.localeCompare(b.mode) || b.save.localeCompare(a.save));
+  out.sort((a, b) => b.lastModified - a.lastModified); // most-recently-played first
   return out;
 }
 

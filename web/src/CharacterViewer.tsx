@@ -672,9 +672,21 @@ function CharacterTab({ hairData, gender, setGender, skin, tones, onSkin, thumbs
 }
 
 // Modal: pick the Zomboid saves folder, list saves + their character, import a look.
+const relTime = (ms: number) => {
+  const s = Math.max(0, (Date.now() - ms) / 1000);
+  if (s < 90) return 'just now';
+  const m = s / 60; if (m < 60) return `${Math.round(m)} min ago`;
+  const h = m / 60; if (h < 24) return `${Math.round(h)} hr ago`;
+  const d = h / 24; if (d < 30) return `${Math.round(d)} day${Math.round(d) === 1 ? '' : 's'} ago`;
+  const mo = d / 30; if (mo < 12) return `${Math.round(mo)} month${Math.round(mo) === 1 ? '' : 's'} ago`;
+  return `${Math.round(mo / 12)} yr ago`;
+};
+
 function ImportModal({ onClose, onImport }: { onClose: () => void; onImport: (p: ParsedChar) => Promise<void> }) {
   const [saves, setSaves] = useState<SaveEntry[] | null>(null);
   const [busy, setBusy] = useState('');
+  const [q, setQ] = useState('');
+  const [sort, setSort] = useState<'recent' | 'name' | 'save'>('recent');
   const pick = async () => {
     setBusy('Opening folder…');
     try {
@@ -689,24 +701,50 @@ function ImportModal({ onClose, onImport }: { onClose: () => void; onImport: (p:
     try { const parsed = await importCharacter(entry); await onImport(parsed); onClose(); }
     catch (e) { setBusy('error reading save: ' + (e as Error).message); }
   };
+  const shown = useMemo(() => {
+    if (!saves) return [];
+    const f = q.trim().toLowerCase();
+    const rows = f ? saves.filter((s) => (s.name + ' ' + s.save + ' ' + s.mode).toLowerCase().includes(f)) : saves.slice();
+    rows.sort((a, b) => sort === 'name' ? a.name.localeCompare(b.name) : sort === 'save' ? (a.mode.localeCompare(b.mode) || b.save.localeCompare(a.save)) : b.lastModified - a.lastModified);
+    return rows;
+  }, [saves, q, sort]);
   const row = { display: 'block', width: '100%', textAlign: 'left', padding: '8px 10px', margin: '4px 0', borderRadius: 6 } as const;
+  const input = { background: '#14141a', color: 'var(--text)', border: '1px solid var(--line)', borderRadius: 6, padding: '6px 8px', fontSize: 12.5 } as const;
   return (
     <div style={{ position: 'fixed', inset: 0, background: '#000000aa', zIndex: 50, display: 'flex', alignItems: 'center', justifyContent: 'center' }} onClick={onClose}>
-      <div onClick={(e) => e.stopPropagation()} style={{ width: 520, maxWidth: '92vw', maxHeight: '80vh', background: 'var(--panel)', border: '1px solid var(--line)', borderRadius: 10, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ width: 540, maxWidth: '92vw', maxHeight: '82vh', background: 'var(--panel)', border: '1px solid var(--line)', borderRadius: 10, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
         <div style={{ padding: '12px 14px', borderBottom: '1px solid var(--line)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <span style={{ fontWeight: 600 }}>Import character look from a save</span>
           <span role="button" onClick={onClose} title="close" style={{ cursor: 'pointer', color: 'var(--muted)' }}>✕</span>
         </div>
-        <div style={{ padding: 14, overflow: 'auto' }}>
-          <button className="secondary" onClick={pick} style={{ padding: '8px 14px', background: 'var(--accent)', color: '#fff' }}>Choose your Zomboid folder…</button>
-          <div style={{ color: 'var(--muted)', fontSize: 11, margin: '8px 0 4px' }}>Point at your Zomboid folder (usually in Documents) or its Saves folder. Read locally in your browser — nothing is uploaded.</div>
+        <div style={{ padding: 14, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            <button className="secondary" onClick={pick} style={{ padding: '8px 14px', background: 'var(--accent)', color: '#fff' }}>{saves ? 'Choose another folder' : 'Choose your Zomboid folder…'}</button>
+            {saves && saves.length > 0 && (
+              <>
+                <input value={q} onChange={(e) => setQ(e.target.value)} placeholder={`Search ${saves.length} saves…`} style={{ ...input, flex: '1 1 140px', minWidth: 120 }} />
+                <select value={sort} onChange={(e) => setSort(e.target.value as typeof sort)} style={input} title="sort">
+                  <option value="recent">Last played</option>
+                  <option value="name">Character name</option>
+                  <option value="save">Save</option>
+                </select>
+              </>
+            )}
+          </div>
+          {!saves && <div style={{ color: 'var(--muted)', fontSize: 11, margin: '8px 0 4px' }}>Point at your Zomboid folder (usually in Documents) or its Saves folder. Read locally in your browser — nothing is uploaded.</div>}
           {busy && <div style={{ color: 'var(--muted)', fontSize: 13, padding: '6px 2px' }}>{busy}</div>}
-          {saves && saves.map((s, i) => (
-            <button key={i} className="secondary" onClick={() => doImport(s)} style={row}>
-              <div style={{ fontSize: 13 }}>{s.name}</div>
-              <div style={{ fontSize: 11, color: 'var(--muted)' }}>{s.mode} · {s.save} · v{s.worldVersion}</div>
-            </button>
-          ))}
+          <div style={{ overflow: 'auto', marginTop: 8, minHeight: 0 }}>
+            {shown.map((s, i) => (
+              <button key={i} className="secondary" onClick={() => doImport(s)} style={row}>
+                <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
+                  <span style={{ fontSize: 13, flex: 1, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{s.name}</span>
+                  <span style={{ fontSize: 11, color: 'var(--muted)', flexShrink: 0 }}>{relTime(s.lastModified)}</span>
+                </div>
+                <div style={{ fontSize: 11, color: 'var(--muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{s.mode} · {s.save} · v{s.worldVersion}</div>
+              </button>
+            ))}
+            {saves && saves.length > 0 && !shown.length && <div style={{ color: 'var(--muted)', fontSize: 13, padding: 12, textAlign: 'center' }}>No saves match “{q}”.</div>}
+          </div>
         </div>
       </div>
     </div>
