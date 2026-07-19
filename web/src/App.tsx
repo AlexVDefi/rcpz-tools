@@ -257,7 +257,9 @@ function SafetyInfo() {
   return (
     <details className="safety" style={{ marginTop: 12, background: '#14141a', border: '1px solid var(--line)', borderRadius: 9 }}>
       <summary style={{ padding: '11px 13px', fontWeight: 600, fontSize: 13, display: 'flex', alignItems: 'center', gap: 10 }}>
-        <span style={{ width: 22, height: 22, borderRadius: 6, background: '#1e3a24', color: '#5fd07a', display: 'grid', placeItems: 'center', fontSize: 12, flexShrink: 0 }}>✓</span>
+        <span style={{ width: 22, height: 22, borderRadius: 6, background: '#1c2748', color: '#7ea6ff', display: 'grid', placeItems: 'center', flexShrink: 0 }}>
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2l8 3.1v5.2c0 4.9-3.4 9.2-8 10.5-4.6-1.3-8-5.6-8-10.5V5.1z" /></svg>
+        </span>
         Why does it need my files, and is it safe?
         <span className="chev" style={{ marginLeft: 'auto', color: 'var(--muted)' }}>▾</span>
       </summary>
