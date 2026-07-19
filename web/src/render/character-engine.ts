@@ -570,7 +570,11 @@ export class CharacterEngine {
     if (r.scale && r.scale !== 1) obj.scale.setScalar(r.scale);
     const holder = new THREE.Object3D();
     holder.matrixAutoUpdate = false;
-    holder.matrix.copy(partMatrix(null, att));
+    // PZ weapon meshes run their barrel down local +Y, but the prop bone's weapon axis is +Z
+    // (that's the axis the animations point the gun along - e.g. straight up during a reload). With
+    // no explicit prop attachment the mount would be identity and the gun lies sideways, so default
+    // to a +90 deg X rotation that maps the barrel (+Y) onto the prop's weapon axis (+Z).
+    holder.matrix.copy(att ? partMatrix(null, att) : new THREE.Matrix4().makeRotationX(Math.PI / 2));
     holder.add(obj);
     holder.visible = !this.hidden.has(item.name);
     bone.add(holder);
