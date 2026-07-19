@@ -151,6 +151,7 @@ export function App() {
             ))}
           </div>
           {error && <p style={{ color: '#ff8a8a', marginTop: 18 }}>Error: {error}</p>}
+          <div style={{ textAlign: 'left', marginTop: 28 }}><SafetyInfo /></div>
         </section>
       )}
 
