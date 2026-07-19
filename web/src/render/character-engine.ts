@@ -340,8 +340,14 @@ export class CharacterEngine {
     const raw = new THREE.Box3().setFromObject(root);
     this.rigs.setGroundOffset(this.rigs.groundOffset - raw.min.y);
     root.updateMatrixWorld(true);
-    this.footBones = ['Bip01_L_Foot', 'Bip01_R_Foot', 'Bip01_L_Toe0', 'Bip01_R_Toe0']
-      .map((n) => root.getObjectByName(n)).filter((o): o is THREE.Object3D => !!o);
+    // Take foot bones from the skinned mesh's actual skeleton, NOT getObjectByName: these PZ rigs
+    // carry duplicate-named proxy nodes (see anim.ts boneWorldMap), and getObjectByName can
+    // return a proxy that a retargeted clip flings metres away - which would launch the whole
+    // model off-screen when used as the ground reference. skeleton.bones are the real joints.
+    const footNames = new Set(['Bip01_L_Foot', 'Bip01_R_Foot', 'Bip01_L_Toe0', 'Bip01_R_Toe0']);
+    const bones: THREE.Bone[] = [];
+    root.traverse((o) => { const sm = o as THREE.SkinnedMesh; if (sm.isSkinnedMesh && sm.skeleton && !bones.length) bones.push(...sm.skeleton.bones); });
+    this.footBones = bones.filter((b) => footNames.has(b.name));
     this.soleGap = this.minFootWorldY(); // bind sole is on 0, so this is the foot-bone height above the sole
     const box = new THREE.Box3().setFromObject(root);
     const c = box.getCenter(new THREE.Vector3());
