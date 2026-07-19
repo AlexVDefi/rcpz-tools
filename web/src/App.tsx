@@ -109,46 +109,73 @@ export function App() {
   const inactiveMods = inactiveAll.filter((m) => !modFilter || m.name.toLowerCase().includes(modFilter.toLowerCase()));
   const wide = view === 'character' && index != null;
 
+  const firstRun = !installHandle && !counts;
+
   return (
-    <div style={{ maxWidth: wide ? 'none' : 980, margin: wide ? 0 : '0 auto', padding: '16px 24px' }}>
-      <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
-        <h1 style={{ marginBottom: 4 }}>pz-icon-maker <span style={{ color: 'var(--muted)', fontWeight: 400 }}>· web</span></h1>
+    <div style={{ maxWidth: wide ? 'none' : 1000, margin: wide ? 0 : '0 auto', padding: wide ? '14px 20px' : '26px 24px 48px' }}>
+      <header style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <div style={{ width: 38, height: 38, borderRadius: 9, background: 'linear-gradient(135deg,#5b8cff,#9a6bff)', display: 'grid', placeItems: 'center', fontSize: 19, color: '#fff' }}>◈</div>
+          <div>
+            <div style={{ fontSize: 19, fontWeight: 700, lineHeight: 1.1 }}>pz-icon-maker</div>
+            <div style={{ color: 'var(--muted)', fontSize: 12.5 }}>Project Zomboid character studio</div>
+          </div>
+        </div>
         {index != null && (
-          <div style={{ display: 'flex', gap: 6 }}>
+          <div style={{ display: 'flex', border: '1px solid var(--line)', borderRadius: 8, overflow: 'hidden' }}>
             {(['overview', 'character'] as const).map((v) => (
-              <button key={v} className="secondary" onClick={() => setView(v)} style={{ background: view === v ? 'var(--accent)' : 'var(--panel)', color: view === v ? '#fff' : 'var(--text)' }}>
+              <button key={v} className="secondary" onClick={() => setView(v)} style={{ borderRadius: 0, border: 0, background: view === v ? 'var(--accent)' : 'transparent', color: view === v ? '#fff' : 'var(--text)' }}>
                 {v === 'overview' ? 'Overview' : 'Character viewer'}
               </button>
             ))}
           </div>
         )}
-      </div>
+      </header>
 
       {phase === 'unsupported' && (
-        <div style={{ background: '#3a2626', border: '1px solid #5a3a3a', borderRadius: 8, padding: 16 }}>
-          <strong>This tool needs a Chromium browser.</strong>
-          <p style={{ marginBottom: 0 }}>Reading files from your PC uses the File System Access API — only Chrome, Edge, Brave, and Opera support it.</p>
+        <div className="card" style={{ marginTop: 40, maxWidth: 560, marginInline: 'auto', textAlign: 'center', background: '#2c2226', borderColor: '#5a3a3a' }}>
+          <div style={{ fontSize: 30, marginBottom: 8 }}>◈</div>
+          <strong style={{ fontSize: 16 }}>This tool needs a Chromium browser</strong>
+          <p style={{ color: 'var(--muted)', margin: '8px 0 0' }}>Reading files from your PC uses the File System Access API, supported only by Chrome, Edge, Brave and Opera.</p>
         </div>
       )}
 
-      {phase !== 'unsupported' && view === 'overview' && (
-        <div style={{ marginTop: 12, display: 'grid', gap: 12 }}>
-          <div style={{ background: 'var(--panel)', border: '1px solid var(--line)', borderRadius: 8, padding: 16 }}>
-            <p style={{ marginTop: 0, color: 'var(--muted)' }}>
-              Point the tool at your Project Zomboid install folder (the one containing <code>media/</code>). Nothing is uploaded.
-            </p>
-            <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
-              <button onClick={pickInstall} disabled={phase === 'scanning'}>{installHandle ? `Install: ${installHandle.name}` : 'Choose your PZ install folder…'}</button>
-              {needPerm && <button className="secondary" onClick={reconnect}>Reconnect “{installHandle?.name}”</button>}
-              <button className="secondary" onClick={pickWorkshop} disabled={phase === 'scanning'}>{mods.length ? `Workshop: ${mods.length} mods` : 'Add workshop mods folder…'}</button>
-              {phase === 'scanning' && progress && <span style={{ color: 'var(--muted)' }}>{progress}</span>}
-              {phase === 'ready' && progress && <span style={{ color: 'var(--muted)' }}>{progress}</span>}
+      {phase !== 'unsupported' && view === 'overview' && firstRun && (
+        <section style={{ marginTop: 44, textAlign: 'center', maxWidth: 620, marginInline: 'auto' }}>
+          <h2 style={{ fontSize: 26, margin: '0 0 12px', lineHeight: 1.2 }}>Bring your survivors to life in the browser</h2>
+          <p style={{ color: 'var(--muted)', fontSize: 15, lineHeight: 1.65, margin: '0 0 24px' }}>
+            Point the tool at your local Project Zomboid folder to browse every outfit, weapon and animation, dress and pose a character, import a look straight from a save, and export stills, GIFs or MP4s. Everything runs on your machine — nothing is uploaded.
+          </p>
+          <button onClick={pickInstall} style={{ padding: '11px 22px', fontSize: 15 }}>Choose your PZ install folder…</button>
+          <div style={{ color: 'var(--muted)', fontSize: 12, marginTop: 10 }}>The folder that contains <code>media/</code>. Chromium browsers only.</div>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'center', marginTop: 28 }}>
+            {['Grids & thumbnails', 'Dress, pose & animate', 'Import from a save', 'Export PNG / GIF / MP4'].map((f) => (
+              <span key={f} style={{ background: 'var(--panel)', border: '1px solid var(--line)', borderRadius: 999, padding: '6px 13px', fontSize: 12.5, color: 'var(--muted)' }}>{f}</span>
+            ))}
+          </div>
+          {error && <p style={{ color: '#ff8a8a', marginTop: 18 }}>Error: {error}</p>}
+        </section>
+      )}
+
+      {phase !== 'unsupported' && view === 'overview' && !firstRun && (
+        <div style={{ marginTop: 18, display: 'grid', gap: 14 }}>
+          <div className="card">
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+              <b style={{ fontSize: 13 }}>Sources</b>
+              {phase === 'scanning' && <span style={{ color: 'var(--muted)', fontSize: 12.5 }}><span className="spinner" /> {progress || 'scanning…'}</span>}
+              {phase === 'ready' && progress && <span style={{ color: 'var(--muted)', fontSize: 12.5, marginLeft: 'auto' }}>{progress}</span>}
             </div>
-            {error && <p style={{ color: '#ff8a8a' }}>Error: {error}</p>}
+            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+              <FolderChip label="Game install" name={installHandle?.name} connected={!!installHandle && !needPerm}
+                warn={needPerm ? 'reconnect needed' : undefined} action={needPerm ? 'Reconnect' : 'Change'} onAction={needPerm ? reconnect : pickInstall} disabled={phase === 'scanning'} />
+              <FolderChip label="Workshop mods" name={mods.length ? `${mods.length} mods found` : undefined} connected={mods.length > 0}
+                action={mods.length ? 'Change' : 'Add'} onAction={pickWorkshop} disabled={phase === 'scanning'} />
+            </div>
+            {error && <p style={{ color: '#ff8a8a', margin: '10px 0 0' }}>Error: {error}</p>}
           </div>
 
           {mods.length > 0 && (
-            <div style={{ background: 'var(--panel)', border: '1px solid var(--line)', borderRadius: 8, padding: 16 }}>
+            <div className="card">
               <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 8, flexWrap: 'wrap' }}>
                 <b>Active mods</b>
                 <span style={{ color: 'var(--muted)', fontSize: 12 }}>{activeMods.length} of {mods.length} · higher = overrides lower & vanilla</span>
@@ -192,17 +219,19 @@ export function App() {
           )}
 
           {counts && (
-            <div style={{ background: 'var(--panel)', border: '1px solid var(--line)', borderRadius: 8, padding: 16 }}>
-              <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 12 }}>
-                {([['Clothing', counts.clothing], ['· modded', counts.modClothing], ['Clips', counts.clips], ['Held items', counts.held], ['Hair M/F', `${counts.hairM}/${counts.hairF}`], ['Beards', counts.beards]] as const).map(([label, n]) => (
-                  <div key={label} style={{ background: '#14141a', border: '1px solid var(--line)', borderRadius: 8, padding: '10px 14px' }}>
-                    <div style={{ fontSize: 20, fontWeight: 600 }}>{n}</div>
-                    <div style={{ color: 'var(--muted)', fontSize: 12 }}>{label}</div>
+            <div className="card">
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+                <b style={{ fontSize: 13 }}>Library</b>
+                <button onClick={() => setView('character')} style={{ marginLeft: 'auto' }}>Open character viewer →</button>
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(120px, 1fr))', gap: 10, margin: '14px 0 4px' }}>
+                {([['Clothing', counts.clothing, counts.modClothing ? `${counts.modClothing} modded` : null], ['Held items', counts.held, null], ['Animations', counts.clips, null], ['Hair', `${counts.hairM + counts.hairF}`, `${counts.hairM} M · ${counts.hairF} F`], ['Beards', counts.beards, null]] as const).map(([label, n, sub]) => (
+                  <div key={label} style={{ background: '#14141a', border: '1px solid var(--line)', borderRadius: 9, padding: '12px 14px' }}>
+                    <div style={{ fontSize: 22, fontWeight: 700, lineHeight: 1.1 }}>{n}</div>
+                    <div style={{ color: 'var(--muted)', fontSize: 12, marginTop: 2 }}>{label}</div>
+                    {sub && <div style={{ color: 'var(--accent)', fontSize: 11, marginTop: 3 }}>{sub}</div>}
                   </div>
                 ))}
-              </div>
-              <div style={{ display: 'flex', gap: 10 }}>
-                <button onClick={() => setView('character')}>Open character viewer →</button>
               </div>
               <CacheInfo />
             </div>
@@ -217,6 +246,22 @@ export function App() {
   );
 }
 
+// A connected/unconnected folder tile for the Sources card.
+function FolderChip({ label, name, connected, warn, action, onAction, disabled }: {
+  label: string; name?: string; connected: boolean; warn?: string; action: string; onAction: () => void; disabled?: boolean;
+}) {
+  return (
+    <div style={{ flex: '1 1 240px', minWidth: 220, display: 'flex', alignItems: 'center', gap: 11, background: '#14141a', border: '1px solid var(--line)', borderRadius: 9, padding: '11px 12px' }}>
+      <div style={{ width: 30, height: 30, borderRadius: 7, display: 'grid', placeItems: 'center', fontSize: 15, flexShrink: 0, background: connected ? '#1e3a24' : warn ? '#3a3320' : '#20202a', color: connected ? '#5fd07a' : warn ? '#e0c060' : 'var(--muted)' }}>{connected ? '✓' : warn ? '!' : '+'}</div>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: 12, color: 'var(--muted)' }}>{label}</div>
+        <div style={{ fontSize: 13, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', color: warn ? '#e0c060' : 'var(--text)' }}>{warn || name || 'not connected'}</div>
+      </div>
+      <button className="secondary" onClick={onAction} disabled={disabled} style={{ padding: '5px 11px', fontSize: 12.5, flexShrink: 0 }}>{action}</button>
+    </div>
+  );
+}
+
 function CacheInfo() {
   const [bytes, setBytes] = useState<number | null>(null);
   const [count, setCount] = useState<number | null>(null);
@@ -226,10 +271,12 @@ function CacheInfo() {
   const clear = useCallback(async () => { setBusy(true); await idbCache.clear(); location.reload(); }, []);
   const mb = bytes != null ? (bytes / 1e6).toFixed(1) + ' MB' : '—';
   return (
-    <div style={{ marginTop: 18, color: 'var(--muted)', fontSize: 13, display: 'flex', gap: 12, alignItems: 'center' }}>
-      <span>Thumbnail cache: <b style={{ color: 'var(--text)' }}>{mb}</b>{count != null ? ` · ${count} thumbnails` : ''}</span>
-      <button className="secondary" onClick={clear} disabled={busy} style={{ padding: '4px 10px', fontSize: 12 }}>{busy ? 'clearing…' : 'Clear thumbnails'}</button>
-      <button className="secondary" onClick={refresh} style={{ padding: '4px 10px', fontSize: 12 }}>refresh</button>
+    <div style={{ marginTop: 16, paddingTop: 14, borderTop: '1px solid var(--line)', color: 'var(--muted)', fontSize: 12.5, display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+      <span>Thumbnail cache <b style={{ color: 'var(--text)' }}>{mb}</b>{count != null ? ` · ${count} thumbnails` : ''}</span>
+      <span style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
+        <button className="secondary" onClick={refresh} style={{ padding: '4px 10px', fontSize: 12 }}>refresh</button>
+        <button className="secondary" onClick={clear} disabled={busy} style={{ padding: '4px 10px', fontSize: 12 }}>{busy ? 'clearing…' : 'Clear'}</button>
+      </span>
     </div>
   );
 }
