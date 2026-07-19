@@ -27,7 +27,7 @@ function retargetRestDelta(clip: THREE.AnimationClip, clipRest: Map<string, THRE
   }
 }
 
-export interface NormalisedClip { clip: THREE.AnimationClip; rootRotationX: number; best: boolean; }
+export interface NormalisedClip { clip: THREE.AnimationClip; rootRotationX: number; best: boolean; propMeta?: PropMeta; }
 
 // The body's bind pose, captured once from a freshly-loaded (unposed) rig: enough to
 // world-space retarget a foreign-skeleton glb clip onto it. `bindWorld` covers EVERY named
@@ -99,12 +99,12 @@ const boneWorldMap = (root: THREE.Object3D) => {
 // This transfers MOTION (not absolute pose), so it is correct even when the clip's skeleton
 // has a different bind pose / root chain than the body - the case custom .glb exports hit,
 // which the per-bone rest-delta cannot handle. Rotation only (positions/scale dropped).
-function retargetWorld(clip: THREE.AnimationClip, clipScene: THREE.Object3D, body: SkeletonBind, bodyRoot?: THREE.Object3D): THREE.AnimationClip {
+function retargetWorld(clip: THREE.AnimationClip, clipScene: THREE.Object3D, body: SkeletonBind): { clip: THREE.AnimationClip; mappedSet: Set<string>; times: number[] } {
   const clipBindWorld = bindWorldFromSkin(clipScene); // authoritative bind (NOT node defaults)
   const timeSet = new Set<number>();
   for (const t of clip.tracks) if (QUAT_TRACK.test(t.name)) for (const time of t.times) timeSet.add(time);
   const times = [...timeSet].sort((a, b) => a - b);
-  if (!times.length) return clip;
+  if (!times.length) return { clip, mappedSet: new Set(), times: [] };
 
   const mixer = new THREE.AnimationMixer(clipScene);
   mixer.clipAction(clip).play();
@@ -138,9 +138,7 @@ function retargetWorld(clip: THREE.AnimationClip, clipScene: THREE.Object3D, bod
   }
   mixer.stopAllAction(); mixer.uncacheRoot(clipScene);
   const tracks = mapped.map((n) => new THREE.QuaternionKeyframeTrack(n + '.quaternion', times, values.get(n)!));
-  const mappedSet = new Set(mapped);
-  if (bodyRoot) retargetAttachments(clip, clipScene, body, bodyRoot, mappedSet, times, tracks);
-  return new THREE.AnimationClip(clip.name, clip.duration, tracks);
+  return { clip: new THREE.AnimationClip(clip.name, clip.duration, tracks), mappedSet: new Set(mapped), times };
 }
 
 // The skinned-bone retarget above skips the weapon PROP bones (Bip01_Prop1/Prop2): the PZ body
@@ -151,22 +149,23 @@ function retargetWorld(clip: THREE.AnimationClip, clipScene: THREE.Object3D, bod
 // exactly (a delta-from-bind approach tilts the gun since the binds differ). Pose the body with
 // the bone tracks to read the prop's parent under the retarget, pose the clip to read the prop's
 // motion; both are taken relative to their own root so facing/ground/root transforms cancel.
-function retargetAttachments(
-  clip: THREE.AnimationClip, clipScene: THREE.Object3D, body: SkeletonBind, bodyRoot: THREE.Object3D,
-  mappedSet: Set<string>, times: number[], tracks: THREE.KeyframeTrack[],
-) {
-  const nodes = [...new Set(clip.tracks
+export interface PropMeta { rawClip: THREE.AnimationClip; clipScene: THREE.Object3D; body: SkeletonBind; mappedSet: Set<string>; times: number[]; }
+
+// Build prop tracks (Bip01_Prop1/2) for a glb clip. CRITICAL: `poseBodyAt` must pose the body with
+// the SAME mixer that plays back the finished clip - call this AFTER setClip so the parent bone is
+// in its real playback pose. Baking against a throwaway mixer read the parent in the PREVIOUS clip's
+// pose (fine on a reload->reload replay, wrong on vanilla->reload), tilting the held item.
+export function retargetAttachments(meta: PropMeta, bodyRoot: THREE.Object3D, poseBodyAt: (t: number) => void): THREE.KeyframeTrack[] {
+  const { rawClip, clipScene, body, mappedSet, times } = meta;
+  const nodes = [...new Set(rawClip.tracks
     .map((t) => /^(.+)\.(?:quaternion|position)$/.exec(t.name)?.[1])
     .filter((n): n is string => !!n && !mappedSet.has(n) && body.bindWorld.has(n)))];
-  if (!nodes.length) return;
-
-  const boneClip = new THREE.AnimationClip(clip.name, clip.duration, tracks.slice());
-  const bodyMixer = new THREE.AnimationMixer(bodyRoot);
-  bodyMixer.clipAction(boneClip).play();
-  const clipMixer = new THREE.AnimationMixer(clipScene);
-  clipMixer.clipAction(clip).play();
-
   const active = nodes.filter((n) => clipScene.getObjectByName(n) && bodyRoot.getObjectByName(n)?.parent);
+  if (!active.length) return []; // nothing to bake; don't disturb the body pose
+
+  const clipMixer = new THREE.AnimationMixer(clipScene);
+  clipMixer.clipAction(rawClip).play();
+
   const posVals = new Map(active.map((n) => [n, [] as number[]]));
   const quatVals = new Map(active.map((n) => [n, [] as number[]]));
   const rootInvBody = new THREE.Matrix4(), rootInvClip = new THREE.Matrix4();
@@ -174,7 +173,7 @@ function retargetAttachments(
   const p = new THREE.Vector3(), q = new THREE.Quaternion(), s = new THREE.Vector3();
   for (const time of times) {
     clipMixer.setTime(time); clipScene.updateMatrixWorld(true);
-    bodyMixer.setTime(time); bodyRoot.updateMatrixWorld(true);
+    poseBodyAt(time); bodyRoot.updateMatrixWorld(true);
     rootInvBody.copy(bodyRoot.matrixWorld).invert();
     rootInvClip.copy(clipScene.matrixWorld).invert();
     for (const n of active) {
@@ -190,23 +189,28 @@ function retargetAttachments(
     }
   }
   clipMixer.stopAllAction(); clipMixer.uncacheRoot(clipScene);
-  bodyMixer.stopAllAction(); bodyMixer.uncacheRoot(bodyRoot);
+  const out: THREE.KeyframeTrack[] = [];
   for (const n of active) {
-    tracks.push(new THREE.VectorKeyframeTrack(n + '.position', times, posVals.get(n)!));
-    tracks.push(new THREE.QuaternionKeyframeTrack(n + '.quaternion', times, quatVals.get(n)!));
+    out.push(new THREE.VectorKeyframeTrack(n + '.position', times, posVals.get(n)!));
+    out.push(new THREE.QuaternionKeyframeTrack(n + '.quaternion', times, quatVals.get(n)!));
   }
+  return out;
 }
 
 export function normaliseClip(
   clip: THREE.AnimationClip,
   format: string,
-  ctx: { clipRest?: Map<string, THREE.Quaternion>; bodyRest?: Map<string, THREE.Quaternion>; clipScene?: THREE.Object3D; bodySkel?: SkeletonBind; bodyRoot?: THREE.Object3D } = {},
+  ctx: { clipRest?: Map<string, THREE.Quaternion>; bodyRest?: Map<string, THREE.Quaternion>; clipScene?: THREE.Object3D; bodySkel?: SkeletonBind } = {},
 ): NormalisedClip {
   const fmt = String(format).toLowerCase();
   if (fmt === 'glb' || fmt === 'gltf') {
     // preferred: world-space retarget (handles foreign-skeleton exports correctly)
     if (ctx.clipScene && ctx.bodySkel) {
-      return { clip: retargetWorld(clip, ctx.clipScene, ctx.bodySkel, ctx.bodyRoot), rootRotationX: 0, best: false };
+      const rw = retargetWorld(clip, ctx.clipScene, ctx.bodySkel);
+      // Prop tracks are baked separately, AFTER the caller binds this clip, so the body is posed by
+      // the real playback mixer (see retargetAttachments). Hand back the metadata to do that.
+      const propMeta: PropMeta = { rawClip: clip, clipScene: ctx.clipScene, body: ctx.bodySkel, mappedSet: rw.mappedSet, times: rw.times };
+      return { clip: rw.clip, rootRotationX: 0, best: false, propMeta };
     }
     const c = clip.clone();
     c.tracks = c.tracks.filter((t) => QUAT_TRACK.test(t.name));

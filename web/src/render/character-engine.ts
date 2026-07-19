@@ -5,7 +5,7 @@
 import { resolveBody, resolveClip, resolveClothing, resolveHeldItem, resolveHairStyle } from '@shared/character-core.js';
 import { THREE, makeSkinnedMaterial, makeMaterial, CHAR_LIGHTING, partMatrix, makeOrbit } from './three-core';
 import { glbToGltf, bytesToTexture, sourceToTexture } from './loaders';
-import { normaliseClip, boneRestMap, normalizeClothingRig, captureSkeletonBind, type SkeletonBind } from './anim';
+import { normaliseClip, retargetAttachments, boneRestMap, normalizeClothingRig, captureSkeletonBind, type SkeletonBind } from './anim';
 import { composeBody } from './canvas-image-ops';
 import { RigSet } from './rigset';
 
@@ -408,9 +408,16 @@ export class CharacterEngine {
     if (r.error) throw new Error(r.error);
     const gltf = await glbToGltf(r.glb);
     if (!gltf.animations?.length) throw new Error('no animation in ' + clip.name);
-    const norm = normaliseClip(gltf.animations[0], clip.format, { clipScene: gltf.scene, bodySkel: this.bodySkel ?? undefined, clipRest: boneRestMap(gltf.scene), bodyRest: this.bodyRest, bodyRoot: this.rigs.bodyRig()?.root });
+    const norm = normaliseClip(gltf.animations[0], clip.format, { clipScene: gltf.scene, bodySkel: this.bodySkel ?? undefined, clipRest: boneRestMap(gltf.scene), bodyRest: this.bodyRest });
     this.rigs.setLoop(true);
     this.rigs.setClip(norm);
+    // Bake the weapon prop tracks AFTER binding, so the body is posed by the real playback mixer
+    // (not the previous clip's leftover pose). Then rebind with the prop tracks folded in.
+    const bodyRoot = this.rigs.bodyRig()?.root;
+    if (norm.propMeta && bodyRoot) {
+      const propTracks = retargetAttachments(norm.propMeta, bodyRoot, (t) => this.rigs.setTime(t));
+      if (propTracks.length) { norm.clip.tracks.push(...propTracks); this.rigs.setClip(norm); }
+    }
     this.groundToClip(); // re-ground off this clip's posed feet (formats frame the body differently)
     this.playing = true;
     const tag = norm.best ? '' : (clip.format === 'fbx' ? ' (fbx, best-effort)' : ` (${clip.format}, retargeted)`);
