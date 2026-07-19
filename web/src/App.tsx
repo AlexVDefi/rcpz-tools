@@ -122,12 +122,9 @@ export function App() {
           </div>
         </div>
         {index != null && (
-          <div style={{ display: 'flex', border: '1px solid var(--line)', borderRadius: 8, overflow: 'hidden' }}>
-            {(['overview', 'character'] as const).map((v) => (
-              <button key={v} className="secondary" onClick={() => setView(v)} style={{ borderRadius: 0, border: 0, background: view === v ? 'var(--accent)' : 'transparent', color: view === v ? '#fff' : 'var(--text)' }}>
-                {v === 'overview' ? 'Overview' : 'Character viewer'}
-              </button>
-            ))}
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <button className="secondary" onClick={() => setView('overview')} style={{ borderColor: view === 'overview' ? 'var(--accent)' : 'var(--line)', color: view === 'overview' ? '#fff' : 'var(--text)' }}>Overview</button>
+            <button onClick={() => setView('character')} style={{ padding: '9px 18px', fontWeight: 600, boxShadow: view === 'character' ? 'none' : '0 2px 10px #5b8cff55' }}>Character viewer →</button>
           </div>
         )}
       </header>
@@ -230,10 +227,6 @@ export function App() {
                     {sub && <div style={{ color: 'var(--accent)', fontSize: 11, marginTop: 3 }}>{sub}</div>}
                   </div>
                 ))}
-              </div>
-              <div style={{ textAlign: 'center', margin: '20px 0 10px' }}>
-                <button onClick={() => setView('character')} style={{ padding: '13px 30px', fontSize: 16, fontWeight: 600 }}>Open character viewer →</button>
-                <div style={{ color: 'var(--muted)', fontSize: 12, marginTop: 8 }}>Your library is ready. Open the viewer to dress and pose a character.</div>
               </div>
               <CacheInfo />
             </div>
