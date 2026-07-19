@@ -165,9 +165,11 @@ export function App() {
             </div>
             <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
               <FolderChip label="Game install" name={installHandle?.name} connected={!!installHandle && !needPerm}
-                warn={needPerm ? 'reconnect needed' : undefined} action={needPerm ? 'Reconnect' : 'Change'} onAction={needPerm ? reconnect : pickInstall} disabled={phase === 'scanning'} />
+                warn={needPerm ? 'reconnect needed' : undefined} action={needPerm ? 'Reconnect' : 'Change'} onAction={needPerm ? reconnect : pickInstall} disabled={phase === 'scanning'}
+                hint={<>The Project Zomboid install folder, which contains a <b>media</b> folder. On Steam: right-click <b>Project Zomboid</b> → <b>Manage</b> → <b>Browse local files</b>. Typical path: <code>Steam\steamapps\common\ProjectZomboid</code>.</>} />
               <FolderChip label="Workshop mods" name={mods.length ? `${mods.length} mods found` : undefined} connected={mods.length > 0}
-                action={mods.length ? 'Change' : 'Add'} onAction={pickWorkshop} disabled={phase === 'scanning'} />
+                action={mods.length ? 'Change' : 'Add'} onAction={pickWorkshop} disabled={phase === 'scanning'}
+                hint={<>Your subscribed Steam Workshop mods. In the same Steam library as the game, open <code>steamapps\workshop\content\108600</code> and pick that folder (or its parent). Optional, only needed for modded content.</>} />
             </div>
             {error && <p style={{ color: '#ff8a8a', margin: '10px 0 0' }}>Error: {error}</p>}
             <SafetyInfo />
@@ -267,14 +269,17 @@ function SafetyInfo() {
 }
 
 // A connected/unconnected folder tile for the Sources card.
-function FolderChip({ label, name, connected, warn, action, onAction, disabled }: {
-  label: string; name?: string; connected: boolean; warn?: string; action: string; onAction: () => void; disabled?: boolean;
+function FolderChip({ label, name, connected, warn, action, onAction, disabled, hint }: {
+  label: string; name?: string; connected: boolean; warn?: string; action: string; onAction: () => void; disabled?: boolean; hint?: React.ReactNode;
 }) {
   return (
     <div style={{ flex: '1 1 240px', minWidth: 220, display: 'flex', alignItems: 'center', gap: 11, background: '#14141a', border: '1px solid var(--line)', borderRadius: 9, padding: '11px 12px' }}>
       <div style={{ width: 30, height: 30, borderRadius: 7, display: 'grid', placeItems: 'center', fontSize: 15, flexShrink: 0, background: connected ? '#1e3a24' : warn ? '#3a3320' : '#20202a', color: connected ? '#5fd07a' : warn ? '#e0c060' : 'var(--muted)' }}>{connected ? '✓' : warn ? '!' : '+'}</div>
       <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontSize: 12, color: 'var(--muted)' }}>{label}</div>
+        <div style={{ fontSize: 12, color: 'var(--muted)', display: 'flex', alignItems: 'center', gap: 6 }}>
+          {label}
+          {hint && <span className="infoi">i<span className="tip" onClick={(e) => e.stopPropagation()}>{hint}</span></span>}
+        </div>
         <div style={{ fontSize: 13, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', color: warn ? '#e0c060' : 'var(--text)' }}>{warn || name || 'not connected'}</div>
       </div>
       <button className="secondary" onClick={onAction} disabled={disabled} style={{ padding: '5px 11px', fontSize: 12.5, flexShrink: 0 }}>{action}</button>
