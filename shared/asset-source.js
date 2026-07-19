@@ -1,11 +1,11 @@
 // AssetSource: one platform seam for reading a single "root" directory tree (a folder
-// that contains a `media/` dir — a mod version dir, common/, or the PZ install).
+// that contains a `media/` dir - a mod version dir, common/, or the PZ install).
 //
 // A root's contents are addressed by a `/`-separated path RELATIVE to the root. The
 // source itself may be case-SENSITIVE (the browser's File System Access API is); callers
 // that need the game's case-INSENSITIVE lookup go through path-resolve.js, which walks
 // each segment via listDir() and matches case-insensitively. So AssetSource stays dumb:
-// list a directory, read a file, stat a file — nothing PZ-specific.
+// list a directory, read a file, stat a file - nothing PZ-specific.
 //
 // Interface (all async):
 //   listDir(relDir)   -> Array<{ name, kind: 'file'|'dir' }>   ([] if missing)

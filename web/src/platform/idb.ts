@@ -1,6 +1,6 @@
 // Minimal IndexedDB store for persisted directory handles (and, later, cached glb bytes
 // + thumbnail blobs). FileSystemDirectoryHandle is structured-cloneable, so it persists
-// across reloads — but its PERMISSION does not. On return we queryPermission first and
+// across reloads - but its PERMISSION does not. On return we queryPermission first and
 // only requestPermission() from an explicit user gesture (the API requires one).
 
 const DB_NAME = 'pz-icon-maker';
@@ -61,7 +61,7 @@ export async function hasPermission(handle: FileSystemHandle): Promise<boolean> 
   return (await handle.queryPermission({ mode: 'read' })) === 'granted';
 }
 
-/** Request read permission — MUST be called from a user gesture (click). */
+/** Request read permission - MUST be called from a user gesture (click). */
 export async function requestPermission(handle: FileSystemHandle): Promise<boolean> {
   if (!handle.requestPermission) return true;
   return (await handle.requestPermission({ mode: 'read' })) === 'granted';

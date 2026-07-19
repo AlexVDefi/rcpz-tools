@@ -1,7 +1,7 @@
 // Async eager index over ordered AssetSource roots (highest priority first).
 //
-// Builds only the SMALL text trees the pickers need — scripts (.txt), clothingItems
-// (.xml), hairstyle manifests — plus the anims_x clip NAMES (no byte reads). The big
+// Builds only the SMALL text trees the pickers need - scripts (.txt), clothingItems
+// (.xml), hairstyle manifests - plus the anims_x clip NAMES (no byte reads). The big
 // binary trees (models_x, textures) are never walked here; they resolve lazily through
 // path-resolve.js when an asset is actually rendered. This is the eager/lazy split that
 // keeps the File System Access API cold-start tractable (~2,800 small files vs ~16,000).

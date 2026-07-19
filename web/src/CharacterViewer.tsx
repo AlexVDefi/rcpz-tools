@@ -134,14 +134,14 @@ export function CharacterViewer({ ctx, index }: { ctx: Ctx; index: unknown }) {
   const pickPreset = async (name: string, tiles: string[]) => {
     setFloorSel('preset:' + name);
     try {
-      // a single-variant preset (e.g. Wood) needs no variation/blend — use the clean single-tile path
+      // a single-variant preset (e.g. Wood) needs no variation/blend - use the clean single-tile path
       if (tiles.length === 1) engineRef.current?.setFloor(await floorLib.texture(tiles[0]), 1);
       else engineRef.current?.setFloor(await floorLib.presetTexture(tiles, name, 8), 8);
     } catch { /* ignore */ }
   };
   const clearFloor = () => { setFloorSel(null); engineRef.current?.setFloor(null); };
   useEffect(() => { if (tab === 'floor' && !floorTiles.length) floorLib.list().then((ts) => setFloorTiles(ts as { name: string }[])).catch(() => {}); }, [tab, floorLib, floorTiles.length]);
-  // scrolling detaches the fixed-position hover preview from its cell — hide it
+  // scrolling detaches the fixed-position hover preview from its cell - hide it
   useEffect(() => { const off = () => preview.stop(); window.addEventListener('wheel', off, { passive: true }); return () => window.removeEventListener('wheel', off); }, [preview]);
   useEffect(() => { localStorage.setItem('pz-panel-w', String(panelW)); }, [panelW]);
 
@@ -267,7 +267,7 @@ export function CharacterViewer({ ctx, index }: { ctx: Ctx; index: unknown }) {
       if (item) { try { await eng.toggleClothing(item, c.tint ? rgb01(c.tint) : null); worn++; } catch { /* skip */ } }
     }
     setEquipTick((t) => t + 1);
-    setNowPlaying(`imported: ${worn}/${p.clothing?.length || 0} clothing` + (p.warnings.length ? ' — ' + p.warnings.join('; ') : ''));
+    setNowPlaying(`imported: ${worn}/${p.clothing?.length || 0} clothing` + (p.warnings.length ? '. ' + p.warnings.join('; ') : ''));
   };
   applyLookRef.current = applyLook;
 
@@ -582,7 +582,7 @@ function ExportSection({ studio }: { studio: StudioCtl }) {
         </select>
       </div>
       <div style={{ color: 'var(--muted)', fontSize: 11, marginTop: 6 }}>
-        Transparent background applies to PNG + GIF; video always uses the chosen colour. Everything is generated in your browser — nothing is uploaded.
+        Transparent background applies to PNG + GIF; video always uses the chosen colour. Everything is generated in your browser, and nothing is uploaded.
       </div>
     </div>
   );
@@ -731,7 +731,7 @@ function ImportModal({ onClose, onImport }: { onClose: () => void; onImport: (p:
               </>
             )}
           </div>
-          {!saves && <div style={{ color: 'var(--muted)', fontSize: 11, margin: '8px 0 4px' }}>Point at your Zomboid folder (usually in Documents) or its Saves folder. Read locally in your browser — nothing is uploaded.</div>}
+          {!saves && <div style={{ color: 'var(--muted)', fontSize: 11, margin: '8px 0 4px' }}>Point at your Zomboid folder (usually in Documents) or its Saves folder. Read locally in your browser, and nothing is uploaded.</div>}
           {busy && <div style={{ color: 'var(--muted)', fontSize: 13, padding: '6px 2px' }}>{busy}</div>}
           <div style={{ overflow: 'auto', marginTop: 8, minHeight: 0 }}>
             {shown.map((s, i) => (

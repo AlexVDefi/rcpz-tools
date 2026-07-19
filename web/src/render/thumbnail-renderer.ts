@@ -1,5 +1,5 @@
 // Offscreen thumbnail renderer: one shared WebGL context. The reference body is posed by
-// the IDLE clip (same as the live rig), not the raw bind pose — otherwise bone-attached
+// the IDLE clip (same as the live rig), not the raw bind pose - otherwise bone-attached
 // static items (hats/helmets) and skinned garments seat wrong, because a mod authors them
 // against the posed head, and bind vs idle differ. Idle also reads better (arms down) than
 // a T-pose. Two modes per clothing item: on-body, or the garment mesh alone. Held items

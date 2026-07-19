@@ -2,7 +2,7 @@
 // sprites are 2:1 iso DIAMONDS (~126x64), pre-sheared for the game's iso view, so to lay one
 // on a flat 3D floor we de-shear it back to an axis-aligned square (un-squash Y, rotate 45,
 // scale to fill) and repeat it. The 2x pack is ~44MB across 11 atlas pages, so pages are
-// decoded LAZILY — only when a tile from that page is first rendered — and cached.
+// decoded LAZILY - only when a tile from that page is first rendered - and cached.
 import * as THREE from 'three';
 import { parsePack } from '@shared/pack.js';
 
@@ -98,13 +98,13 @@ export class FloorLibrary {
     const img = (rec: Rec) => imgs.get(rec.page)!;
     const picks: Rec[] = [];
     for (let i = 0; i < N * N; i++) picks.push(recs[Math.floor(rnd() * recs.length)]);
-    // Pass 1: opaque base, tiles edge-to-edge (hard seams) — guarantees full coverage.
+    // Pass 1: opaque base, tiles edge-to-edge (hard seams) - guarantees full coverage.
     for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) {
       ctx.save(); ctx.translate(c * T, r * T); this.deshearInto(ctx, img(picks[r * N + c]), picks[r * N + c].tile, T); ctx.restore();
     }
     // Pass 2: blend ONLY the seam zone with a DITHER (noise), not a blur. A ring alpha peaked at
     // the tile boundary is thresholded per-pixel into a crisp 0/1 scatter, so at the seam the
-    // overlapping neighbours' pixels interleave randomly — an organic, still-sharp transition
+    // overlapping neighbours' pixels interleave randomly - an organic, still-sharp transition
     // (pass-1's correct-scale centres show through where the scatter is 0). Edges wrap.
     const mask = document.createElement('canvas'); mask.width = F; mask.height = F;
     const mctx = mask.getContext('2d')!;

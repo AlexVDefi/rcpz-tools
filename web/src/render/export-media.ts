@@ -1,5 +1,5 @@
 // Client-side exporters: still PNG, animated GIF (gifenc), and video (MediaRecorder ->
-// MP4 where Chrome supports it, else WebM). Nothing leaves the browser — every frame is
+// MP4 where Chrome supports it, else WebM). Nothing leaves the browser - every frame is
 // composited on a local 2D canvas and downloaded via a blob URL.
 import { GIFEncoder, quantize, applyPalette } from 'gifenc';
 

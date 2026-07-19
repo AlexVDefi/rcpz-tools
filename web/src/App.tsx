@@ -86,11 +86,11 @@ export function App() {
       const h = await window.showDirectoryPicker({ id: 'pz-workshop', mode: 'read' });
       await idbHandles.save(WORKSHOP_KEY, h);
       setProgress('discovering mods…');
-      // enumeration only (reads each mod.info) — no media scan yet, so it's fast. The user
+      // enumeration only (reads each mod.info) - no media scan yet, so it's fast. The user
       // then picks which mods to load and hits Apply, so they never wait on mods they don't want.
       const found = await discoverWorkshopMods(h, (n) => setProgress(`found ${n} mods…`));
       setMods(found);
-      setProgress(`found ${found.length} mods — pick the ones you want, then Apply & rescan`);
+      setProgress(`found ${found.length} mods; pick the ones you want, then Apply & rescan`);
     } catch (e) { if ((e as Error).name !== 'AbortError') setError((e as Error).message); }
   }, []);
 
@@ -144,7 +144,7 @@ export function App() {
         <section style={{ marginTop: 44, textAlign: 'center', maxWidth: 620, marginInline: 'auto' }}>
           <h2 style={{ fontSize: 26, margin: '0 0 12px', lineHeight: 1.2 }}>Bring your survivors to life in the browser</h2>
           <p style={{ color: 'var(--muted)', fontSize: 15, lineHeight: 1.65, margin: '0 0 24px' }}>
-            Point the tool at your local Project Zomboid folder to browse every outfit, weapon and animation, dress and pose a character, import a look straight from a save, and export stills, GIFs or MP4s. Everything runs on your machine — nothing is uploaded.
+            Point the tool at your local Project Zomboid folder to browse every outfit, weapon and animation, dress and pose a character, import a look straight from a save, and export stills, GIFs or MP4s. Everything runs on your machine, and nothing is uploaded.
           </p>
           <button onClick={pickInstall} style={{ padding: '11px 22px', fontSize: 15 }}>Choose your PZ install folder…</button>
           <div style={{ color: 'var(--muted)', fontSize: 12, marginTop: 10 }}>The folder that contains <code>media/</code>. Chromium browsers only.</div>
@@ -172,6 +172,7 @@ export function App() {
                 action={mods.length ? 'Change' : 'Add'} onAction={pickWorkshop} disabled={phase === 'scanning'} />
             </div>
             {error && <p style={{ color: '#ff8a8a', margin: '10px 0 0' }}>Error: {error}</p>}
+            <SafetyInfo />
           </div>
 
           {mods.length > 0 && (
@@ -239,10 +240,6 @@ export function App() {
         </div>
       )}
 
-      {phase !== 'unsupported' && view === 'overview' && (
-        <div style={{ marginTop: firstRun ? 34 : 14 }}><SafetyInfo /></div>
-      )}
-
       {index != null && view === 'character' && ctx && (
         <div style={{ marginTop: 12 }}><CharacterViewer ctx={ctx} index={index} /></div>
       )}
@@ -253,22 +250,22 @@ export function App() {
 // Plain-language explanation of why the tool reads local files and why that is safe.
 function SafetyInfo() {
   return (
-    <details className="card safety" style={{ maxWidth: 760, marginInline: 'auto', padding: 0 }}>
-      <summary style={{ padding: '14px 18px', fontWeight: 600, display: 'flex', alignItems: 'center', gap: 10 }}>
-        <span style={{ width: 24, height: 24, borderRadius: 6, background: '#1e3a24', color: '#5fd07a', display: 'grid', placeItems: 'center', fontSize: 13, flexShrink: 0 }}>✓</span>
+    <details className="safety" style={{ marginTop: 12, background: '#14141a', border: '1px solid var(--line)', borderRadius: 9 }}>
+      <summary style={{ padding: '11px 13px', fontWeight: 600, fontSize: 13, display: 'flex', alignItems: 'center', gap: 10 }}>
+        <span style={{ width: 22, height: 22, borderRadius: 6, background: '#1e3a24', color: '#5fd07a', display: 'grid', placeItems: 'center', fontSize: 12, flexShrink: 0 }}>✓</span>
         Why does it need my files, and is it safe?
         <span className="chev" style={{ marginLeft: 'auto', color: 'var(--muted)' }}>▾</span>
       </summary>
-      <div style={{ padding: '2px 18px 18px', color: 'var(--muted)', fontSize: 13.5, lineHeight: 1.62 }}>
+      <div style={{ padding: '2px 14px 14px', color: 'var(--muted)', fontSize: 13, lineHeight: 1.6 }}>
         <h4>Why it needs your files</h4>
         <p>Project Zomboid stores its characters as 3D models, textures and scripts inside the game's folder (and inside workshop mods). To show and dress a character exactly like the game does, the tool has to read those files. To import a character's look, it reads that save's <code>players.db</code>.</p>
         <h4>What it does with them</h4>
-        <p>It only <b>reads</b> them, into your browser's memory, to build the thumbnails and render the 3D character. Every bit of processing — reading files, converting models, drawing the character, exporting images — happens on your own computer.</p>
+        <p>It only <b>reads</b> them, into your browser's memory, to build the thumbnails and render the 3D character. Every step (reading files, converting models, drawing the character, exporting images) happens on your own computer.</p>
         <h4>Why it can't harm your files or your game</h4>
-        <p><b>Read-only.</b> The browser only ever grants this page permission to <i>read</i>. It cannot create, write, move, rename or delete anything, and there is no code here that modifies files — so it cannot change or break your game or your saves.</p>
-        <p><b>Only the folder you choose.</b> The File System Access API is sandboxed by the browser: the page can see only the exact folder you pick, nothing else on your PC, and only for this tab. The permission isn't remembered — you grant it again each session.</p>
-        <p><b>Nothing is uploaded, and the browser enforces it.</b> There is no server behind this — it's a static page. A strict Content-Security-Policy instructs your browser to block <i>any</i> network request except loading the page's own code, so no game file, save or mod can leave your machine even if there were a bug.</p>
-        <p><b>You stay in control.</b> Close the tab and all access ends. The only things kept are small local caches (thumbnails and converted meshes) in your browser's own storage, which you can wipe anytime with the <b>Clear</b> button — they are never sent anywhere.</p>
+        <p><b>Read-only.</b> The browser only ever grants this page permission to <i>read</i>. It cannot create, write, move, rename or delete anything, and there is no code here that modifies files, so it cannot change or break your game or your saves.</p>
+        <p><b>Only the folder you choose.</b> The File System Access API is sandboxed by the browser: the page can see only the exact folder you pick, nothing else on your PC, and only for this tab. The permission isn't remembered, so you grant it again each session.</p>
+        <p><b>Nothing is uploaded, and the browser enforces it.</b> There is no server behind this; it's a static page. A strict Content-Security-Policy instructs your browser to block <i>any</i> network request except loading the page's own code, so no game file, save or mod can leave your machine even if there were a bug.</p>
+        <p><b>You stay in control.</b> Close the tab and all access ends. The only things kept are small local caches (thumbnails and converted meshes) in your browser's own storage, which you can wipe anytime with the <b>Clear</b> button. They are never sent anywhere.</p>
       </div>
     </details>
   );
@@ -297,7 +294,7 @@ function CacheInfo() {
   const refresh = useCallback(async () => { setBytes(await storageUsage()); setCount(await idbCache.count().catch(() => null)); }, []);
   useEffect(() => { refresh(); }, [refresh]);
   const clear = useCallback(async () => { setBusy(true); await idbCache.clear(); location.reload(); }, []);
-  const mb = bytes != null ? (bytes / 1e6).toFixed(1) + ' MB' : '—';
+  const mb = bytes != null ? (bytes / 1e6).toFixed(1) + ' MB' : 'n/a';
   return (
     <div style={{ marginTop: 16, paddingTop: 14, borderTop: '1px solid var(--line)', color: 'var(--muted)', fontSize: 12.5, display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
       <span>Thumbnail cache <b style={{ color: 'var(--text)' }}>{mb}</b>{count != null ? ` · ${count} thumbnails` : ''}</span>

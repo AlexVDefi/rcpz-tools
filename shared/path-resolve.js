@@ -2,7 +2,7 @@
 //
 // The game keys every asset by its LOWERCASE path relative to the dir containing
 // `media/`, while files on disk are mixed-case. The File System Access API is
-// case-SENSITIVE, so we can never getFile('skinned/malebody.x') directly — we must, per
+// case-SENSITIVE, so we can never getFile('skinned/malebody.x') directly - we must, per
 // path segment, list the parent directory and match case-insensitively. This ports
 // vfs.js's childCI/resolveSubdir/resolveMesh/resolveTexture semantics to async, layered
 // across ordered sources (earlier source wins, i.e. a mod overrides vanilla), with a

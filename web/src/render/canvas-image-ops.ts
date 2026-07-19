@@ -1,4 +1,4 @@
-// Browser ImageOps (Canvas2D) — replaces the sharp compositor (src/character/compose.js).
+// Browser ImageOps (Canvas2D) - replaces the sharp compositor (src/character/compose.js).
 // Builds the character body diffuse: skin base, model-less garment base textures 'over',
 // then the equipped masks erase the covered skin. Phase 0.3 confirmed PZ masks encode
 // coverage in ALPHA, so 'destination-out' (which keys on source alpha) is the faithful

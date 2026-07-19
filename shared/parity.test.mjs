@@ -1,6 +1,6 @@
 // Regression anchor: prove the new async shared/ core produces the SAME results as the
-// original sync src/ modules, over a real PZ install, headless. (Path resolution only —
-// no glb conversion — so the old koffi/sharp deps aren't triggered.)
+// original sync src/ modules, over a real PZ install, headless. (Path resolution only -
+// no glb conversion - so the old koffi/sharp deps aren't triggered.)
 import { createRequire } from 'node:module';
 import { createNodeAssetSource } from './asset-source.js';
 import { buildAssetIndex } from './asset-index.js';
@@ -64,5 +64,5 @@ const oldRenderable = oldMod.counts.renderable;
 check('renderable count', Math.abs(newRenderable - oldRenderable) <= 2, `new=${newRenderable} old=${oldRenderable}`);
 check('mesh path parity (sampled)', meshMismatch === 0, `${sample} checked, ${meshMismatch} mismatched`);
 
-console.log(fail ? `\n${fail} FAILED` : '\nALL PASSED — new shared core matches old src');
+console.log(fail ? `\n${fail} FAILED` : '\nALL PASSED - new shared core matches old src');
 process.exit(fail ? 1 : 0);

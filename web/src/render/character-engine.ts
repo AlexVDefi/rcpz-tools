@@ -89,7 +89,7 @@ export class CharacterEngine {
     loop();
   }
 
-  /** Clear the whole buffer (transparent), then render the scene — full-canvas, or into the
+  /** Clear the whole buffer (transparent), then render the scene - full-canvas, or into the
    *  centered viewfinder rect when an export aspect is active. */
   private drawFrame() {
     const r = this.renderer;
@@ -515,7 +515,7 @@ export class CharacterEngine {
     this.rigs.add(kind, root);
   }
 
-  /** Recolour an already-loaded hair/beard rig by updating its tint uniform only — no
+  /** Recolour an already-loaded hair/beard rig by updating its tint uniform only - no
    *  mesh/texture reload, so colour-picker dragging stays smooth. Returns false if the
    *  part isn't currently loaded (caller should fall back to applyPart). */
   setPartTint(kind: 'hair' | 'beard', color: number[]) {

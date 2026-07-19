@@ -12,7 +12,7 @@
 //     int32   pngSize ; pngSize bytes   (page atlas PNG)
 //     [if mask + bytes remain] int32 maskSize ; maskSize bytes
 //     [if bytes remain]        int32 0xDEADBEEF marker
-// (Some packs — e.g. Tiles1x.floor.pack — end right after the atlas PNG with no mask/marker,
+// (Some packs - e.g. Tiles1x.floor.pack - end right after the atlas PNG with no mask/marker,
 //  so every tail read is guarded against EOF.)
 
 /** @param {Uint8Array} bytes @returns {{ pages: Array<{name:string, entries:Array, png:Uint8Array}> }} */
@@ -43,7 +43,7 @@ export function parsePack(bytes) {
     const pngSize = i32();
     const png = u8.subarray(o, o + pngSize); o += pngSize;
     pages.push({ name, entries, png });
-    // The next page follows DIRECTLY after the atlas PNG — there is no mask block or marker
+    // The next page follows DIRECTLY after the atlas PNG - there is no mask block or marker
     // (the format docs claim otherwise, but the bytes don't; single-page packs just hit EOF).
   }
   return { pages };

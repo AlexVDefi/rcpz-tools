@@ -1,5 +1,5 @@
 // Animation clip normalisation + rest-delta retargeting. Faithful port of
-// src/characterApp/anim.js — the byte-identical WASM converter (verified in Phase 0.2)
+// src/characterApp/anim.js - the byte-identical WASM converter (verified in Phase 0.2)
 // produces the same bone names + bind quats the native DLL did, so this retarget logic
 // applies unchanged.
 import * as THREE from 'three';
@@ -31,7 +31,7 @@ export interface NormalisedClip { clip: THREE.AnimationClip; rootRotationX: numb
 
 // The body's bind pose, captured once from a freshly-loaded (unposed) rig: enough to
 // world-space retarget a foreign-skeleton glb clip onto it. `bindWorld` covers EVERY named
-// node (so a bone's static ancestor — e.g. Dummy01's Rx+90 — is available for the parent
+// node (so a bone's static ancestor - e.g. Dummy01's Rx+90 - is available for the parent
 // frame); the bone-only maps drive the retarget walk in hierarchy order.
 export interface SkeletonBind {
   order: string[];                            // bone names, parent-before-child
@@ -42,7 +42,7 @@ export interface SkeletonBind {
 
 // The TRUE bind-world rotation per joint, from the skin's inverseBindMatrices (= bind world
 // matrix inverse). This is authoritative: a node's default TRS is NOT the bind pose for
-// exports (e.g. AnimForge/Blender) that leave the node at animation frame 0 — only the skin's
+// exports (e.g. AnimForge/Blender) that leave the node at animation frame 0 - only the skin's
 // inverse-bind encodes the pose the mesh was rigged in, which is what skinning actually uses.
 function bindWorldFromSkin(root: THREE.Object3D): Map<string, THREE.Quaternion> {
   const m = new Map<string, THREE.Quaternion>();
@@ -88,11 +88,11 @@ const boneWorldMap = (root: THREE.Object3D) => {
 };
 
 // World-space delta retarget: bake body-local rotation tracks so that each bone reproduces
-// the clip's bind-RELATIVE world rotation on the BODY's own bind pose —
+// the clip's bind-RELATIVE world rotation on the BODY's own bind pose -
 //   bodyWorld_b(t) = (clipWorld_b(t) . clipBindWorld_b^-1) . bodyBindWorld_b
 //   bodyLocal_b(t) = bodyWorldParent(t)^-1 . bodyWorld_b(t)
 // This transfers MOTION (not absolute pose), so it is correct even when the clip's skeleton
-// has a different bind pose / root chain than the body — the case custom .glb exports hit,
+// has a different bind pose / root chain than the body - the case custom .glb exports hit,
 // which the per-bone rest-delta cannot handle. Rotation only (positions/scale dropped).
 function retargetWorld(clip: THREE.AnimationClip, clipScene: THREE.Object3D, body: SkeletonBind): THREE.AnimationClip {
   const clipBindWorld = bindWorldFromSkin(clipScene); // authoritative bind (NOT node defaults)

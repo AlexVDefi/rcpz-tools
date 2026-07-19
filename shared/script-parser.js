@@ -1,5 +1,5 @@
 // Parser for the Project Zomboid script format (module/item/model/attachment blocks).
-// Direct ESM port of src/scriptParser.js — pure, no I/O. Tolerant recursive scanner:
+// Direct ESM port of src/scriptParser.js - pure, no I/O. Tolerant recursive scanner:
 // blocks are `<keyword> <name> { ... }`, props are `key = value` (repeats preserved),
 // both /* */ and // comments occur.
 

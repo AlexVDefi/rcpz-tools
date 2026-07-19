@@ -1,5 +1,5 @@
 // Faithful port of the pure-Three.js pieces of src/renderWorker/renderCore.js and
-// src/characterApp/charCore.js — shaders, materials, attachment math, orbit, icon
+// src/characterApp/charCore.js - shaders, materials, attachment math, orbit, icon
 // layout. No I/O here: the file:// loaders are replaced by byte loaders (loaders.ts).
 // The camera/shader/handedness constants are reverse-engineered from PZ's own renderer;
 // they must match the Electron app exactly, so this is a copy, not a reinterpretation.

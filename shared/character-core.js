@@ -1,13 +1,13 @@
 // Platform-agnostic character pipeline: turn the eager AssetIndex into picker lists,
 // and resolve a picked asset (body, clothing, hair, held item, animation clip) into
-// LOADABLE BYTES — glb mesh bytes (via the WASM converter) and PNG texture bytes — that
+// LOADABLE BYTES - glb mesh bytes (via the WASM converter) and PNG texture bytes - that
 // either renderer (Electron or browser) feeds straight to three's GLTFLoader.parse /
 // TextureLoader. No file paths, no disk. Ports src/character/{assets,clothing,hair,items}.js
 // and the relevant bits of src/resolve.js to async.
 //
 // ctx = { index, resolver, converter, readBytes(resolved) } where `resolver`/`converter`
 // come from asset-index.js / mesh-converter.js. Callers may wrap `converter` with a
-// cache (keyed by realPath+mtime) — the core stays cache-agnostic.
+// cache (keyed by realPath+mtime) - the core stays cache-agnostic.
 
 import { parseScriptText, walkBlocks, prop } from './script-parser.js';
 
@@ -152,7 +152,7 @@ const cleanTags = (raw) => raw ? raw.split(';').map((t) => t.trim().replace(/^ba
 const stripStateSuffix = (n) => n.replace(/_(Ground|Hand)(Cooked|Rotten|Burnt|Overdone|Stale)?$/i, '').replace(/_(Cooked|Rotten|Burnt|Overdone|Stale)$/i, '');
 
 /** Held items/weapons: a model is "held" if it declares a hand attachment (Bip01_Prop*) OR is
- *  a weapon's equipped sprite (an item's `WeaponSprite = [module.]Model`) — most weapons never
+ *  a weapon's equipped sprite (an item's `WeaponSprite = [module.]Model`) - most weapons never
  *  write an explicit attachment (the engine defaults them to Prop1). Floor-display models
  *  (`*_Ground`) are excluded. Each item carries a `group` (facet) + `tags` from its item script. */
 export function listHeldItems(index) {

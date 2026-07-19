@@ -1,7 +1,7 @@
 // Reads a Project Zomboid player-save blob (localPlayers.data from players.db) enough to
 // reconstruct the character's LOOK: gender + skin/hair/beard + worn clothing (with tints).
 //
-// The blob is the serialized IsoPlayer (big-endian). We don't parse the whole thing — the
+// The blob is the serialized IsoPlayer (big-endian). We don't parse the whole thing - the
 // fragile bits (the Lua mod-data table, the inventory) sit before/after what we need. Instead
 // we ANCHOR on the character's forename+surname strings (known from the DB `name` column),
 // which sit at the top of SurvivorDesc, then walk forward through SurvivorDesc -> HumanVisual.

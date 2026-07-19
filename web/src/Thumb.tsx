@@ -15,7 +15,7 @@ export function Thumb({ depKey, getUrl }: { depKey: string; getUrl: () => Promis
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [depKey]);
 
-  if (failed) return <span style={{ color: '#3a3a44', fontSize: 22 }}>—</span>;
+  if (failed) return <span style={{ color: '#3a3a44', fontSize: 22 }}>·</span>;
   if (!url) return <div style={{ width: 22, height: 22, borderRadius: '50%', border: '2px solid #2a2a34', borderTopColor: '#5b8cff', animation: 'thumbspin 0.8s linear infinite' }} />;
   // width/height 100% (not max-*) so the image scales UP to fill a larger card, not just
   // shrinks to fit a smaller one; objectFit:contain keeps its aspect.
