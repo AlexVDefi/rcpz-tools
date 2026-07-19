@@ -6,6 +6,19 @@ import { ClipPreview } from './render/clip-preview';
 import { FloorLibrary } from './render/floor';
 import { AssetGrid, type GridItem } from './AssetGrid';
 import { Thumb } from './Thumb';
+import { exportPng, exportGif, exportVideo, download, type BgConfig, type Content } from './render/export-media';
+
+type CamPreset = 'orbit' | 'iso' | 'front' | 'portrait';
+const ASPECTS: [string, number | null][] = [['Fit', null], ['1:1', 1], ['4:5', 4 / 5], ['3:4', 3 / 4], ['16:9', 16 / 9], ['9:16', 9 / 16]];
+const evenDims = (aspect: number, base: number): [number, number] => {
+  let w = base, h = Math.round(base / aspect);
+  if (aspect < 1) { h = base; w = Math.round(base * aspect); }
+  return [w - (w % 2), h - (h % 2)];
+};
+const bgStyle = (b: BgConfig): React.CSSProperties =>
+  b.mode === 'transparent' ? { backgroundImage: 'repeating-conic-gradient(#3a3a44 0% 25%, #23232b 0% 50%)', backgroundSize: '22px 22px' }
+  : b.mode === 'solid' ? { background: b.color1 }
+  : { background: `linear-gradient(${b.angle}deg, ${b.color1}, ${b.color2})` };
 
 type Tab = 'animate' | 'clothing' | 'held' | 'character' | 'scene' | 'floor';
 type FavKind = 'clothing' | 'held' | 'hair' | 'beard';
@@ -76,6 +89,14 @@ export function CharacterViewer({ ctx, index }: { ctx: Ctx; index: unknown }) {
   const [hairColor, setHairColor] = useState('#5a3a20');
   const [beardColor, setBeardColor] = useState('#5a3a20');
   const [equipOpen, setEquipOpen] = useState(false);
+  // studio / export
+  const [camPreset, setCamPreset] = useState<CamPreset>('orbit');
+  const [studioAspect, setStudioAspect] = useState<number | null>(null);
+  const [bg, setBg] = useState<BgConfig>({ mode: 'solid', color1: '#20242c', color2: '#0a0b10', angle: 90 });
+  const [turntable, setTurntable] = useState(false);
+  const [mp4Seconds, setMp4Seconds] = useState(10);
+  const [viewfinder, setViewfinder] = useState<{ left: number; top: number; width: number; height: number } | null>(null);
+  const [exporting, setExporting] = useState<{ label: string; progress: number } | null>(null);
   const [loop, setLoop] = useState(true);
   const [speed, setSpeed] = useState(1);
   const [camMode, setCamMode] = useState<'orbit' | 'iso'>('orbit');
@@ -124,6 +145,7 @@ export function CharacterViewer({ ctx, index }: { ctx: Ctx; index: unknown }) {
     eng.onClipName = setNowPlaying;
     eng.onFrame = (t, dur) => { const el = scrubRef.current; if (el && !scrubbingRef.current) el.value = String(dur ? ((t % dur) / dur) * 1000 : 0); };
     eng.onCamMode = setCamMode; // keep the Scene-tab toggle in sync with auto-switches
+    eng.onViewfinder = setViewfinder; // studio letterbox rect (CSS px)
     engineRef.current = eng;
     const ro = new ResizeObserver(() => eng.fit());
     if (canvasRef.current?.parentElement) ro.observe(canvasRef.current.parentElement);
@@ -170,6 +192,36 @@ export function CharacterViewer({ ctx, index }: { ctx: Ctx; index: unknown }) {
   const toggleHide = (name: string, hidden: boolean) => guard(() => engineRef.current!.setItemHidden(name, hidden));
   const removeEquip = (name: string, type: 'clothing' | 'held') => guard(() => engineRef.current!.removeEquipped(name, type));
 
+  // studio: push camera preset / aspect / turntable into the engine (aspect first so presets reframe)
+  useEffect(() => { const e = engineRef.current; if (!e) return; e.setExportAspect(studioAspect); e.applyCameraPreset(camPreset); }, [studioAspect]);
+  useEffect(() => { engineRef.current?.applyCameraPreset(camPreset); }, [camPreset]);
+  useEffect(() => { engineRef.current?.setTurntable(turntable); }, [turntable]);
+
+  const runExport = async (kind: 'png' | 'gif' | 'mp4') => {
+    const eng = engineRef.current; if (!eng || exporting) return;
+    const aspect = studioAspect ?? eng.getCurrentAspect();
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    const content: Content = turntable ? 'turntable' : 'anim';
+    try {
+      if (kind === 'png') {
+        setExporting({ label: 'PNG', progress: 1 });
+        const [w, h] = evenDims(aspect, 1080);
+        download(await exportPng(eng, w, h, bg), `pz-icon-${stamp}.png`);
+      } else if (kind === 'gif') {
+        setExporting({ label: 'GIF', progress: 0 });
+        const [w, h] = evenDims(aspect, 512);
+        const blob = await exportGif(eng, w, h, bg, { seconds: 5, fps: 15, content, onProgress: (p) => setExporting({ label: 'GIF', progress: p }) });
+        download(blob, `pz-icon-${stamp}.gif`);
+      } else {
+        setExporting({ label: 'video', progress: 0 });
+        const [w, h] = evenDims(aspect, 1080);
+        const { blob, ext } = await exportVideo(eng, w, h, bg, { seconds: mp4Seconds, fps: 30, content, onProgress: (p) => setExporting({ label: 'video', progress: p }) });
+        download(blob, `pz-icon-${stamp}.${ext}`);
+      }
+    } catch (e) { setNowPlaying('export error: ' + (e instanceof Error ? e.message : String(e))); }
+    finally { setExporting(null); }
+  };
+
   function startDrag(e: React.MouseEvent) {
     e.preventDefault();
     const container = containerRef.current!;
@@ -191,7 +243,18 @@ export function CharacterViewer({ ctx, index }: { ctx: Ctx; index: unknown }) {
   return (
     <div ref={containerRef} style={{ display: 'flex', height: 'calc(100vh - 128px)', minHeight: 460 }}>
       <div style={{ flex: 1, minWidth: 320, position: 'relative', background: '#14141a', border: '1px solid var(--line)', borderRadius: 8, overflow: 'hidden' }}>
-        <canvas ref={canvasRef} style={{ width: '100%', height: '100%', display: 'block' }} />
+        {/* studio layer: background sits behind the (transparent) WebGL canvas, clipped to the
+            viewfinder rect so outside the frame stays the neutral letterbox */}
+        <div style={{ position: 'absolute', inset: 0 }}>
+          {viewfinder && <div style={{ position: 'absolute', left: viewfinder.left, top: viewfinder.top, width: viewfinder.width, height: viewfinder.height, outline: '1px solid #ffffff2a', ...bgStyle(bg) }} />}
+          <canvas ref={canvasRef} style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', display: 'block' }} />
+        </div>
+        {exporting && (
+          <div style={{ position: 'absolute', left: '50%', top: '50%', transform: 'translate(-50%,-50%)', background: '#000000cc', color: '#fff', padding: '10px 16px', borderRadius: 8, fontSize: 13, zIndex: 5, textAlign: 'center' }}>
+            Exporting {exporting.label}… {Math.round(exporting.progress * 100)}%
+            {exporting.label === 'video' && <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 3 }}>recording in real time</div>}
+          </div>
+        )}
         <div style={{ position: 'absolute', left: 12, top: 12, display: 'flex', gap: 8, alignItems: 'center' }}>
           {status && <span style={{ color: 'var(--muted)', background: '#00000099', padding: '4px 8px', borderRadius: 6 }}>{status}</span>}
           <span style={{ color: 'var(--muted)', background: '#00000099', padding: '4px 8px', borderRadius: 6, maxWidth: 340, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{nowPlaying || 'pick a clip →'}</span>
@@ -200,9 +263,9 @@ export function CharacterViewer({ ctx, index }: { ctx: Ctx; index: unknown }) {
           <button className="secondary" title="Equipped items" onClick={() => setEquipOpen((v) => !v)}
             style={{ borderRadius: 6, padding: '7px 12px', fontSize: 13, lineHeight: 1, border: '1px solid var(--line)', background: equipOpen ? 'var(--accent)' : 'var(--panel)', color: equipOpen ? '#fff' : 'var(--text)' }}>Equipped{equipList.length ? ` (${equipList.length})` : ''}</button>
           <div style={{ display: 'flex', border: '1px solid var(--line)', borderRadius: 6, overflow: 'hidden' }}>
-            <button className="secondary" title="Free orbit" onClick={() => engineRef.current?.setCamMode('orbit')}
+            <button className="secondary" title="Free orbit" onClick={() => setCamPreset('orbit')}
               style={{ borderRadius: 0, padding: '5px 11px', fontSize: 24, lineHeight: 1, background: camMode === 'orbit' ? 'var(--accent)' : 'var(--panel)', color: camMode === 'orbit' ? '#fff' : 'var(--text)' }}>⟳</button>
-            <button className="secondary" title="PZ iso" onClick={() => engineRef.current?.setCamMode('iso')}
+            <button className="secondary" title="PZ iso" onClick={() => setCamPreset('iso')}
               style={{ borderRadius: 0, padding: '5px 11px', fontSize: 24, lineHeight: 1, background: camMode === 'iso' ? 'var(--accent)' : 'var(--panel)', color: camMode === 'iso' ? '#fff' : 'var(--text)' }}>◈</button>
           </div>
         </div>
@@ -311,7 +374,8 @@ export function CharacterViewer({ ctx, index }: { ctx: Ctx; index: unknown }) {
             </div>
           )}
 
-          {tab === 'scene' && <SceneTab engineRef={engineRef} floorSel={floorSel} onPreset={pickPreset} onClear={clearFloor} />}
+          {tab === 'scene' && <SceneTab engineRef={engineRef} floorSel={floorSel} onPreset={pickPreset} onClear={clearFloor}
+            studio={{ camPreset, setCamPreset, studioAspect, setStudioAspect, bg, setBg, turntable, setTurntable, mp4Seconds, setMp4Seconds, exporting, runExport }} />}
         </div>
       </div>
     </div>
@@ -339,9 +403,20 @@ const FACING_GRID: ([string, number] | null)[] = [
 ];
 const LIGHT_DEFAULT = { ambient: 0.55, keyBright: 0.5, kx: 0.12, ky: 0.28, kz: 1.0 };
 
-function SceneTab({ engineRef, floorSel, onPreset, onClear }: {
+interface StudioCtl {
+  camPreset: CamPreset; setCamPreset: (p: CamPreset) => void;
+  studioAspect: number | null; setStudioAspect: (a: number | null) => void;
+  bg: BgConfig; setBg: (b: BgConfig) => void;
+  turntable: boolean; setTurntable: (v: boolean) => void;
+  mp4Seconds: number; setMp4Seconds: (n: number) => void;
+  exporting: { label: string; progress: number } | null;
+  runExport: (kind: 'png' | 'gif' | 'mp4') => void;
+}
+
+function SceneTab({ engineRef, floorSel, onPreset, onClear, studio }: {
   engineRef: React.MutableRefObject<CharacterEngine | null>;
   floorSel: string | null; onPreset: (name: string, tiles: string[]) => void; onClear: () => void;
+  studio: StudioCtl;
 }) {
   const [facing, setFacing] = useState<number | null>(0);
   const [grid, setGrid] = useState(true);
@@ -395,6 +470,62 @@ function SceneTab({ engineRef, floorSel, onPreset, onClear }: {
           style={{ padding: '6px 12px', background: grid ? 'var(--accent)' : 'var(--panel)', color: grid ? '#fff' : 'var(--text)' }}>Floor grid</button>
         <button className="secondary" onClick={() => { const n = !shadow; setShadow(n); engineRef.current?.setShadowVisible(n); }}
           style={{ padding: '6px 12px', background: shadow ? 'var(--accent)' : 'var(--panel)', color: shadow ? '#fff' : 'var(--text)' }}>Shadow</button>
+      </div>
+
+      <ExportSection studio={studio} />
+    </div>
+  );
+}
+
+// Studio / export controls: camera presets, framing aspect (letterboxed viewfinder in the
+// live view), background, and the PNG/GIF/MP4 exporters.
+function ExportSection({ studio }: { studio: StudioCtl }) {
+  const s = studio;
+  const busy = !!s.exporting;
+  const label = { color: 'var(--muted)', fontSize: 12, display: 'block', margin: '14px 0 6px' } as const;
+  const seg = (on: boolean) => ({ borderRadius: 0, padding: '6px 10px', background: on ? 'var(--accent)' : 'var(--panel)', color: on ? '#fff' : 'var(--muted)', fontSize: 12 }) as const;
+  const chip = (on: boolean) => ({ padding: '6px 11px', borderRadius: 6, background: on ? 'var(--accent)' : 'var(--panel)', color: on ? '#fff' : 'var(--text)', fontSize: 12 }) as const;
+  const CAMS: [CamPreset, string][] = [['orbit', 'Free'], ['iso', 'PZ iso'], ['front', 'Front 35mm'], ['portrait', 'Portrait 60mm']];
+
+  return (
+    <div style={{ marginTop: 20, paddingTop: 6, borderTop: '1px solid var(--line)' }}>
+      <div style={{ color: 'var(--text)', fontSize: 13, fontWeight: 600, margin: '10px 0 2px' }}>Export studio</div>
+
+      <label style={label}>Camera</label>
+      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+        {CAMS.map(([p, name]) => <button key={p} className="secondary" onClick={() => s.setCamPreset(p)} style={chip(s.camPreset === p)}>{name}</button>)}
+      </div>
+
+      <label style={label}>Framing</label>
+      <div style={{ display: 'flex', border: '1px solid var(--line)', borderRadius: 6, overflow: 'hidden', width: 'fit-content', flexWrap: 'wrap' }}>
+        {ASPECTS.map(([name, a]) => <button key={name} className="secondary" onClick={() => s.setStudioAspect(a)} style={seg(s.studioAspect === a)}>{name}</button>)}
+      </div>
+
+      <label style={label}>Background</label>
+      <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', border: '1px solid var(--line)', borderRadius: 6, overflow: 'hidden' }}>
+          {(['transparent', 'solid', 'gradient'] as const).map((m) => <button key={m} className="secondary" onClick={() => s.setBg({ ...s.bg, mode: m })} style={seg(s.bg.mode === m)}>{m}</button>)}
+        </div>
+        {s.bg.mode !== 'transparent' && <input type="color" value={s.bg.color1} onChange={(e) => s.setBg({ ...s.bg, color1: e.target.value })} title="colour 1" style={{ width: 32, height: 28, padding: 0, border: '1px solid var(--line)', borderRadius: 6, background: 'transparent' }} />}
+        {s.bg.mode === 'gradient' && <input type="color" value={s.bg.color2} onChange={(e) => s.setBg({ ...s.bg, color2: e.target.value })} title="colour 2" style={{ width: 32, height: 28, padding: 0, border: '1px solid var(--line)', borderRadius: 6, background: 'transparent' }} />}
+        {s.bg.mode === 'gradient' && <input type="range" min={0} max={360} value={s.bg.angle} onChange={(e) => s.setBg({ ...s.bg, angle: Number(e.target.value) })} title="angle" style={{ width: 90, accentColor: '#5b8cff' }} />}
+      </div>
+
+      <label style={label}>Motion</label>
+      <button className="secondary" onClick={() => s.setTurntable(!s.turntable)} style={chip(s.turntable)}>Turntable spin {s.turntable ? 'on' : 'off'}</button>
+      <div style={{ color: 'var(--muted)', fontSize: 11, marginTop: 4 }}>{s.turntable ? '360° spin over the clip length' : 'records the current animation'}</div>
+
+      <label style={label}>Export</label>
+      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+        <button className="secondary" disabled={busy} onClick={() => s.runExport('png')} style={{ padding: '7px 12px', opacity: busy ? 0.5 : 1 }}>PNG</button>
+        <button className="secondary" disabled={busy} onClick={() => s.runExport('gif')} style={{ padding: '7px 12px', opacity: busy ? 0.5 : 1 }}>GIF (5s)</button>
+        <button className="secondary" disabled={busy} onClick={() => s.runExport('mp4')} style={{ padding: '7px 12px', opacity: busy ? 0.5 : 1 }}>MP4</button>
+        <select value={s.mp4Seconds} onChange={(e) => s.setMp4Seconds(Number(e.target.value))} title="video length" style={{ background: '#14141a', color: 'var(--text)', border: '1px solid var(--line)', borderRadius: 6, padding: '6px 8px', fontSize: 12 }}>
+          {[5, 10, 15, 20, 30].map((n) => <option key={n} value={n}>{n}s</option>)}
+        </select>
+      </div>
+      <div style={{ color: 'var(--muted)', fontSize: 11, marginTop: 6 }}>
+        Transparent background applies to PNG + GIF; video always uses the chosen colour. Everything is generated in your browser — nothing is uploaded.
       </div>
     </div>
   );

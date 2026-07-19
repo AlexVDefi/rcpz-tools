@@ -38,6 +38,17 @@ export class CharacterEngine {
   private floorMat: THREE.MeshBasicMaterial | null = null;
   private raf = 0;
   private disposed = false;
+  // viewfinder: when exportAspect is set, the live view renders into a centered rect of that
+  // aspect (letterboxed), so what you see is exactly what exports. In drawing-buffer pixels.
+  private vw = 1; private vh = 1;
+  private viewRect: { x: number; y: number; w: number; h: number } | null = null;
+  private exportAspect: number | null = null;
+  private bodyBounds: { minY: number; maxY: number; cx: number; cz: number } | null = null;
+  private turntable = false;
+  private spin = 0; // live turntable angle (rad)
+  private preset: 'orbit' | 'iso' | 'front' | 'portrait' = 'orbit';
+  private paused = false; // while an export drives the frames itself
+  onViewfinder?: (rect: { left: number; top: number; width: number; height: number } | null) => void;
   private bodyRest = new Map<string, THREE.Quaternion>();
   private bodySkel: SkeletonBind | null = null;
   private currentBody: { skinTexture: Uint8Array } | null = null;
@@ -52,8 +63,12 @@ export class CharacterEngine {
 
   constructor(canvas: HTMLCanvasElement, ctx: Ctx) {
     this.ctx = ctx;
-    this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false, preserveDrawingBuffer: true });
-    this.renderer.setClearColor(0x14141a, 1);
+    // alpha:true + transparent clear so the HTML background layer shows through (studio
+    // backdrop / transparent export). autoClear off: we clear the full buffer then render
+    // the (optionally letterboxed) viewfinder region ourselves.
+    this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true, preserveDrawingBuffer: true });
+    this.renderer.setClearColor(0x000000, 0);
+    this.renderer.autoClear = false;
     this.grid = new THREE.GridHelper(4, 16, 0x2b2b34, 0x24242c);
     this.scene.add(this.grid);
     this.addShadow();
@@ -64,35 +79,125 @@ export class CharacterEngine {
     const loop = () => {
       if (this.disposed) return;
       this.raf = requestAnimationFrame(loop);
+      if (this.paused) return; // an export is driving the frames
       const dt = this.clock.getDelta();
+      if (this.turntable) { this.spin = (this.spin + dt * 0.6) % (Math.PI * 2); this.rigs.setFacing(this.spin); }
       if (this.rigs.clip && this.playing) this.rigs.update(dt * this.speed);
       if (this.rigs.clip) this.onFrame?.(this.rigs.time(), this.rigs.duration());
-      this.renderer.render(this.scene, this.camera);
+      this.drawFrame();
     };
     loop();
+  }
+
+  /** Clear the whole buffer (transparent), then render the scene — full-canvas, or into the
+   *  centered viewfinder rect when an export aspect is active. */
+  private drawFrame() {
+    const r = this.renderer;
+    r.setScissorTest(false);
+    r.setViewport(0, 0, this.vw, this.vh);
+    r.clear();
+    if (this.viewRect) {
+      const v = this.viewRect;
+      r.setViewport(v.x, v.y, v.w, v.h);
+      r.setScissor(v.x, v.y, v.w, v.h);
+      r.setScissorTest(true);
+    }
+    r.render(this.scene, this.camera);
   }
 
   fit() {
     const canvas = this.renderer.domElement;
     const wrap = canvas.parentElement!;
     const w = wrap.clientWidth, h = wrap.clientHeight;
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+    const pr = Math.min(window.devicePixelRatio || 1, 2);
+    this.renderer.setPixelRatio(pr);
     this.renderer.setSize(w, h, false);
-    this.perspCam.aspect = w / h; this.perspCam.updateProjectionMatrix();
-    this.isoCam.__aspect = w / h;
+    this.vw = Math.round(w * pr); this.vh = Math.round(h * pr);
+    const aspect = this.exportAspect;
+    if (aspect) {
+      // largest centered rect of `aspect` fitting the viewport (CSS px), then to buffer px
+      let rw = w, rh = w / aspect;
+      if (rh > h) { rh = h; rw = h * aspect; }
+      const left = (w - rw) / 2, top = (h - rh) / 2;
+      this.viewRect = { x: Math.round(left * pr), y: Math.round((h - top - rh) * pr), w: Math.round(rw * pr), h: Math.round(rh * pr) };
+      this.perspCam.aspect = aspect; this.isoCam.__aspect = aspect;
+      this.onViewfinder?.({ left, top, width: rw, height: rh });
+    } else {
+      this.viewRect = null;
+      this.perspCam.aspect = w / h; this.isoCam.__aspect = w / h;
+      this.onViewfinder?.(null);
+    }
+    this.perspCam.updateProjectionMatrix();
     this.orbit.apply();
   }
+
+  /** Set the export/viewfinder aspect (w/h), or null for the full viewport. */
+  setExportAspect(aspect: number | null) { this.exportAspect = aspect; this.fit(); }
 
   // ---- scene controls (port of character.js setCamMode / bindView / bindLighting) ----
 
   /** Switch between free perspective orbit and the vanilla PZ iso camera (pitch 30, yaw 45). */
   setCamMode(mode: 'orbit' | 'iso') {
     this.camMode = mode;
+    this.preset = mode;
     this.camera = mode === 'iso' ? this.isoCam : this.perspCam;
     if (mode === 'iso') { this.orbit.state.theta = Math.PI / 4; this.orbit.state.phi = Math.PI / 3; }
     this.fit();
     this.onCamMode?.(mode);
   }
+
+  /** Studio camera presets. `front` (35mm) and `portrait` (60mm) use the perspective camera at
+   *  a real focal length, framed on the body from its measured bounds; `iso` is the PZ camera. */
+  applyCameraPreset(preset: 'orbit' | 'iso' | 'front' | 'portrait') {
+    if (preset === 'iso' || preset === 'orbit') { this.setCamMode(preset); return; }
+    this.preset = preset;
+    this.camMode = 'orbit';
+    this.camera = this.perspCam;
+    const b = this.bodyBounds;
+    const H = b ? b.maxY - b.minY : 1;
+    this.perspCam.setFocalLength(preset === 'portrait' ? 60 : 35); // fov from 35mm film gauge + current aspect
+    const extent = preset === 'portrait' ? 0.34 * H : 1.06 * H;                  // head+shoulders vs full body
+    const ty = preset === 'portrait' ? (b ? b.maxY : H) - 0.14 * H : (b ? b.minY : 0) + H / 2;
+    const fovV = this.perspCam.fov * Math.PI / 180;
+    this.orbit.setTarget(new THREE.Vector3(b ? b.cx : 0, ty, b ? b.cz : 0));
+    this.orbit.state.radius = (extent / 2) / Math.tan(fovV / 2);
+    this.orbit.state.theta = Math.PI / 2; // straight-on front
+    this.orbit.state.phi = Math.PI / 2;   // eye level
+    this.orbit.apply();
+    this.onCamMode?.('orbit');
+  }
+
+  setTurntable(on: boolean) { this.turntable = on; }
+  setSpinAngle(rad: number) { this.rigs.setFacing(rad); }
+
+  // ---- export ----
+  get webglCanvas() { return this.renderer.domElement; }
+  getCurrentAspect() { return this.exportAspect ?? this.perspCam.aspect; }
+
+  /** Resize the renderer to a full-frame (w,h) export target and pause the live loop so the
+   *  caller can drive frames. Returns a restore fn that reinstates the viewport + loop. */
+  beginExport(w: number, h: number): () => void {
+    const prev = { vw: this.vw, vh: this.vh, rect: this.viewRect, aspect: this.perspCam.aspect, pr: this.renderer.getPixelRatio(), playing: this.playing, turntable: this.turntable };
+    this.paused = true;
+    this.renderer.setPixelRatio(1);
+    this.renderer.setSize(w, h, false);
+    this.vw = w; this.vh = h; this.viewRect = null;
+    this.perspCam.aspect = w / h;
+    if (this.preset === 'front' || this.preset === 'portrait') this.perspCam.setFocalLength(this.preset === 'portrait' ? 60 : 35);
+    this.perspCam.updateProjectionMatrix();
+    this.isoCam.__aspect = w / h;
+    this.orbit.apply();
+    return () => {
+      this.renderer.setPixelRatio(prev.pr);
+      this.renderer.setSize(prev.vw / prev.pr, prev.vh / prev.pr, false);
+      this.perspCam.aspect = prev.aspect; this.perspCam.updateProjectionMatrix();
+      this.isoCam.__aspect = prev.aspect;
+      this.playing = prev.playing; this.turntable = prev.turntable;
+      this.paused = false;
+      this.fit();
+    };
+  }
+  renderFrame() { this.drawFrame(); }
 
   // Negate: the compass degrees are mirrored east-west relative to three's Y rotation
   // (N/S sit on the axis, so they're unaffected; E/W and diagonals need the flip).
@@ -223,9 +328,10 @@ export class CharacterEngine {
     this.rigs.removeKind('body');
     this.rigs.add('body', root);
     root.updateMatrixWorld(true);
+    const box = new THREE.Box3().setFromObject(root);
+    const c = box.getCenter(new THREE.Vector3());
+    this.bodyBounds = { minY: box.min.y, maxY: box.max.y, cx: c.x, cz: c.z };
     if (!hadBody) {
-      const box = new THREE.Box3().setFromObject(root);
-      const c = box.getCenter(new THREE.Vector3());
       const s = box.getSize(new THREE.Vector3());
       this.orbit.setTarget(new THREE.Vector3(0, c.y, 0));
       this.orbit.state.radius = Math.max(s.y, 1) * 1.9;
