@@ -54,7 +54,9 @@ export class CharacterEngine {
   private currentBody: { skinTexture: Uint8Array } | null = null;
   private equipped = new Map<string, Equip>();
   private statics = new Map<string, THREE.Object3D>();
-  private held = new Map<string, { holder: THREE.Object3D }>();
+  private held = new Map<string, { holder: THREE.Object3D; prop: string; item: { name: string } }>();
+  private static readonly RIGHT_PROP = 'Bip01_Prop1';
+  private static readonly LEFT_PROP = 'Bip01_Prop2';
   private hidden = new Set<string>(); // equipped-but-temporarily-hidden clothing/held names
   private whiteTex: THREE.Texture | null = null;
   onClipName?: (s: string) => void;
@@ -392,10 +394,10 @@ export class CharacterEngine {
   }
 
   /** All currently-equipped clothing + held items, for the viewer's equipped panel. */
-  equippedList(): { name: string; type: 'clothing' | 'held'; hidden: boolean }[] {
-    const out: { name: string; type: 'clothing' | 'held'; hidden: boolean }[] = [];
+  equippedList(): { name: string; type: 'clothing' | 'held'; hidden: boolean; hand?: 'right' | 'left' }[] {
+    const out: { name: string; type: 'clothing' | 'held'; hidden: boolean; hand?: 'right' | 'left' }[] = [];
     for (const name of this.equipped.keys()) out.push({ name, type: 'clothing', hidden: this.hidden.has(name) });
-    for (const name of this.held.keys()) out.push({ name, type: 'held', hidden: this.hidden.has(name) });
+    for (const name of this.held.keys()) out.push({ name, type: 'held', hidden: this.hidden.has(name), hand: this.heldHand(name)! });
     return out;
   }
 
@@ -476,15 +478,40 @@ export class CharacterEngine {
 
   isHeld(name: string) { return this.held.has(name); }
 
-  async toggleHeld(item: { name: string }, prop = 'Bip01_Prop1') {
+  async toggleHeld(item: { name: string }, hand: 'right' | 'left' = 'right') {
     if (this.held.has(item.name)) { this.unequipHeld(item.name); return false; }
+    return await this.attachHeld(item, hand);
+  }
+
+  /** Which hand a currently-held item is in, or null if it isn't held. */
+  heldHand(name: string): 'right' | 'left' | null {
+    const h = this.held.get(name);
+    return h ? (h.prop === CharacterEngine.LEFT_PROP ? 'left' : 'right') : null;
+  }
+
+  /** Move an already-held item to the other hand, preserving its hidden state. */
+  async setHeldHand(name: string, hand: 'right' | 'left') {
+    const h = this.held.get(name);
+    if (!h || this.heldHand(name) === hand) return;
+    const item = h.item;
+    if (h.holder.parent) h.holder.parent.remove(h.holder);
+    this.held.delete(name); // keep this.hidden so attachHeld restores the hidden flag
+    await this.attachHeld(item, hand);
+  }
+
+  private async attachHeld(item: { name: string }, hand: 'right' | 'left'): Promise<boolean> {
     const body = this.rigs.bodyRig();
     if (!body) return false;
+    const prop = hand === 'left' ? CharacterEngine.LEFT_PROP : CharacterEngine.RIGHT_PROP;
     const r = await resolveHeldItem(this.ctx, item);
     if (r.error) throw new Error(r.error);
-    const bone = body.root.getObjectByName(prop);
+    // left hand may lack a dedicated prop bone on some rigs; fall back to the right so the item
+    // still attaches rather than throwing.
+    const bone = body.root.getObjectByName(prop) || body.root.getObjectByName(CharacterEngine.RIGHT_PROP);
     if (!bone) throw new Error(`hand bone not found: ${prop}`);
-    const att = (r.attachments && r.attachments[prop]) || null;
+    // prefer the attachment authored for this bone; fall back to the right-hand grip so a
+    // left-held item without its own Prop2 offset still sits in the hand.
+    const att = (r.attachments && (r.attachments[prop] || r.attachments[CharacterEngine.RIGHT_PROP])) || null;
     const gltf = await glbToGltf(r.meshGlb);
     const obj = gltf.scene;
     // flipY=false: the assimp glb UVs are in glTF convention (V origin at top), same as the
@@ -498,8 +525,9 @@ export class CharacterEngine {
     holder.matrixAutoUpdate = false;
     holder.matrix.copy(partMatrix(null, att));
     holder.add(obj);
+    holder.visible = !this.hidden.has(item.name);
     bone.add(holder);
-    this.held.set(item.name, { holder });
+    this.held.set(item.name, { holder, prop, item });
     return true;
   }
 

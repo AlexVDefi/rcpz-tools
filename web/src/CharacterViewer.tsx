@@ -188,6 +188,7 @@ export function CharacterViewer({ ctx, index }: { ctx: Ctx; index: unknown }) {
   const playClip = (c: Clip) => guard(async () => { await engineRef.current!.playClip(c); setPlaying(true); setCurrentClipId(c.id); });
   const toggleCloth = (it: { name: string }) => guard(() => engineRef.current!.toggleClothing(it));
   const toggleHeld = (it: { name: string }) => guard(() => engineRef.current!.toggleHeld(it));
+  const setHeldHand = (name: string, hand: 'right' | 'left') => guard(() => engineRef.current!.setHeldHand(name, hand));
   const togglePlay = () => { const e = engineRef.current; if (e) setPlaying(e.togglePlay()); };
   // hair/beard apply + recolour (shared by the Character and Favorites tabs)
   const applyHairPart = (kind: 'hair' | 'beard', style: HairStyle) => {
@@ -351,6 +352,11 @@ export function CharacterViewer({ ctx, index }: { ctx: Ctx; index: unknown }) {
               <div key={e.type + ':' + e.name} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 2px' }}>
                 <span style={{ flex: 1, fontSize: 12, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', opacity: e.hidden ? 0.45 : 1 }} title={e.name}>{e.name}</span>
                 <span style={{ fontSize: 9, color: 'var(--muted)', border: '1px solid var(--line)', borderRadius: 3, padding: '0 3px' }}>{e.type === 'held' ? 'held' : 'worn'}</span>
+                {e.type === 'held' && (
+                  <button className="secondary" title={`held in ${e.hand === 'left' ? 'left' : 'right'} hand (click to switch)`}
+                    onClick={() => setHeldHand(e.name, e.hand === 'left' ? 'right' : 'left')}
+                    style={{ padding: '2px 8px', fontSize: 11, minWidth: 26 }}>{e.hand === 'left' ? 'L' : 'R'}</button>
+                )}
                 <button className="secondary" title={e.hidden ? 'show in scene' : 'hide from scene'} onClick={() => toggleHide(e.name, !e.hidden)} style={{ padding: '2px 8px', fontSize: 11, minWidth: 44 }}>{e.hidden ? 'show' : 'hide'}</button>
                 <button className="secondary" title="remove (unequip)" onClick={() => removeEquip(e.name, e.type)} style={{ padding: '2px 8px', fontSize: 12, color: '#ff6b6b' }}>✕</button>
               </div>
@@ -421,6 +427,18 @@ export function CharacterViewer({ ctx, index }: { ctx: Ctx; index: unknown }) {
               favActive={(it) => favs.has(favKey('held', it.name))}
               onToggleFav={(it) => toggleFav('held', it.name)}
               tagsOf={(it) => it.tags}
+              overlay={(it) => {
+                void equipTick;
+                const hand = engineRef.current?.heldHand(it.name);
+                if (!hand) return null; // only once the item is actually held
+                return (
+                  <span role="button" title={`held in ${hand} hand (click to switch)`}
+                    onClick={(e) => { e.stopPropagation(); setHeldHand(it.name, hand === 'left' ? 'right' : 'left'); }}
+                    style={{ position: 'absolute', bottom: 4, right: 4, minWidth: 18, textAlign: 'center', padding: '1px 5px', fontSize: 11, fontWeight: 700, lineHeight: 1.4, borderRadius: 4, cursor: 'pointer', background: 'var(--accent)', color: '#fff', textShadow: '0 1px 2px #000' }}>
+                    {hand === 'left' ? 'L' : 'R'}
+                  </span>
+                );
+              }}
               renderThumb={(it) => <Thumb depKey={`h:${it.name}`} getUrl={() => thumbs.held(it)} />} />
           )}
 

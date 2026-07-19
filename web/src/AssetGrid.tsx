@@ -11,7 +11,7 @@ const LABEL_H = 40;
 // toggle, and a column-size control (bigger/smaller thumbnails). Cards scale with the
 // chosen column count and the panel width, so it stays responsive as the split is dragged.
 export function AssetGrid<T extends GridItem>({
-  items, facetLabel, active, onPick, renderThumb, facetOrder, extraControls, favActive, onToggleFav, tagsOf,
+  items, facetLabel, active, onPick, renderThumb, facetOrder, extraControls, favActive, onToggleFav, tagsOf, overlay,
 }: {
   items: T[];
   facetLabel: string;
@@ -23,6 +23,7 @@ export function AssetGrid<T extends GridItem>({
   favActive?: (item: T) => boolean;
   onToggleFav?: (item: T) => void;
   tagsOf?: (item: T) => string[];
+  overlay?: (item: T) => ReactNode; // extra per-cell control drawn over the thumbnail (e.g. hand toggle)
 }) {
   const [q, setQ] = useState('');
   const [facet, setFacet] = useState('');
@@ -144,6 +145,7 @@ export function AssetGrid<T extends GridItem>({
                           </span>
                         )}
                         {it.isMod && <span style={{ position: 'absolute', top: 4, right: 4, background: '#2e7d32cc', color: '#fff', fontSize: 9, padding: '1px 4px', borderRadius: 3 }}>MOD</span>}
+                        {overlay?.(it)}
                       </div>
                       <div style={{ padding: '5px 7px', borderTop: '1px solid var(--line)', height: LABEL_H, boxSizing: 'border-box' }}>
                         <div style={{ fontSize: 11, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{it.label}</div>
