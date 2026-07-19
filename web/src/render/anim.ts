@@ -80,6 +80,13 @@ export function captureSkeletonBind(root: THREE.Object3D): SkeletonBind {
 }
 
 const IDENTITY_Q = new THREE.Quaternion();
+// glb clips exported from Blender/AnimForge orient the weapon prop bone with the barrel down its
+// LOCAL +Z, but PZ mounts the mesh (barrel = +Y) at identity on the prop, so a reproduced glb prop
+// leaves the gun 90 deg out (lying flat when it should stand up). Native .x/.fbx clips already use
+// the game convention and need no correction. Rotate the reproduced glb prop +90 deg about X so the
+// gun stands correctly under the same identity mount vanilla uses. Verified: barrel up-alignment
+// 1.00 at the musket reload vs 0.03 without.
+const GLB_PROP_FIX = new THREE.Matrix4().makeRotationX(Math.PI / 2);
 const boneWorldMap = (root: THREE.Object3D) => {
   const m = new Map<string, THREE.Quaternion>();
   root.updateMatrixWorld(true);
@@ -174,8 +181,9 @@ function retargetAttachments(
     rootInvClip.copy(clipScene.matrixWorld).invert();
     for (const n of active) {
       const parent = bodyRoot.getObjectByName(n)!.parent!;
-      // body prop (rel body root) := clip prop (rel clip root); solve for its local under its parent
-      clipRel.copy(rootInvClip).multiply(clipScene.getObjectByName(n)!.matrixWorld);
+      // body prop (rel body root) := clip prop (rel clip root) . convention fix; solve for its
+      // local under its parent
+      clipRel.copy(rootInvClip).multiply(clipScene.getObjectByName(n)!.matrixWorld).multiply(GLB_PROP_FIX);
       parentRel.copy(rootInvBody).multiply(parent.matrixWorld);
       localM.copy(parentRel).invert().multiply(clipRel);
       localM.decompose(p, q, s);
