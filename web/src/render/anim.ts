@@ -140,13 +140,12 @@ function retargetWorld(clip: THREE.AnimationClip, clipScene: THREE.Object3D, bod
 
 // The skinned-bone retarget above skips the weapon PROP bones (Bip01_Prop1/Prop2): the PZ body
 // weights no vertices to them, so they aren't skin joints, and the body parents them under the
-// root (not the hand) with a bind that doesn't match the clip's own prop parent. Copying the
-// clip's local prop TRS therefore flings the held item metres away. Instead retarget the prop in
-// WORLD space, anchored to the clip's FIRST frame (its rest pose, not inverse-bind, which differ
-// here) so the item sits exactly at the body's rest attachment and then moves by the authored
-// world-space delta. Runs on real posed matrices: pose the body with the bone tracks to read the
-// prop's parent, pose the clip to read the prop's motion. Everything is expressed relative to the
-// rig root, so facing/ground offsets cancel out.
+// root with a bind that matches neither the clip's prop parent nor bind. So don't re-anchor to the
+// body's bind at all - make the body prop REPRODUCE the clip prop's transform ABSOLUTELY in the
+// character-local frame, so the held item follows the clip's authored motion AND orientation
+// exactly (a delta-from-bind approach tilts the gun since the binds differ). Pose the body with
+// the bone tracks to read the prop's parent under the retarget, pose the clip to read the prop's
+// motion; both are taken relative to their own root so facing/ground/root transforms cancel.
 function retargetAttachments(
   clip: THREE.AnimationClip, clipScene: THREE.Object3D, body: SkeletonBind, bodyRoot: THREE.Object3D,
   mappedSet: Set<string>, times: number[], tracks: THREE.KeyframeTrack[],
@@ -162,32 +161,23 @@ function retargetAttachments(
   const clipMixer = new THREE.AnimationMixer(clipScene);
   clipMixer.clipAction(clip).play();
 
-  const rootInv = new THREE.Matrix4();
-  const clipRef = new Map<string, THREE.Matrix4>();   // prop world matrix at the clip's first frame
-  const bodyRest = new Map<string, THREE.Matrix4>();   // body prop matrix (rel. rig root) at rest
-  clipMixer.setTime(times[0]); clipScene.updateMatrixWorld(true);
-  bodyMixer.setTime(times[0]); bodyRoot.updateMatrixWorld(true);
-  rootInv.copy(bodyRoot.matrixWorld).invert();
   const active = nodes.filter((n) => clipScene.getObjectByName(n) && bodyRoot.getObjectByName(n)?.parent);
-  for (const n of active) {
-    clipRef.set(n, clipScene.getObjectByName(n)!.matrixWorld.clone());
-    bodyRest.set(n, new THREE.Matrix4().multiplyMatrices(rootInv, bodyRoot.getObjectByName(n)!.matrixWorld));
-  }
-
   const posVals = new Map(active.map((n) => [n, [] as number[]]));
   const quatVals = new Map(active.map((n) => [n, [] as number[]]));
-  const tmp = new THREE.Matrix4(), targetM = new THREE.Matrix4(), localM = new THREE.Matrix4();
+  const rootInvBody = new THREE.Matrix4(), rootInvClip = new THREE.Matrix4();
+  const clipRel = new THREE.Matrix4(), parentRel = new THREE.Matrix4(), localM = new THREE.Matrix4();
   const p = new THREE.Vector3(), q = new THREE.Quaternion(), s = new THREE.Vector3();
   for (const time of times) {
     clipMixer.setTime(time); clipScene.updateMatrixWorld(true);
     bodyMixer.setTime(time); bodyRoot.updateMatrixWorld(true);
-    rootInv.copy(bodyRoot.matrixWorld).invert();
+    rootInvBody.copy(bodyRoot.matrixWorld).invert();
+    rootInvClip.copy(clipScene.matrixWorld).invert();
     for (const n of active) {
-      const clipNow = clipScene.getObjectByName(n)!.matrixWorld;
       const parent = bodyRoot.getObjectByName(n)!.parent!;
-      // target = (clipNow . clipRef^-1) . bodyRest ; local = (parent rel. root)^-1 . target
-      targetM.copy(clipNow).multiply(tmp.copy(clipRef.get(n)!).invert()).multiply(bodyRest.get(n)!);
-      localM.copy(rootInv).multiply(parent.matrixWorld).invert().multiply(targetM);
+      // body prop (rel body root) := clip prop (rel clip root); solve for its local under its parent
+      clipRel.copy(rootInvClip).multiply(clipScene.getObjectByName(n)!.matrixWorld);
+      parentRel.copy(rootInvBody).multiply(parent.matrixWorld);
+      localM.copy(parentRel).invert().multiply(clipRel);
       localM.decompose(p, q, s);
       posVals.get(n)!.push(p.x, p.y, p.z);
       quatVals.get(n)!.push(q.x, q.y, q.z, q.w);
