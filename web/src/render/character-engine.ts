@@ -44,8 +44,7 @@ export class CharacterEngine {
   private viewRect: { x: number; y: number; w: number; h: number } | null = null;
   private exportAspect: number | null = null;
   private bodyBounds: { minY: number; maxY: number; cx: number; cz: number } | null = null;
-  private footBones: THREE.Object3D[] = []; // foot/toe bones, for grounding the posed feet per clip
-  private soleGap = 0;                       // world Y of the lowest foot bone when the sole rests on 0
+  private bodyMeshes: THREE.SkinnedMesh[] = []; // body skinned meshes, for measuring the true posed sole
   private turntable = false;
   private spin = 0; // live turntable angle (rad)
   private preset: 'orbit' | 'iso' | 'front' | 'portrait' = 'orbit';
@@ -332,23 +331,15 @@ export class CharacterEngine {
     this.rigs.removeKind('body');
     this.rigs.add('body', root);
     root.updateMatrixWorld(true);
-    // Ground the character on the grid. Box3.setFromObject can only see the BIND pose (it
-    // ignores GPU skinning), so grounding the bind mesh to y=0 fixes the resting pose but not
-    // an animated one whose posed feet sit higher/lower. Establish the bind grounding here, then
-    // capture the foot bones + the "sole rests on 0" reference so a playing clip can re-ground
-    // off the actual posed feet (see groundToClip).
-    const raw = new THREE.Box3().setFromObject(root);
-    this.rigs.setGroundOffset(this.rigs.groundOffset - raw.min.y);
+    // Ground the character so the actual posed SOLE rests on the grid. Every cheaper proxy
+    // misleads here: Box3.setFromObject ignores GPU skinning (always bind bounds), getObjectByName
+    // can return a duplicate-named proxy node a clip flings metres away, and the ankle-to-sole
+    // distance varies per pose so no foot bone tracks the sole. So measure the true lowest skinned
+    // vertex (see groundToClip/skinnedMinY). Collect the body's skinned meshes, then ground.
+    this.bodyMeshes = [];
+    root.traverse((o) => { const sm = o as THREE.SkinnedMesh; if (sm.isSkinnedMesh) this.bodyMeshes.push(sm); });
+    this.groundToClip(); // grounds the bind pose here, or an active clip on a gender swap
     root.updateMatrixWorld(true);
-    // Take foot bones from the skinned mesh's actual skeleton, NOT getObjectByName: these PZ rigs
-    // carry duplicate-named proxy nodes (see anim.ts boneWorldMap), and getObjectByName can
-    // return a proxy that a retargeted clip flings metres away - which would launch the whole
-    // model off-screen when used as the ground reference. skeleton.bones are the real joints.
-    const footNames = new Set(['Bip01_L_Foot', 'Bip01_R_Foot', 'Bip01_L_Toe0', 'Bip01_R_Toe0']);
-    const bones: THREE.Bone[] = [];
-    root.traverse((o) => { const sm = o as THREE.SkinnedMesh; if (sm.isSkinnedMesh && sm.skeleton && !bones.length) bones.push(...sm.skeleton.bones); });
-    this.footBones = bones.filter((b) => footNames.has(b.name));
-    this.soleGap = this.minFootWorldY(); // bind sole is on 0, so this is the foot-bone height above the sole
     const box = new THREE.Box3().setFromObject(root);
     const c = box.getCenter(new THREE.Vector3());
     this.bodyBounds = { minY: box.min.y, maxY: box.max.y, cx: c.x, cz: c.z };
@@ -362,35 +353,45 @@ export class CharacterEngine {
     await this.recompositeBody();
   }
 
-  private minFootWorldY(): number {
+  /** World Y of the lowest CPU-skinned vertex across the body meshes at the current pose. This is
+   *  the real visible sole - it accounts for skinning, foot pitch and everything Box3/bones miss. */
+  private skinnedMinY(): number {
     let m = Infinity;
     const v = new THREE.Vector3();
-    for (const b of this.footBones) { b.getWorldPosition(v); if (v.y < m) m = v.y; }
-    return Number.isFinite(m) ? m : 0;
+    for (const sm of this.bodyMeshes) {
+      const pos = sm.geometry.getAttribute('position');
+      if (!pos) continue;
+      for (let i = 0; i < pos.count; i++) {
+        v.fromBufferAttribute(pos as THREE.BufferAttribute, i);
+        sm.applyBoneTransform(i, v);
+        v.applyMatrix4(sm.matrixWorld);
+        if (v.y < m) m = v.y;
+      }
+    }
+    return m;
   }
 
-  /** Re-ground off the posed feet for the current clip: sample the clip and shift the rig set so
-   *  the lowest foot-plant over the loop rests on the grid. Clip-agnostic (measures real bone
-   *  world positions), so it grounds vanilla .x, .fbx and retargeted .glb clips uniformly. */
+  /** Ground the rig set so the lowest posed sole rests on the grid. With a clip playing it samples
+   *  the loop and grounds the lowest frame (foot-plant), so a walk cycle's planted foot touches the
+   *  floor while lifts rise; with no clip it grounds the bind pose. Clip-agnostic - grounds vanilla
+   *  .x, .fbx and retargeted .glb the same way, since it measures actual skinned geometry. */
   private groundToClip() {
     const body = this.rigs.bodyRig();
-    if (!body || !this.footBones.length || !this.rigs.clip) return;
+    if (!body || !this.bodyMeshes.length) return;
+    const hasClip = !!this.rigs.clip;
     const saved = this.rigs.time();
     const dur = this.rigs.duration() || 1;
-    const K = 12;
-    let minFoot = Infinity;
+    const K = hasClip ? 10 : 0;
+    let minY = Infinity;
     for (let i = 0; i <= K; i++) {
-      this.rigs.setTime((i / K) * dur);
+      if (hasClip) this.rigs.setTime((i / Math.max(K, 1)) * dur);
       body.root.updateMatrixWorld(true);
-      const f = this.minFootWorldY();
-      if (f < minFoot) minFoot = f;
+      const y = this.skinnedMinY();
+      if (y < minY) minY = y;
     }
-    this.rigs.setTime(saved);
-    body.root.updateMatrixWorld(true);
-    if (!Number.isFinite(minFoot)) return;
-    // want lowest posed foot bone at soleGap (so its sole lands on 0); minFoot was measured with
-    // the current offset applied, so shift by the difference.
-    this.rigs.setGroundOffset(this.rigs.groundOffset + this.soleGap - minFoot);
+    if (hasClip) { this.rigs.setTime(saved); body.root.updateMatrixWorld(true); }
+    if (!Number.isFinite(minY)) return;
+    this.rigs.setGroundOffset(this.rigs.groundOffset - minY); // lowest skinned point -> y=0
   }
 
   /** Swap the body skin tone (texture only, no mesh reload); recomposites so clothing stays. */
