@@ -221,10 +221,7 @@ export function App() {
 
           {counts && (
             <div className="card">
-              <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-                <b style={{ fontSize: 13 }}>Library</b>
-                <button onClick={() => setView('character')} style={{ marginLeft: 'auto' }}>Open character viewer →</button>
-              </div>
+              <b style={{ fontSize: 13 }}>Library</b>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(120px, 1fr))', gap: 10, margin: '14px 0 4px' }}>
                 {([['Clothing', counts.clothing, counts.modClothing ? `${counts.modClothing} modded` : null], ['Held items', counts.held, null], ['Animations', counts.clips, null], ['Hair', `${counts.hairM + counts.hairF}`, `${counts.hairM} M · ${counts.hairF} F`], ['Beards', counts.beards, null]] as const).map(([label, n, sub]) => (
                   <div key={label} style={{ background: '#14141a', border: '1px solid var(--line)', borderRadius: 9, padding: '12px 14px' }}>
@@ -233,6 +230,10 @@ export function App() {
                     {sub && <div style={{ color: 'var(--accent)', fontSize: 11, marginTop: 3 }}>{sub}</div>}
                   </div>
                 ))}
+              </div>
+              <div style={{ textAlign: 'center', margin: '20px 0 10px' }}>
+                <button onClick={() => setView('character')} style={{ padding: '13px 30px', fontSize: 16, fontWeight: 600 }}>Open character viewer →</button>
+                <div style={{ color: 'var(--muted)', fontSize: 12, marginTop: 8 }}>Your library is ready. Open the viewer to dress and pose a character.</div>
               </div>
               <CacheInfo />
             </div>
