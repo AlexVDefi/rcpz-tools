@@ -1,0 +1,15 @@
+{
+  "$comment": "Security headers for the deployed static app. Applies when web/ is the Vercel project root. The CSP mirrors the meta tag injected at build time, plus frame-ancestors (which a meta tag cannot set). connect-src 'self' is the exfiltration lock: the browser blocks any network request off this origin.",
+  "headers": [
+    {
+      "source": "/(.*)",
+      "headers": [
+        { "key": "Content-Security-Policy", "value": "default-src 'self'; script-src 'self' 'wasm-unsafe-eval' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; font-src 'self'; connect-src 'self'; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'none'; frame-src 'none'; frame-ancestors 'none'" },
+        { "key": "X-Content-Type-Options", "value": "nosniff" },
+        { "key": "Referrer-Policy", "value": "no-referrer" },
+        { "key": "X-Frame-Options", "value": "DENY" },
+        { "key": "Permissions-Policy", "value": "geolocation=(), microphone=(), camera=(), usb=(), payment=()" }
+      ]
+    }
+  ]
+}

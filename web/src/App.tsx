@@ -239,10 +239,38 @@ export function App() {
         </div>
       )}
 
+      {phase !== 'unsupported' && view === 'overview' && (
+        <div style={{ marginTop: firstRun ? 34 : 14 }}><SafetyInfo /></div>
+      )}
+
       {index != null && view === 'character' && ctx && (
         <div style={{ marginTop: 12 }}><CharacterViewer ctx={ctx} index={index} /></div>
       )}
     </div>
+  );
+}
+
+// Plain-language explanation of why the tool reads local files and why that is safe.
+function SafetyInfo() {
+  return (
+    <details className="card safety" style={{ maxWidth: 760, marginInline: 'auto', padding: 0 }}>
+      <summary style={{ padding: '14px 18px', fontWeight: 600, display: 'flex', alignItems: 'center', gap: 10 }}>
+        <span style={{ width: 24, height: 24, borderRadius: 6, background: '#1e3a24', color: '#5fd07a', display: 'grid', placeItems: 'center', fontSize: 13, flexShrink: 0 }}>✓</span>
+        Why does it need my files, and is it safe?
+        <span className="chev" style={{ marginLeft: 'auto', color: 'var(--muted)' }}>▾</span>
+      </summary>
+      <div style={{ padding: '2px 18px 18px', color: 'var(--muted)', fontSize: 13.5, lineHeight: 1.62 }}>
+        <h4>Why it needs your files</h4>
+        <p>Project Zomboid stores its characters as 3D models, textures and scripts inside the game's folder (and inside workshop mods). To show and dress a character exactly like the game does, the tool has to read those files. To import a character's look, it reads that save's <code>players.db</code>.</p>
+        <h4>What it does with them</h4>
+        <p>It only <b>reads</b> them, into your browser's memory, to build the thumbnails and render the 3D character. Every bit of processing — reading files, converting models, drawing the character, exporting images — happens on your own computer.</p>
+        <h4>Why it can't harm your files or your game</h4>
+        <p><b>Read-only.</b> The browser only ever grants this page permission to <i>read</i>. It cannot create, write, move, rename or delete anything, and there is no code here that modifies files — so it cannot change or break your game or your saves.</p>
+        <p><b>Only the folder you choose.</b> The File System Access API is sandboxed by the browser: the page can see only the exact folder you pick, nothing else on your PC, and only for this tab. The permission isn't remembered — you grant it again each session.</p>
+        <p><b>Nothing is uploaded, and the browser enforces it.</b> There is no server behind this — it's a static page. A strict Content-Security-Policy instructs your browser to block <i>any</i> network request except loading the page's own code, so no game file, save or mod can leave your machine even if there were a bug.</p>
+        <p><b>You stay in control.</b> Close the tab and all access ends. The only things kept are small local caches (thumbnails and converted meshes) in your browser's own storage, which you can wipe anytime with the <b>Clear</b> button — they are never sent anywhere.</p>
+      </div>
+    </details>
   );
 }
 
