@@ -412,21 +412,26 @@ export class CharacterEngine {
   isEquipped(name: string) { return this.equipped.has(name); }
   equippedNames() { return [...this.equipped.keys()]; }
 
-  async toggleClothing(item: { name: string }) {
+  async toggleClothing(item: { name: string }, tint: number[] | null = null) {
     if (this.equipped.has(item.name)) { await this.unequipClothing(item.name); return false; }
     const r = await resolveClothing(this.ctx, item, this.gender);
     if (r.error) throw new Error(r.error);
-    const entry: Equip = { kind: r.kind, maskTextures: r.maskTextures || [], baseTextures: r.baseTextures || [], tint: null, hatCategory: r.hatCategory || null };
+    const entry: Equip = { kind: r.kind, maskTextures: r.maskTextures || [], baseTextures: r.baseTextures || [], tint, hatCategory: r.hatCategory || null };
     if (r.kind === 'mesh') {
       const tex = r.texture ? await bytesToTexture(r.texture, false) : this.white();
-      const root = await this.loadSkinnedRoot(r.meshGlb, tex, null, true);
+      const root = await this.loadSkinnedRoot(r.meshGlb, tex, tint, true); // tint -> shader tint uniform
       this.rigs.add('cloth:' + item.name, root);
     } else if (r.kind === 'static') {
-      await this.attachStatic(item.name, r);
+      await this.attachStatic(item.name, r, tint);
     }
     this.equipped.set(item.name, entry);
     await this.recompositeBody();
     return true;
+  }
+
+  /** Unequip everything (used before applying an imported outfit). */
+  async clearAllClothing() {
+    for (const name of [...this.equipped.keys()]) await this.unequipClothing(name);
   }
 
   async unequipClothing(name: string) {
@@ -439,7 +444,7 @@ export class CharacterEngine {
     await this.recompositeBody();
   }
 
-  private async attachStatic(name: string, r: { meshGlb: Uint8Array; texture: Uint8Array | null; attachBone?: string | null }) {
+  private async attachStatic(name: string, r: { meshGlb: Uint8Array; texture: Uint8Array | null; attachBone?: string | null }, tint: number[] | null = null) {
     const body = this.rigs.bodyRig();
     if (!body) return;
     let skeleton: THREE.Skeleton | null = null;
@@ -451,6 +456,7 @@ export class CharacterEngine {
     const obj = gltf.scene;
     const tex = r.texture ? await bytesToTexture(r.texture, false) : this.white();
     const mat = makeMaterial(tex, this.lightingObj(), true);
+    if (tint) mat.uniforms.tint.value.set(tint[0], tint[1], tint[2]);
     obj.traverse((o) => { const m = o as THREE.Mesh; if (m.isMesh) { if (!m.geometry.getAttribute('normal')) m.geometry.computeVertexNormals(); m.material = mat; m.frustumCulled = false; } });
     bone.add(obj);
     this.statics.set(name, obj);

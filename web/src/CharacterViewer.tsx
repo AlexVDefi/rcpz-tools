@@ -7,6 +7,10 @@ import { FloorLibrary } from './render/floor';
 import { AssetGrid, type GridItem } from './AssetGrid';
 import { Thumb } from './Thumb';
 import { exportPng, exportGif, exportVideo, download, type BgConfig, type Content } from './render/export-media';
+import { discoverSaves, importCharacter, type SaveEntry, type ParsedChar } from './save/save-import';
+
+const rgb01 = (rgb: number[]) => [rgb[0] / 255, rgb[1] / 255, rgb[2] / 255];
+const rgbHex = (rgb: number[]) => '#' + rgb.map((c) => Math.max(0, Math.min(255, c)).toString(16).padStart(2, '0')).join('');
 
 type CamPreset = 'orbit' | 'iso' | 'front' | 'portrait';
 const ASPECTS: [string, number | null][] = [['Fit', null], ['1:1', 1], ['4:5', 4 / 5], ['3:4', 3 / 4], ['16:9', 16 / 9], ['9:16', 9 / 16]];
@@ -69,6 +73,9 @@ export function CharacterViewer({ ctx, index }: { ctx: Ctx; index: unknown }) {
   const engineRef = useRef<CharacterEngine | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const startedRef = useRef(false);
+  const pendingImportRef = useRef<ParsedChar | null>(null);
+  const applyLookRef = useRef<((p: ParsedChar) => Promise<void>) | null>(null);
+  const [importOpen, setImportOpen] = useState(false);
   const [gender, setGender] = useState<'male' | 'female'>('male');
   const [skin, setSkin] = useState<string>((SKIN_TONES as Record<string, string[]>).male[0]);
   const tones = (SKIN_TONES as Record<string, string[]>)[gender];
@@ -161,7 +168,8 @@ export function CharacterViewer({ ctx, index }: { ctx: Ctx; index: unknown }) {
         await eng.loadBody(gender);
         if (cancelled) return;
         setStatus(''); setEquipTick((t) => t + 1);
-        setSkin((SKIN_TONES as Record<string, string[]>)[gender][0]); // gender load resets to the default tone
+        if (pendingImportRef.current) { const p = pendingImportRef.current; pendingImportRef.current = null; await applyLookRef.current?.(p); }
+        else setSkin((SKIN_TONES as Record<string, string[]>)[gender][0]); // gender load resets to the default tone
         if (!startedRef.current && idleClip) {
           startedRef.current = true;
           try { await eng.playClip(idleClip); setPlaying(true); } catch { /* non-fatal */ }
@@ -222,6 +230,53 @@ export function CharacterViewer({ ctx, index }: { ctx: Ctx; index: unknown }) {
     finally { setExporting(null); }
   };
 
+  // ---- import a character look from a save ----
+  const mapSkinTone = (p: ParsedChar, g: 'male' | 'female') => {
+    const tones = (SKIN_TONES as Record<string, string[]>)[g];
+    if (p.skinTextureName && tones.includes(p.skinTextureName)) return p.skinTextureName;
+    let idx = p.skinTexture ?? 0;
+    if (g === 'male' && p.bodyHair != null && p.bodyHair !== 255 && idx < 5) idx += 5; // body-hair variant
+    return tones[Math.min(Math.max(idx, 0), tones.length - 1)] || tones[0];
+  };
+  const findHairStyle = (model: string, g: 'male' | 'female') => (g === 'female' ? hairData.hair.female : hairData.hair.male).find((s) => s.model === model || s.name === model);
+  const findBeardStyle = (model: string) => hairData.beards.find((s) => s.model === model || s.name === model);
+  const findClothingItem = (c: { clothingItemName: string; fullType: string }) =>
+    clothing.find((it) => it.name === c.clothingItemName) || clothing.find((it) => c.fullType.toLowerCase().endsWith('.' + it.name.toLowerCase()));
+
+  const applyLook = async (p: ParsedChar) => {
+    const eng = engineRef.current; if (!eng) return;
+    const g = p.gender || gender;
+    const tone = mapSkinTone(p, g);
+    if (tone) { setSkin(tone); await eng.setSkin(tone).catch(() => {}); }
+    if (p.hair) {
+      const hs = findHairStyle(p.hair.model, g);
+      setHairSel(hs?.name || 'None');
+      if (p.hair.color) setHairColor(rgbHex(p.hair.color));
+      eng.applyPart('hair', hs || { name: 'None' }, p.hair.color ? rgb01(p.hair.color) : null).catch(() => {});
+    }
+    if (p.beard && p.beard.model) {
+      const bs = findBeardStyle(p.beard.model);
+      setBeardSel(bs?.name || 'None');
+      if (p.beard.color) setBeardColor(rgbHex(p.beard.color));
+      eng.applyPart('beard', bs || { name: 'None' }, p.beard.color ? rgb01(p.beard.color) : null).catch(() => {});
+    } else { setBeardSel('None'); eng.applyPart('beard', { name: 'None' }, null).catch(() => {}); }
+    await eng.clearAllClothing();
+    let worn = 0;
+    for (const c of p.clothing || []) {
+      const item = findClothingItem(c);
+      if (item) { try { await eng.toggleClothing(item, c.tint ? rgb01(c.tint) : null); worn++; } catch { /* skip */ } }
+    }
+    setEquipTick((t) => t + 1);
+    setNowPlaying(`imported: ${worn}/${p.clothing?.length || 0} clothing` + (p.warnings.length ? ' — ' + p.warnings.join('; ') : ''));
+  };
+  applyLookRef.current = applyLook;
+
+  const applyImport = async (p: ParsedChar) => {
+    if (!p.ok && !(p.gender || p.hair || p.clothing?.length)) { setNowPlaying('import failed: ' + (p.warnings.join('; ') || 'could not read character')); return; }
+    if (p.gender && p.gender !== gender) { pendingImportRef.current = p; setGender(p.gender); } // effect reloads body, then applies
+    else await applyLook(p);
+  };
+
   function startDrag(e: React.MouseEvent) {
     e.preventDefault();
     const container = containerRef.current!;
@@ -242,6 +297,7 @@ export function CharacterViewer({ ctx, index }: { ctx: Ctx; index: unknown }) {
 
   return (
     <div ref={containerRef} style={{ display: 'flex', height: 'calc(100vh - 128px)', minHeight: 460 }}>
+      {importOpen && <ImportModal onClose={() => setImportOpen(false)} onImport={applyImport} />}
       <div style={{ flex: 1, minWidth: 320, position: 'relative', background: '#14141a', border: '1px solid var(--line)', borderRadius: 8, overflow: 'hidden' }}>
         {/* studio layer: background sits behind the (transparent) WebGL canvas, clipped to the
             viewfinder rect so outside the frame stays the neutral letterbox */}
@@ -353,7 +409,7 @@ export function CharacterViewer({ ctx, index }: { ctx: Ctx; index: unknown }) {
               renderThumb={(it) => <Thumb depKey={`h:${it.name}`} getUrl={() => thumbs.held(it)} />} />
           )}
 
-          {tab === 'character' && <CharacterTab hairData={hairData} gender={gender} setGender={setGender} skin={skin} tones={tones} onSkin={(t) => { setSkin(t); engineRef.current?.setSkin(t); }} thumbs={thumbs} hairSel={hairSel} beardSel={beardSel} hairColor={hairColor} beardColor={beardColor} onPickPart={applyHairPart} onRecolour={recolourPart} favs={favs} onToggleFav={toggleFav} />}
+          {tab === 'character' && <CharacterTab hairData={hairData} gender={gender} setGender={setGender} skin={skin} tones={tones} onSkin={(t) => { setSkin(t); engineRef.current?.setSkin(t); }} thumbs={thumbs} hairSel={hairSel} beardSel={beardSel} hairColor={hairColor} beardColor={beardColor} onPickPart={applyHairPart} onRecolour={recolourPart} favs={favs} onToggleFav={toggleFav} onImport={() => setImportOpen(true)} />}
 
           {tab === 'floor' && (
             <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
@@ -538,7 +594,7 @@ const NONE_HAIR: HairItem = { name: 'None', key: 'None', label: 'None', facet: '
 // Character tab: identity (gender + skin texture) as a compact header, then a browsable
 // thumbnail grid for the active appearance kind (Hair or Beard) filling the rest. Selection
 // and colour are lifted to the parent so the Favorites tab stays in sync.
-function CharacterTab({ hairData, gender, setGender, skin, tones, onSkin, thumbs, hairSel, beardSel, hairColor, beardColor, onPickPart, onRecolour, favs, onToggleFav }: {
+function CharacterTab({ hairData, gender, setGender, skin, tones, onSkin, thumbs, hairSel, beardSel, hairColor, beardColor, onPickPart, onRecolour, favs, onToggleFav, onImport }: {
   hairData: HairData;
   gender: 'male' | 'female';
   setGender: (g: 'male' | 'female') => void;
@@ -554,6 +610,7 @@ function CharacterTab({ hairData, gender, setGender, skin, tones, onSkin, thumbs
   onRecolour: (kind: 'hair' | 'beard', hex: string) => void;
   favs: Set<string>;
   onToggleFav: (kind: FavKind, name: string) => void;
+  onImport: () => void;
 }) {
   const [kind, setKind] = useState<'hair' | 'beard'>('hair');
 
@@ -571,6 +628,7 @@ function CharacterTab({ hairData, gender, setGender, skin, tones, onSkin, thumbs
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
       <div style={{ padding: 12, borderBottom: '1px solid var(--line)' }}>
+        <button className="secondary" onClick={onImport} style={{ width: '100%', padding: '8px 12px', marginBottom: 12, background: 'var(--accent)', color: '#fff' }}>Import look from a save…</button>
         <label style={{ color: 'var(--muted)', fontSize: 12 }}>Gender</label>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', margin: '4px 0 12px' }}>
           <div style={{ display: 'flex', border: '1px solid var(--line)', borderRadius: 6, overflow: 'hidden' }}>
@@ -607,6 +665,48 @@ function CharacterTab({ hairData, gender, setGender, skin, tones, onSkin, thumbs
           renderThumb={(it) => it.name === 'None'
             ? <span style={{ color: 'var(--muted)', fontSize: 13 }}>None</span>
             : <Thumb depKey={`hair:${kind}:${it.name}:${gender}`} getUrl={() => thumbs.hair(it, kind, gender)} />} />
+      </div>
+    </div>
+  );
+}
+
+// Modal: pick the Zomboid saves folder, list saves + their character, import a look.
+function ImportModal({ onClose, onImport }: { onClose: () => void; onImport: (p: ParsedChar) => Promise<void> }) {
+  const [saves, setSaves] = useState<SaveEntry[] | null>(null);
+  const [busy, setBusy] = useState('');
+  const pick = async () => {
+    setBusy('Opening folder…');
+    try {
+      const dir = await window.showDirectoryPicker({ id: 'pz-saves', mode: 'read' });
+      setBusy('Scanning saves…');
+      const s = await discoverSaves(dir);
+      setSaves(s); setBusy(s.length ? '' : 'No saves with a character were found in that folder.');
+    } catch (e) { setBusy((e as Error)?.name === 'AbortError' ? '' : 'error: ' + (e as Error).message); }
+  };
+  const doImport = async (entry: SaveEntry) => {
+    setBusy('Reading ' + entry.name + '…');
+    try { const parsed = await importCharacter(entry); await onImport(parsed); onClose(); }
+    catch (e) { setBusy('error reading save: ' + (e as Error).message); }
+  };
+  const row = { display: 'block', width: '100%', textAlign: 'left', padding: '8px 10px', margin: '4px 0', borderRadius: 6 } as const;
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: '#000000aa', zIndex: 50, display: 'flex', alignItems: 'center', justifyContent: 'center' }} onClick={onClose}>
+      <div onClick={(e) => e.stopPropagation()} style={{ width: 520, maxWidth: '92vw', maxHeight: '80vh', background: 'var(--panel)', border: '1px solid var(--line)', borderRadius: 10, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+        <div style={{ padding: '12px 14px', borderBottom: '1px solid var(--line)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <span style={{ fontWeight: 600 }}>Import character look from a save</span>
+          <span role="button" onClick={onClose} title="close" style={{ cursor: 'pointer', color: 'var(--muted)' }}>✕</span>
+        </div>
+        <div style={{ padding: 14, overflow: 'auto' }}>
+          <button className="secondary" onClick={pick} style={{ padding: '8px 14px', background: 'var(--accent)', color: '#fff' }}>Choose your Zomboid folder…</button>
+          <div style={{ color: 'var(--muted)', fontSize: 11, margin: '8px 0 4px' }}>Point at your Zomboid folder (usually in Documents) or its Saves folder. Read locally in your browser — nothing is uploaded.</div>
+          {busy && <div style={{ color: 'var(--muted)', fontSize: 13, padding: '6px 2px' }}>{busy}</div>}
+          {saves && saves.map((s, i) => (
+            <button key={i} className="secondary" onClick={() => doImport(s)} style={row}>
+              <div style={{ fontSize: 13 }}>{s.name}</div>
+              <div style={{ fontSize: 11, color: 'var(--muted)' }}>{s.mode} · {s.save} · v{s.worldVersion}</div>
+            </button>
+          ))}
+        </div>
       </div>
     </div>
   );
