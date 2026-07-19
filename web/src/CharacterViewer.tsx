@@ -82,7 +82,7 @@ export function CharacterViewer({ ctx, index }: { ctx: Ctx; index: unknown }) {
   const [status, setStatus] = useState('loading body…');
   const [nowPlaying, setNowPlaying] = useState('');
   const [playing, setPlaying] = useState(true);
-  const [tab, setTab] = useState<Tab>('animate');
+  const [tab, setTab] = useState<Tab>('character');
   const [equipTick, setEquipTick] = useState(0);
   const [, setBusy] = useState('');
   const [panelW, setPanelW] = useState(() => Number(localStorage.getItem('pz-panel-w')) || 420);
@@ -290,7 +290,7 @@ export function CharacterViewer({ ctx, index }: { ctx: Ctx; index: unknown }) {
     window.addEventListener('mouseup', onUp);
   }
 
-  const tabs: [Tab, string][] = [['animate', 'Animate'], ['clothing', 'Clothing'], ['held', 'Held'], ['character', 'Character'], ['floor', 'Floor'], ['scene', 'Scene']];
+  const tabs: [Tab, string][] = [['character', 'Character'], ['clothing', 'Clothing'], ['held', 'Held'], ['animate', 'Animate'], ['floor', 'Floor'], ['scene', 'Scene']];
   const segBtn = (on: boolean) => ({ borderRadius: 0, padding: '6px 9px', background: on ? 'var(--accent)' : 'var(--panel)', color: on ? '#fff' : 'var(--muted)' }) as const;
   void equipTick; // re-read equipped state on every equip change
   const equipList = engineRef.current?.equippedList() ?? [];
@@ -314,6 +314,7 @@ export function CharacterViewer({ ctx, index }: { ctx: Ctx; index: unknown }) {
         <div style={{ position: 'absolute', left: 12, top: 12, display: 'flex', gap: 8, alignItems: 'center' }}>
           {status && <span style={{ color: 'var(--muted)', background: '#00000099', padding: '4px 8px', borderRadius: 6 }}>{status}</span>}
           <span style={{ color: 'var(--muted)', background: '#00000099', padding: '4px 8px', borderRadius: 6, maxWidth: 340, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{nowPlaying || 'pick a clip →'}</span>
+          {idleClip && <button className="secondary" title="Reset to idle animation" onClick={() => playClip(idleClip)} style={{ padding: '4px 10px', fontSize: 12, lineHeight: 1 }}>↺ Idle</button>}
         </div>
         <div style={{ position: 'absolute', right: 12, top: 12, display: 'flex', gap: 8, alignItems: 'flex-start' }}>
           <button className="secondary" title="Equipped items" onClick={() => setEquipOpen((v) => !v)}
