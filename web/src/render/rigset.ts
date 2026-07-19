@@ -11,12 +11,14 @@ export class RigSet {
   clip: NormalisedClip | null = null;
   loop = true;
   facing = 0;
+  groundOffset = 0; // vertical shift applied to every rig so the feet rest on y=0
 
   constructor(scene: THREE.Scene) { this.scene = scene; }
 
   add(kind: string, root: THREE.Object3D): Rig {
     root.rotation.x = this.clip ? this.clip.rootRotationX : 0;
     root.rotation.y = this.facing;
+    root.position.y = this.groundOffset;
     this.scene.add(root);
     const rig: Rig = { kind, root, mixer: null, action: null };
     this.rigs.push(rig);
@@ -25,6 +27,7 @@ export class RigSet {
   }
 
   setFacing(rad: number) { this.facing = rad; for (const rig of this.rigs) rig.root.rotation.y = rad; }
+  setGroundOffset(y: number) { this.groundOffset = y; for (const rig of this.rigs) rig.root.position.y = y; }
 
   removeKind(kind: string) {
     for (let i = this.rigs.length - 1; i >= 0; i--) {

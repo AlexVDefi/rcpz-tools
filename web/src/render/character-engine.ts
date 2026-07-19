@@ -328,6 +328,12 @@ export class CharacterEngine {
     this.rigs.removeKind('body');
     this.rigs.add('body', root);
     root.updateMatrixWorld(true);
+    // Ground the character on the grid: the PZ body's lowest point sits a hair below its
+    // origin, so without this the feet clip through the y=0 floor. Lift the whole rig set so
+    // the measured minY rests exactly on 0, then remeasure for framing.
+    const raw = new THREE.Box3().setFromObject(root);
+    this.rigs.setGroundOffset(this.rigs.groundOffset - raw.min.y);
+    root.updateMatrixWorld(true);
     const box = new THREE.Box3().setFromObject(root);
     const c = box.getCenter(new THREE.Vector3());
     this.bodyBounds = { minY: box.min.y, maxY: box.max.y, cx: c.x, cz: c.z };
