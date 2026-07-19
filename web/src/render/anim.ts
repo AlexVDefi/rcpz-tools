@@ -133,6 +133,19 @@ function retargetWorld(clip: THREE.AnimationClip, clipScene: THREE.Object3D, bod
   }
   mixer.stopAllAction(); mixer.uncacheRoot(clipScene);
   const tracks = mapped.map((n) => new THREE.QuaternionKeyframeTrack(n + '.quaternion', times, values.get(n)!));
+  // Pass through animated body nodes the skinned-bone retarget doesn't cover - notably the
+  // weapon prop bones (Bip01_Prop1/Bip01_Prop2). Those are attachment points with no skin
+  // weights, so bindWorldFromSkin never lists them and they'd stay frozen while the clip
+  // animates them (a held gun just hovers). They share the PZ skeleton's bind with the body,
+  // so the clip's authored local TRS - which the mixer overrides wholesale each frame - applies
+  // directly. mappedSet excludes every bone already world-retargeted, so this only adds the
+  // non-skinned extras.
+  const mappedSet = new Set(mapped);
+  for (const t of clip.tracks) {
+    const m = t.name.match(/^(.+)\.(quaternion|position)$/);
+    if (!m || mappedSet.has(m[1]) || !body.bindWorld.has(m[1])) continue;
+    tracks.push(t.clone());
+  }
   return new THREE.AnimationClip(clip.name, clip.duration, tracks);
 }
 
