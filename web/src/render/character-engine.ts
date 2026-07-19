@@ -44,6 +44,8 @@ export class CharacterEngine {
   private viewRect: { x: number; y: number; w: number; h: number } | null = null;
   private exportAspect: number | null = null;
   private bodyBounds: { minY: number; maxY: number; cx: number; cz: number } | null = null;
+  private footBones: THREE.Object3D[] = []; // foot/toe bones, for grounding the posed feet per clip
+  private soleGap = 0;                       // world Y of the lowest foot bone when the sole rests on 0
   private turntable = false;
   private spin = 0; // live turntable angle (rad)
   private preset: 'orbit' | 'iso' | 'front' | 'portrait' = 'orbit';
@@ -330,12 +332,17 @@ export class CharacterEngine {
     this.rigs.removeKind('body');
     this.rigs.add('body', root);
     root.updateMatrixWorld(true);
-    // Ground the character on the grid: the PZ body's lowest point sits a hair below its
-    // origin, so without this the feet clip through the y=0 floor. Lift the whole rig set so
-    // the measured minY rests exactly on 0, then remeasure for framing.
+    // Ground the character on the grid. Box3.setFromObject can only see the BIND pose (it
+    // ignores GPU skinning), so grounding the bind mesh to y=0 fixes the resting pose but not
+    // an animated one whose posed feet sit higher/lower. Establish the bind grounding here, then
+    // capture the foot bones + the "sole rests on 0" reference so a playing clip can re-ground
+    // off the actual posed feet (see groundToClip).
     const raw = new THREE.Box3().setFromObject(root);
     this.rigs.setGroundOffset(this.rigs.groundOffset - raw.min.y);
     root.updateMatrixWorld(true);
+    this.footBones = ['Bip01_L_Foot', 'Bip01_R_Foot', 'Bip01_L_Toe0', 'Bip01_R_Toe0']
+      .map((n) => root.getObjectByName(n)).filter((o): o is THREE.Object3D => !!o);
+    this.soleGap = this.minFootWorldY(); // bind sole is on 0, so this is the foot-bone height above the sole
     const box = new THREE.Box3().setFromObject(root);
     const c = box.getCenter(new THREE.Vector3());
     this.bodyBounds = { minY: box.min.y, maxY: box.max.y, cx: c.x, cz: c.z };
@@ -345,7 +352,39 @@ export class CharacterEngine {
       this.orbit.state.radius = Math.max(s.y, 1) * 1.9;
       this.orbit.apply();
     }
+    if (this.rigs.clip) this.groundToClip(); // a clip may already be playing (e.g. gender swap)
     await this.recompositeBody();
+  }
+
+  private minFootWorldY(): number {
+    let m = Infinity;
+    const v = new THREE.Vector3();
+    for (const b of this.footBones) { b.getWorldPosition(v); if (v.y < m) m = v.y; }
+    return Number.isFinite(m) ? m : 0;
+  }
+
+  /** Re-ground off the posed feet for the current clip: sample the clip and shift the rig set so
+   *  the lowest foot-plant over the loop rests on the grid. Clip-agnostic (measures real bone
+   *  world positions), so it grounds vanilla .x, .fbx and retargeted .glb clips uniformly. */
+  private groundToClip() {
+    const body = this.rigs.bodyRig();
+    if (!body || !this.footBones.length || !this.rigs.clip) return;
+    const saved = this.rigs.time();
+    const dur = this.rigs.duration() || 1;
+    const K = 12;
+    let minFoot = Infinity;
+    for (let i = 0; i <= K; i++) {
+      this.rigs.setTime((i / K) * dur);
+      body.root.updateMatrixWorld(true);
+      const f = this.minFootWorldY();
+      if (f < minFoot) minFoot = f;
+    }
+    this.rigs.setTime(saved);
+    body.root.updateMatrixWorld(true);
+    if (!Number.isFinite(minFoot)) return;
+    // want lowest posed foot bone at soleGap (so its sole lands on 0); minFoot was measured with
+    // the current offset applied, so shift by the difference.
+    this.rigs.setGroundOffset(this.rigs.groundOffset + this.soleGap - minFoot);
   }
 
   /** Swap the body skin tone (texture only, no mesh reload); recomposites so clothing stays. */
@@ -365,6 +404,7 @@ export class CharacterEngine {
     const norm = normaliseClip(gltf.animations[0], clip.format, { clipScene: gltf.scene, bodySkel: this.bodySkel ?? undefined, clipRest: boneRestMap(gltf.scene), bodyRest: this.bodyRest });
     this.rigs.setLoop(true);
     this.rigs.setClip(norm);
+    this.groundToClip(); // re-ground off this clip's posed feet (formats frame the body differently)
     this.playing = true;
     const tag = norm.best ? '' : (clip.format === 'fbx' ? ' (fbx, best-effort)' : ` (${clip.format}, retargeted)`);
     this.onClipName?.(clip.name + tag);
