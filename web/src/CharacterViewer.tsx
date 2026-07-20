@@ -404,10 +404,13 @@ export function CharacterViewer({ ctx, index, onCharacterName }: { ctx: Ctx; ind
       {importOpen && <ImportModal onClose={() => setImportOpen(false)} onImport={applyImport} />}
       {presetsOpen && <PresetsModal presets={presets} onClose={() => setPresetsOpen(false)} onSave={savePreset} onLoad={(p) => { void applyPreset(p); setPresetsOpen(false); }} onDelete={deletePreset} />}
       <div style={{ flex: 1, minWidth: 320, position: 'relative', background: '#14141a', border: '1px solid var(--line)', borderRadius: 8, overflow: 'hidden' }}>
-        {/* studio layer: background sits behind the (transparent) WebGL canvas, clipped to the
-            viewfinder rect so outside the frame stays the neutral letterbox */}
+        {/* studio layer: background sits behind the (transparent) WebGL canvas. With a framing
+            aspect it's clipped to the viewfinder rect (outside stays the neutral letterbox); in
+            "Fit" mode there's no viewfinder, so it fills the whole view. */}
         <div style={{ position: 'absolute', inset: 0 }}>
-          {viewfinder && <div style={{ position: 'absolute', left: viewfinder.left, top: viewfinder.top, width: viewfinder.width, height: viewfinder.height, outline: '1px solid #ffffff2a', ...bgStyle(bg) }} />}
+          <div style={viewfinder
+            ? { position: 'absolute', left: viewfinder.left, top: viewfinder.top, width: viewfinder.width, height: viewfinder.height, outline: '1px solid #ffffff2a', ...bgStyle(bg) }
+            : { position: 'absolute', inset: 0, ...bgStyle(bg) }} />
           <canvas ref={canvasRef} style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', display: 'block' }} />
         </div>
         {exporting && (
