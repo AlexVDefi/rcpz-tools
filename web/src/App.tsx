@@ -76,11 +76,16 @@ export function App() {
     (async () => {
       const inst = await idbHandles.load(INSTALL_KEY);
       if (!inst) return;
-      setInstallHandle(inst);
-      if (!(await hasPermission(inst))) { setNeedPerm(true); return; }
-      const ws = await idbHandles.load(WORKSHOP_KEY);
+      if (!(await hasPermission(inst))) { setInstallHandle(inst); setNeedPerm(true); return; }
+      // Committed to a scan: set the handle AND raise the modal in one batched render, so the
+      // Sources card and the modal appear on the same frame (no sources-without-modal flash),
+      // and the modal covers mod discovery (reading every mod.info) as well as the rebuild.
+      setInstallHandle(inst); setPhase('scanning'); setOverlay('in');
       let discovered: DiscoveredMod[] = [];
-      if (ws && await hasPermission(ws)) { discovered = await discoverWorkshopMods(ws); setMods(discovered); }
+      try {
+        const ws = await idbHandles.load(WORKSHOP_KEY);
+        if (ws && await hasPermission(ws)) { discovered = await discoverWorkshopMods(ws); setMods(discovered); }
+      } catch { /* discovery is best-effort; fall through to a vanilla rebuild so the modal never sticks */ }
       const active = JSON.parse(localStorage.getItem(ACTIVE_KEY) || '[]').map((k: string) => discovered.find((m) => m.key === k)).filter(Boolean) as DiscoveredMod[];
       rebuild(inst, active);
     })();
@@ -283,7 +288,9 @@ export function App() {
 // then fades out to reveal the freshly-scanned library.
 function ScanOverlay({ scan, closing }: { scan: Scan | null; closing: boolean }) {
   const stepIdx = scan ? SCAN_STEPS.indexOf(scan.step) : 0;
-  const pct = closing || !scan ? 100 : Math.min(99, Math.round(((scan.source - 1) * 3 + stepIdx + 1) / (scan.total * 3) * 100));
+  // scan === null is the "preparing" window (discovering mods, before per-source progress
+  // reports start): show a small shimmering bar, not a full one that reads as done/stuck.
+  const pct = closing ? 100 : !scan ? 6 : Math.min(99, Math.round(((scan.source - 1) * 3 + stepIdx + 1) / (scan.total * 3) * 100));
   return (
     <div className={'scan-overlay' + (closing ? ' closing' : '')} role="status" aria-live="polite">
       <div className="scan-card">
