@@ -28,6 +28,15 @@ const bgStyle = (b: BgConfig): React.CSSProperties =>
 
 type Tab = 'animate' | 'clothing' | 'held' | 'character' | 'scene' | 'floor';
 type FavKind = 'clothing' | 'held' | 'hair' | 'beard';
+type Light = { ambient: number; keyBright: number; kx: number; ky: number; kz: number };
+type ScenePreset = { bg: BgConfig; turntable: boolean; camPreset: CamPreset; studioAspect: number | null; facing: number | null; floor: string | null; light: Light; grid: boolean; shadow: boolean };
+type CharPreset = {
+  name: string; gender: 'male' | 'female'; skin: string;
+  hair: { sel: string; color: string }; beard: { sel: string; color: string };
+  clothing: { name: string; tint: number[] | null; hidden: boolean }[];
+  held: { name: string; hand: 'right' | 'left'; hidden: boolean; attachments: { slot: string; option: AttachOption }[] }[];
+  scene: ScenePreset;
+};
 const favKey = (kind: FavKind, name: string) => `${kind}:${name}`;
 const floorCategory = (name: string) => name.replace(/(_\d+)+$/, '').replace(/^(floors_|blends_)/, '');
 // Curated material presets: each scatters random variants into a baked, non-repetitive floor.
@@ -112,6 +121,14 @@ export function CharacterViewer({ ctx, index }: { ctx: Ctx; index: unknown }) {
   const [speed, setSpeed] = useState(1);
   const [camMode, setCamMode] = useState<'orbit' | 'iso'>('orbit');
   const [facing, setFacing] = useState<number | null>(0);
+  const [light, setLight] = useState<Light>({ ...LIGHT_DEFAULT });
+  const [grid, setGrid] = useState(true);
+  const [shadow, setShadow] = useState(true);
+  const setL = (k: keyof Light, v: number) => { setLight((s) => ({ ...s, [k]: v })); engineRef.current?.setLight(k, v); };
+  const [presets, setPresets] = useState<Record<string, CharPreset>>(() => { try { return JSON.parse(localStorage.getItem('pz-char-presets') || '{}'); } catch { return {}; } });
+  useEffect(() => { localStorage.setItem('pz-char-presets', JSON.stringify(presets)); }, [presets]);
+  const pendingPresetRef = useRef<CharPreset | null>(null);
+  const applyPresetLookRef = useRef<((p: CharPreset) => Promise<void>) | null>(null);
   const scrubRef = useRef<HTMLInputElement>(null);
   const scrubbingRef = useRef(false);
 
@@ -175,6 +192,7 @@ export function CharacterViewer({ ctx, index }: { ctx: Ctx; index: unknown }) {
         if (cancelled) return;
         setStatus(''); setEquipTick((t) => t + 1);
         if (pendingImportRef.current) { const p = pendingImportRef.current; pendingImportRef.current = null; await applyLookRef.current?.(p); }
+        else if (pendingPresetRef.current) { const p = pendingPresetRef.current; pendingPresetRef.current = null; await applyPresetLookRef.current?.(p); }
         else setSkin((SKIN_TONES as Record<string, string[]>)[gender][0]); // gender load resets to the default tone
         if (!startedRef.current && idleClip) {
           startedRef.current = true;
@@ -278,6 +296,57 @@ export function CharacterViewer({ ctx, index }: { ctx: Ctx; index: unknown }) {
     setNowPlaying(`imported: ${worn}/${p.clothing?.length || 0} clothing` + (p.warnings.length ? '. ' + p.warnings.join('; ') : ''));
   };
   applyLookRef.current = applyLook;
+
+  // ---- save / load a full character preset (looks + equipment + scene) ----
+  const applyFloor = async (floor: string | null) => {
+    if (!floor) { clearFloor(); return; }
+    if (floor.startsWith('preset:')) { const nm = floor.slice(7); const p = FLOOR_PRESETS.find(([n]) => n === nm); if (p) await pickPreset(nm, p[1] as string[]); else clearFloor(); }
+    else await pickFloor(floor);
+  };
+  const applyScene = (s: ScenePreset) => {
+    const eng = engineRef.current;
+    setBg(s.bg); setTurntable(s.turntable); setStudioAspect(s.studioAspect); setCamPreset(s.camPreset);
+    setFacing(s.facing); if (s.facing != null) eng?.setFacing(s.facing);
+    setLight({ ...s.light }); (['ambient', 'keyBright', 'kx', 'ky', 'kz'] as const).forEach((k) => eng?.setLight(k, s.light[k]));
+    setGrid(s.grid); eng?.setGridVisible(s.grid);
+    setShadow(s.shadow); eng?.setShadowVisible(s.shadow);
+    void applyFloor(s.floor);
+  };
+  const resetScene = () => applyScene({ ...SCENE_DEFAULT, light: { ...LIGHT_DEFAULT } });
+
+  const findHairByName = (name: string, g: 'male' | 'female') => (g === 'female' ? hairData.hair.female : hairData.hair.male).find((s) => s.name === name);
+  const findBeardByName = (name: string) => hairData.beards.find((s) => s.name === name);
+  const buildPreset = (name: string): CharPreset => ({
+    name, gender, skin,
+    hair: { sel: hairSel, color: hairColor }, beard: { sel: beardSel, color: beardColor },
+    clothing: engineRef.current?.clothingState() ?? [],
+    held: engineRef.current?.heldState() ?? [],
+    scene: { bg, turntable, camPreset, studioAspect, facing, floor: floorSel, light, grid, shadow },
+  });
+  const savePreset = (name: string) => { const n = name.trim(); if (n) setPresets((p) => ({ ...p, [n]: buildPreset(n) })); };
+  const deletePreset = (name: string) => setPresets((p) => { const n = { ...p }; delete n[name]; return n; });
+  const applyPresetLook = async (preset: CharPreset) => {
+    const eng = engineRef.current; if (!eng) return;
+    setSkin(preset.skin); await eng.setSkin(preset.skin).catch(() => {});
+    const hs = findHairByName(preset.hair.sel, preset.gender);
+    setHairSel(preset.hair.sel); setHairColor(preset.hair.color);
+    eng.applyPart('hair', hs || { name: 'None' }, preset.hair.sel === 'None' ? null : hexRgb(preset.hair.color)).catch(() => {});
+    const bs = findBeardByName(preset.beard.sel);
+    setBeardSel(preset.beard.sel); setBeardColor(preset.beard.color);
+    eng.applyPart('beard', bs || { name: 'None' }, preset.beard.sel === 'None' ? null : hexRgb(preset.beard.color)).catch(() => {});
+    await eng.clearAllClothing();
+    for (const cl of preset.clothing) { const item = clothing.find((x) => x.name === cl.name); if (item) { try { await eng.toggleClothing(item, cl.tint); if (cl.hidden) await eng.setItemHidden(cl.name, true); } catch { /* skip */ } } }
+    await eng.clearAllHeld();
+    for (const h of preset.held) { const item = held.find((x) => x.name === h.name); if (item) { try { await eng.toggleHeld(item, h.hand); for (const a of h.attachments) await eng.setHeldAttachment(h.name, a.slot, a.option); if (h.hidden) await eng.setItemHidden(h.name, true); } catch { /* skip */ } } }
+    applyScene(preset.scene);
+    setEquipTick((t) => t + 1);
+    setNowPlaying(`loaded ${preset.name}`);
+  };
+  applyPresetLookRef.current = applyPresetLook;
+  const applyPreset = async (preset: CharPreset) => {
+    if (preset.gender !== gender) { pendingPresetRef.current = preset; setGender(preset.gender); return; } // effect reloads body, then applies
+    await applyPresetLook(preset);
+  };
 
   const applyImport = async (p: ParsedChar) => {
     if (!p.ok && !(p.gender || p.hair || p.clothing?.length)) { setNowPlaying('import failed: ' + (p.warnings.join('; ') || 'could not read character')); return; }
@@ -477,7 +546,8 @@ export function CharacterViewer({ ctx, index }: { ctx: Ctx; index: unknown }) {
               renderThumb={(it) => <Thumb depKey={`h:${it.name}`} getUrl={() => thumbs.held(it)} />} />
           )}
 
-          {tab === 'character' && <CharacterTab hairData={hairData} gender={gender} setGender={setGender} skin={skin} tones={tones} onSkin={(t) => { setSkin(t); engineRef.current?.setSkin(t); }} thumbs={thumbs} hairSel={hairSel} beardSel={beardSel} hairColor={hairColor} beardColor={beardColor} onPickPart={applyHairPart} onRecolour={recolourPart} favs={favs} onToggleFav={toggleFav} onImport={() => setImportOpen(true)} />}
+          {tab === 'character' && <CharacterTab hairData={hairData} gender={gender} setGender={setGender} skin={skin} tones={tones} onSkin={(t) => { setSkin(t); engineRef.current?.setSkin(t); }} thumbs={thumbs} hairSel={hairSel} beardSel={beardSel} hairColor={hairColor} beardColor={beardColor} onPickPart={applyHairPart} onRecolour={recolourPart} favs={favs} onToggleFav={toggleFav} onImport={() => setImportOpen(true)}
+            presets={{ list: presets, onSave: savePreset, onLoad: applyPreset, onDelete: deletePreset }} />}
 
           {tab === 'floor' && (
             <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
@@ -498,7 +568,8 @@ export function CharacterViewer({ ctx, index }: { ctx: Ctx; index: unknown }) {
             </div>
           )}
 
-          {tab === 'scene' && <SceneTab engineRef={engineRef} floorSel={floorSel} onPreset={pickPreset} onClear={clearFloor}
+          {tab === 'scene' && <SceneTab floorSel={floorSel} onPreset={pickPreset} onClear={clearFloor}
+            scene={{ light, setL, grid, setGrid: (v) => { setGrid(v); engineRef.current?.setGridVisible(v); }, shadow, setShadow: (v) => { setShadow(v); engineRef.current?.setShadowVisible(v); }, onReset: resetScene }}
             studio={{ camPreset, setCamPreset, studioAspect, setStudioAspect, bg, setBg, turntable, setTurntable, gifMode, setGifMode, mp4Seconds, setMp4Seconds, exporting, runExport }} />}
         </div>
       </div>
@@ -525,7 +596,9 @@ const FACING_GRID: ([string, number] | null)[] = [
   ['SW', 45], null, ['NE', 225],
   ['S', 0], ['SE', 315], ['E', 270],
 ];
-const LIGHT_DEFAULT = { ambient: 0.55, keyBright: 0.5, kx: 0.12, ky: 0.28, kz: 1.0 };
+const LIGHT_DEFAULT: Light = { ambient: 0.55, keyBright: 0.5, kx: 0.12, ky: 0.28, kz: 1.0 };
+const BG_DEFAULT: BgConfig = { mode: 'solid', color1: '#20242c', color2: '#0a0b10', angle: 90 };
+const SCENE_DEFAULT: ScenePreset = { bg: BG_DEFAULT, turntable: false, camPreset: 'orbit', studioAspect: null, facing: 0, floor: null, light: LIGHT_DEFAULT, grid: true, shadow: true };
 
 interface StudioCtl {
   camPreset: CamPreset; setCamPreset: (p: CamPreset) => void;
@@ -538,20 +611,19 @@ interface StudioCtl {
   runExport: (kind: 'png' | 'gif' | 'mp4') => void;
 }
 
-function SceneTab({ engineRef, floorSel, onPreset, onClear, studio }: {
-  engineRef: React.MutableRefObject<CharacterEngine | null>;
+interface SceneCtl {
+  light: Light; setL: (k: keyof Light, v: number) => void;
+  grid: boolean; setGrid: (v: boolean) => void;
+  shadow: boolean; setShadow: (v: boolean) => void;
+  onReset: () => void;
+}
+function SceneTab({ floorSel, onPreset, onClear, scene, studio }: {
   floorSel: string | null; onPreset: (name: string, tiles: string[]) => void; onClear: () => void;
-  studio: StudioCtl;
+  scene: SceneCtl; studio: StudioCtl;
 }) {
-  const [grid, setGrid] = useState(true);
-  const [shadow, setShadow] = useState(true);
-  const [light, setLight] = useState({ ...LIGHT_DEFAULT });
-
-  const setL = (k: keyof typeof LIGHT_DEFAULT, v: number) => { setLight((s) => ({ ...s, [k]: v })); engineRef.current?.setLight(k as 'ambient' | 'keyBright' | 'kx' | 'ky' | 'kz', v); };
-  const resetL = () => { setLight({ ...LIGHT_DEFAULT }); engineRef.current?.resetLight(); };
-
+  const { light, setL, grid, setGrid, shadow, setShadow } = scene;
   const label = { color: 'var(--muted)', fontSize: 12, display: 'block', margin: '14px 0 6px' } as const;
-  const slider = (k: keyof typeof LIGHT_DEFAULT, name: string, min: number, max: number) => (
+  const slider = (k: keyof Light, name: string, min: number, max: number) => (
     <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 6 }}>
       <span style={{ width: 66, fontSize: 12, color: 'var(--muted)' }}>{name}</span>
       <input type="range" min={min} max={max} step={0.01} value={light[k]} onChange={(e) => setL(k, Number(e.target.value))} style={{ flex: 1, accentColor: '#5b8cff' }} />
@@ -561,10 +633,10 @@ function SceneTab({ engineRef, floorSel, onPreset, onClear, studio }: {
 
   return (
     <div style={{ padding: 12, overflow: 'auto', height: '100%' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', margin: '0 0 6px' }}>
-        <span style={{ color: 'var(--muted)', fontSize: 12 }}>Lighting</span>
-        <button className="secondary" onClick={resetL} style={{ padding: '3px 10px', fontSize: 12 }}>Reset</button>
-      </div>
+      <button className="secondary" onClick={scene.onReset} title="reset every scene setting to its default"
+        style={{ width: '100%', padding: '8px', marginBottom: 4, fontSize: 12 }}>↺ Reset all scene settings</button>
+
+      <label style={label}>Lighting</label>
       {slider('ambient', 'ambient', 0, 1)}
       {slider('keyBright', 'key light', 0, 1)}
       {slider('kx', 'key X', -2, 2)}
@@ -582,9 +654,9 @@ function SceneTab({ engineRef, floorSel, onPreset, onClear, studio }: {
 
       <label style={label}>Scene</label>
       <div style={{ display: 'flex', gap: 8 }}>
-        <button className="secondary" onClick={() => { const n = !grid; setGrid(n); engineRef.current?.setGridVisible(n); }}
+        <button className="secondary" onClick={() => setGrid(!grid)}
           style={{ padding: '6px 12px', background: grid ? 'var(--accent)' : 'var(--panel)', color: grid ? '#fff' : 'var(--text)' }}>Floor grid</button>
-        <button className="secondary" onClick={() => { const n = !shadow; setShadow(n); engineRef.current?.setShadowVisible(n); }}
+        <button className="secondary" onClick={() => setShadow(!shadow)}
           style={{ padding: '6px 12px', background: shadow ? 'var(--accent)' : 'var(--panel)', color: shadow ? '#fff' : 'var(--text)' }}>Shadow</button>
       </div>
 
@@ -664,7 +736,7 @@ const NONE_HAIR: HairItem = { name: 'None', key: 'None', label: 'None', facet: '
 // Character tab: identity (gender + skin texture) as a compact header, then a browsable
 // thumbnail grid for the active appearance kind (Hair or Beard) filling the rest. Selection
 // and colour are lifted to the parent so the Favorites tab stays in sync.
-function CharacterTab({ hairData, gender, setGender, skin, tones, onSkin, thumbs, hairSel, beardSel, hairColor, beardColor, onPickPart, onRecolour, favs, onToggleFav, onImport }: {
+function CharacterTab({ hairData, gender, setGender, skin, tones, onSkin, thumbs, hairSel, beardSel, hairColor, beardColor, onPickPart, onRecolour, favs, onToggleFav, onImport, presets }: {
   hairData: HairData;
   gender: 'male' | 'female';
   setGender: (g: 'male' | 'female') => void;
@@ -681,8 +753,12 @@ function CharacterTab({ hairData, gender, setGender, skin, tones, onSkin, thumbs
   favs: Set<string>;
   onToggleFav: (kind: FavKind, name: string) => void;
   onImport: () => void;
+  presets: { list: Record<string, CharPreset>; onSave: (name: string) => void; onLoad: (preset: CharPreset) => void; onDelete: (name: string) => void };
 }) {
   const [kind, setKind] = useState<'hair' | 'beard'>('hair');
+  const [saveName, setSaveName] = useState('');
+  const saved = Object.values(presets.list).sort((a, b) => a.name.localeCompare(b.name));
+  const doSave = () => { if (saveName.trim()) { presets.onSave(saveName); setSaveName(''); } };
 
   const hairItems = useMemo(() => [NONE_HAIR, ...(gender === 'female' ? hairData.hair.female : hairData.hair.male).map(toHairItem)], [hairData, gender]);
   const beardItems = useMemo(() => [NONE_HAIR, ...hairData.beards.map(toHairItem)], [hairData]);
@@ -698,6 +774,24 @@ function CharacterTab({ hairData, gender, setGender, skin, tones, onSkin, thumbs
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
       <div style={{ padding: 12, borderBottom: '1px solid var(--line)' }}>
+        <label style={{ color: 'var(--muted)', fontSize: 12 }}>Saved characters</label>
+        <div style={{ display: 'flex', gap: 6, margin: '4px 0 6px' }}>
+          <input value={saveName} onChange={(e) => setSaveName(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') doSave(); }} placeholder="Name this character…"
+            style={{ flex: 1, background: '#14141a', border: '1px solid var(--line)', borderRadius: 6, color: 'var(--text)', padding: '6px 8px', fontSize: 12 }} />
+          <button className="secondary" disabled={!saveName.trim()} onClick={doSave} style={{ padding: '6px 14px' }}>Save</button>
+        </div>
+        {saved.length > 0 && (
+          <div style={{ maxHeight: 132, overflow: 'auto', border: '1px solid var(--line)', borderRadius: 7, marginBottom: 12 }}>
+            {saved.map((p) => (
+              <div key={p.name} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '5px 8px', borderBottom: '1px solid var(--line)' }}>
+                <span style={{ flex: 1, fontSize: 12, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={`${p.name} (${p.gender})`}>{p.name}</span>
+                <button className="secondary" onClick={() => presets.onLoad(p)} style={{ padding: '3px 12px', fontSize: 11 }}>Load</button>
+                <button className="secondary" title="delete" onClick={() => presets.onDelete(p.name)} style={{ padding: '3px 8px', fontSize: 12, color: '#ff6b6b' }}>✕</button>
+              </div>
+            ))}
+          </div>
+        )}
+        {!saved.length && <div style={{ marginBottom: 12 }} />}
         <button className="secondary" onClick={onImport} style={{ width: '100%', padding: '8px 12px', marginBottom: 12, background: 'var(--accent)', color: '#fff' }}>Import look from a save…</button>
         <label style={{ color: 'var(--muted)', fontSize: 12 }}>Gender</label>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', margin: '4px 0 12px' }}>

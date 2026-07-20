@@ -459,6 +459,18 @@ export class CharacterEngine {
     return out;
   }
 
+  /** Full serialisable state of what's worn/held, for saving a character preset. */
+  clothingState(): { name: string; tint: number[] | null; hidden: boolean }[] {
+    return [...this.equipped.entries()].map(([name, e]) => ({ name, tint: e.tint, hidden: this.hidden.has(name) }));
+  }
+  heldState(): { name: string; hand: 'right' | 'left'; hidden: boolean; attachments: { slot: string; option: AttachOption }[] }[] {
+    return [...this.held.entries()].map(([name, h]) => ({
+      name, hand: this.heldHand(name)!, hidden: this.hidden.has(name),
+      attachments: [...h.attachSel.entries()].map(([slot, option]) => ({ slot, option })),
+    }));
+  }
+  async clearAllHeld() { for (const name of [...this.held.keys()]) this.unequipHeld(name); }
+
   /** Temporarily show/hide an equipped item without unequipping it. Meshes/statics/held toggle
    *  their Object3D visibility; a hidden garment is also dropped from the body recomposite so
    *  its skin mask stops showing through. */
