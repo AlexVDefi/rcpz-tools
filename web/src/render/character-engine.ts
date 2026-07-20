@@ -165,8 +165,8 @@ export class CharacterEngine {
     this.perspCam.setFocalLength(preset === 'portrait' ? 60 : 35); // fov from 35mm film gauge + current aspect
     // Frame a bit looser than the body's measured bounds and bias the target upward, so tall hats
     // and big hair (which sit ABOVE the body's maxY - bodyBounds is the bare body) aren't cropped.
-    const extent = preset === 'portrait' ? 0.46 * H : 1.28 * H;                  // head+shoulders vs full body
-    const ty = preset === 'portrait' ? (b ? b.maxY : H) - 0.04 * H : (b ? b.minY : 0) + 0.54 * H;
+    const extent = preset === 'portrait' ? 0.40 * H : 1.28 * H;                  // head+shoulders vs full body
+    const ty = preset === 'portrait' ? (b ? b.maxY : H) - 0.11 * H : (b ? b.minY : 0) + 0.54 * H;
     const fovV = this.perspCam.fov * Math.PI / 180;
     this.orbit.setTarget(new THREE.Vector3(b ? b.cx : 0, ty, b ? b.cz : 0));
     this.orbit.state.radius = (extent / 2) / Math.tan(fovV / 2);
