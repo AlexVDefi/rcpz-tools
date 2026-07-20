@@ -131,17 +131,15 @@ export function App() {
 
   return (
     <div style={{ maxWidth: wide ? 'none' : 1000, margin: wide ? 0 : '0 auto', padding: wide ? '14px 20px' : '26px 24px 48px' }}>
-      <header style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>
+      <header style={{ position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
           <img src={logoUrl} alt="PZ Character Studio" width={38} height={38} style={{ width: 38, height: 38, borderRadius: 9, objectFit: 'cover', display: 'block', border: '1px solid var(--line)' }} />
           <div>
-            <div style={{ fontSize: 19, fontWeight: 700, lineHeight: 1.1, display: 'flex', alignItems: 'center', gap: 9, flexWrap: 'wrap' }}>
-              PZ Character Studio
-              {charName && <span title="Loaded saved character" style={{ fontSize: 12.5, fontWeight: 600, color: '#bcd0ff', background: '#1c2748', border: '1px solid #2e447e', borderRadius: 999, padding: '2px 11px' }}>{charName}</span>}
-            </div>
+            <div style={{ fontSize: 19, fontWeight: 700, lineHeight: 1.1 }}>PZ Character Studio</div>
             <div style={{ color: 'var(--muted)', fontSize: 12.5 }}>Dress, pose and export your survivors</div>
           </div>
         </div>
+        {charName && <div title="Loaded character" style={{ position: 'absolute', left: '50%', top: '50%', transform: 'translate(-50%, -50%)', fontSize: 23, fontWeight: 600, color: 'var(--text)', pointerEvents: 'none', whiteSpace: 'nowrap', maxWidth: '40%', overflow: 'hidden', textOverflow: 'ellipsis' }}>{charName}</div>}
         {index != null && (
           <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
             <button className="secondary" onClick={() => setView('overview')} style={{ borderColor: view === 'overview' ? 'var(--accent)' : 'var(--line)', color: view === 'overview' ? '#fff' : 'var(--text)' }}>Overview</button>

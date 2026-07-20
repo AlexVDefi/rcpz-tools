@@ -10,6 +10,8 @@ import { AssetGrid, type GridItem } from './AssetGrid';
 import { Thumb } from './Thumb';
 import { exportPng, exportGif, exportVideo, download, type BgConfig, type Content } from './render/export-media';
 import { discoverSaves, importCharacter, type SaveEntry, type ParsedChar } from './save/save-import';
+import { idbHandles, hasPermission, requestPermission } from './platform/idb';
+const SAVES_KEY = 'pz-saves-folder'; // remembered Zomboid folder for the import dialog (session-scoped, like the game/mods handles)
 
 const rgb01 = (rgb: number[]) => [rgb[0] / 255, rgb[1] / 255, rgb[2] / 255];
 const rgbHex = (rgb: number[]) => '#' + rgb.map((c) => Math.max(0, Math.min(255, c)).toString(16).padStart(2, '0')).join('');
@@ -276,22 +278,23 @@ export function CharacterViewer({ ctx, index, onCharacterName }: { ctx: Ctx; ind
 
   const applyLook = async (p: ParsedChar) => {
     const eng = engineRef.current; if (!eng) return;
-    onCharacterName?.(null); // importing from a save is not one of the named saved characters
     const g = p.gender || gender;
     const tone = mapSkinTone(p, g);
     if (tone) { setSkin(tone); await eng.setSkin(tone).catch(() => {}); }
+    let hairSelName = 'None', hairColorHex = hairColor;
     if (p.hair) {
       const hs = findHairStyle(p.hair.model, g);
-      setHairSel(hs?.name || 'None');
-      if (p.hair.color) setHairColor(rgbHex(p.hair.color));
-      eng.applyPart('hair', hs || { name: 'None' }, p.hair.color ? rgb01(p.hair.color) : null).catch(() => {});
+      hairSelName = hs?.name || 'None'; setHairSel(hairSelName);
+      if (p.hair.color) { hairColorHex = rgbHex(p.hair.color); setHairColor(hairColorHex); }
+      await eng.applyPart('hair', hs || { name: 'None' }, p.hair.color ? rgb01(p.hair.color) : null).catch(() => {});
     }
+    let beardSelName = 'None', beardColorHex = beardColor;
     if (p.beard && p.beard.model) {
       const bs = findBeardStyle(p.beard.model);
-      setBeardSel(bs?.name || 'None');
-      if (p.beard.color) setBeardColor(rgbHex(p.beard.color));
-      eng.applyPart('beard', bs || { name: 'None' }, p.beard.color ? rgb01(p.beard.color) : null).catch(() => {});
-    } else { setBeardSel('None'); eng.applyPart('beard', { name: 'None' }, null).catch(() => {}); }
+      beardSelName = bs?.name || 'None'; setBeardSel(beardSelName);
+      if (p.beard.color) { beardColorHex = rgbHex(p.beard.color); setBeardColor(beardColorHex); }
+      await eng.applyPart('beard', bs || { name: 'None' }, p.beard.color ? rgb01(p.beard.color) : null).catch(() => {});
+    } else { setBeardSel('None'); await eng.applyPart('beard', { name: 'None' }, null).catch(() => {}); }
     await eng.clearAllClothing();
     let worn = 0;
     for (const c of p.clothing || []) {
@@ -299,7 +302,20 @@ export function CharacterViewer({ ctx, index, onCharacterName }: { ctx: Ctx; ind
       if (item) { try { await eng.toggleClothing(item, c.tint ? rgb01(c.tint) : null); worn++; } catch { /* skip */ } }
     }
     setEquipTick((t) => t + 1);
-    setNowPlaying(`imported: ${worn}/${p.clothing?.length || 0} clothing` + (p.warnings.length ? '. ' + p.warnings.join('; ') : ''));
+    // an imported save auto-becomes a named saved character, using the survivor's name
+    const nm = (p.name || '').trim();
+    if (nm) {
+      const thumb = capturePreview();
+      const preset: CharPreset = {
+        name: nm, gender: g, skin: tone || skin, thumb,
+        hair: { sel: hairSelName, color: hairColorHex }, beard: { sel: beardSelName, color: beardColorHex },
+        clothing: eng.clothingState(), held: eng.heldState(),
+        scene: { bg, turntable, camPreset, studioAspect, facing, floor: floorSel, light, grid, shadow },
+      };
+      setPresets((pr) => ({ ...pr, [nm]: preset }));
+      onCharacterName?.(nm);
+    } else onCharacterName?.(null);
+    setNowPlaying(`imported${nm ? ' & saved ' + nm : ''}: ${worn}/${p.clothing?.length || 0} clothing` + (p.warnings.length ? '. ' + p.warnings.join('; ') : ''));
   };
   applyLookRef.current = applyLook;
 
@@ -788,7 +804,7 @@ function CharacterTab({ hairData, gender, setGender, skin, tones, onSkin, thumbs
           <button className="secondary" onClick={onOpenSaved} style={{ flex: 1, padding: '8px 12px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}>
             <span style={{ fontSize: 14 }}>★</span> Saved characters{savedCount ? ` (${savedCount})` : ''}
           </button>
-          <button className="secondary" onClick={onImport} style={{ flex: 1, padding: '8px 12px', background: 'var(--accent)', color: '#fff' }}>Import from save…</button>
+          <button className="secondary" onClick={onImport} style={{ flex: 1, padding: '8px 12px', background: 'var(--accent)', color: '#fff' }}>Import from a PZ save file…</button>
         </div>
         <label style={{ color: 'var(--muted)', fontSize: 12 }}>Gender</label>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', margin: '4px 0 12px' }}>
@@ -897,13 +913,31 @@ function ImportModal({ onClose, onImport }: { onClose: () => void; onImport: (p:
   const [busy, setBusy] = useState('');
   const [q, setQ] = useState('');
   const [sort, setSort] = useState<'recent' | 'name' | 'save'>('recent');
+  const [needReconnect, setNeedReconnect] = useState<FileSystemDirectoryHandle | null>(null);
+  const scan = async (dir: FileSystemDirectoryHandle) => {
+    setBusy('Scanning saves…');
+    try { const s = await discoverSaves(dir); setSaves(s); setBusy(s.length ? '' : 'No saves with a character were found in that folder.'); }
+    catch (e) { setBusy('error: ' + (e as Error).message); }
+  };
+  // remember the Zomboid folder for the session: auto-scan if we still have permission, else offer a one-click reconnect
+  useEffect(() => {
+    (async () => {
+      const h = await idbHandles.load(SAVES_KEY);
+      if (!h) return;
+      if (await hasPermission(h)) scan(h); else setNeedReconnect(h);
+    })();
+  }, []);
+  const reconnect = async () => {
+    if (!needReconnect) return;
+    if (await requestPermission(needReconnect)) { setNeedReconnect(null); scan(needReconnect); }
+    else setBusy('Permission denied.');
+  };
   const pick = async () => {
     setBusy('Opening folder…');
     try {
       const dir = await window.showDirectoryPicker({ id: 'pz-saves', mode: 'read' });
-      setBusy('Scanning saves…');
-      const s = await discoverSaves(dir);
-      setSaves(s); setBusy(s.length ? '' : 'No saves with a character were found in that folder.');
+      await idbHandles.save(SAVES_KEY, dir); setNeedReconnect(null);
+      await scan(dir);
     } catch (e) { setBusy((e as Error)?.name === 'AbortError' ? '' : 'error: ' + (e as Error).message); }
   };
   const doImport = async (entry: SaveEntry) => {
@@ -929,7 +963,10 @@ function ImportModal({ onClose, onImport }: { onClose: () => void; onImport: (p:
         </div>
         <div style={{ padding: 14, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-            <button className="secondary" onClick={pick} style={{ padding: '8px 14px', background: 'var(--accent)', color: '#fff' }}>{saves ? 'Choose another folder' : 'Choose your Zomboid folder…'}</button>
+            {needReconnect && !saves && (
+              <button onClick={reconnect} style={{ padding: '8px 14px' }}>Reconnect “{needReconnect.name}”</button>
+            )}
+            <button className="secondary" onClick={pick} style={{ padding: '8px 14px', background: saves || needReconnect ? 'var(--panel)' : 'var(--accent)', color: saves || needReconnect ? 'var(--text)' : '#fff' }}>{saves || needReconnect ? 'Choose another folder' : 'Choose your Zomboid folder…'}</button>
             {saves && saves.length > 0 && (
               <>
                 <input value={q} onChange={(e) => setQ(e.target.value)} placeholder={`Search ${saves.length} saves…`} style={{ ...input, flex: '1 1 140px', minWidth: 120 }} />

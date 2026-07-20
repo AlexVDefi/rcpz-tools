@@ -7,6 +7,7 @@ import { parsePlayerSave } from '@shared/save-parser.js';
 
 export interface ParsedChar {
   ok: boolean;
+  name?: string; // survivor name from the save
   gender?: 'male' | 'female';
   skinTexture?: number;
   skinTextureName?: string;
@@ -67,6 +68,7 @@ export async function importCharacter(entry: SaveEntry): Promise<ParsedChar> {
     const row = res[0]?.values?.[0];
     if (!row) return { ok: false, warnings: ['no character in this save'] };
     const data = row[2] as Uint8Array;
-    return parsePlayerSave(data, { name: String(row[0] ?? ''), worldVersion: Number(row[1] ?? 247) }) as ParsedChar;
+    const name = String(row[0] ?? '');
+    return { ...(parsePlayerSave(data, { name, worldVersion: Number(row[1] ?? 247) }) as ParsedChar), name };
   } finally { db.close(); }
 }
