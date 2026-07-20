@@ -27,6 +27,7 @@ export function App() {
   const [progress, setProgress] = useState('');
   const [scan, setScan] = useState<Scan | null>(null);
   const [overlay, setOverlay] = useState<'in' | 'out' | null>(null); // scan modal: fading in, fading out, or gone
+  const [charName, setCharName] = useState<string | null>(null); // name of the loaded saved character
   const [error, setError] = useState('');
   const [counts, setCounts] = useState<Counts | null>(null);
   const [index, setIndex] = useState<unknown>(null);
@@ -134,7 +135,10 @@ export function App() {
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
           <img src={logoUrl} alt="PZ Character Studio" width={38} height={38} style={{ width: 38, height: 38, borderRadius: 9, objectFit: 'cover', display: 'block', border: '1px solid var(--line)' }} />
           <div>
-            <div style={{ fontSize: 19, fontWeight: 700, lineHeight: 1.1 }}>PZ Character Studio</div>
+            <div style={{ fontSize: 19, fontWeight: 700, lineHeight: 1.1, display: 'flex', alignItems: 'center', gap: 9, flexWrap: 'wrap' }}>
+              PZ Character Studio
+              {charName && <span title="Loaded saved character" style={{ fontSize: 12.5, fontWeight: 600, color: '#bcd0ff', background: '#1c2748', border: '1px solid #2e447e', borderRadius: 999, padding: '2px 11px' }}>{charName}</span>}
+            </div>
             <div style={{ color: 'var(--muted)', fontSize: 12.5 }}>Dress, pose and export your survivors</div>
           </div>
         </div>
@@ -259,7 +263,7 @@ export function App() {
       )}
 
       {index != null && view === 'character' && ctx && (
-        <div style={{ marginTop: 12 }}><CharacterViewer ctx={ctx} index={index} /></div>
+        <div style={{ marginTop: 12 }}><CharacterViewer ctx={ctx} index={index} onCharacterName={setCharName} /></div>
       )}
 
       <a className="watermark" href="https://steamcommunity.com/id/mreastman/myworkshopfiles/?appid=108600"

@@ -79,7 +79,7 @@ function clipCategory(name: string): string {
   return 'Other';
 }
 
-export function CharacterViewer({ ctx, index }: { ctx: Ctx; index: unknown }) {
+export function CharacterViewer({ ctx, index, onCharacterName }: { ctx: Ctx; index: unknown; onCharacterName?: (name: string | null) => void }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const engineRef = useRef<CharacterEngine | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -229,7 +229,11 @@ export function CharacterViewer({ ctx, index }: { ctx: Ctx; index: unknown }) {
 
   // studio: push camera preset / aspect / turntable into the engine (aspect first so presets reframe)
   useEffect(() => { const e = engineRef.current; if (!e) return; e.setExportAspect(studioAspect); e.applyCameraPreset(camPreset); }, [studioAspect]);
-  useEffect(() => { engineRef.current?.applyCameraPreset(camPreset); }, [camPreset]);
+  useEffect(() => {
+    engineRef.current?.applyCameraPreset(camPreset);
+    // the studio portrait presets look straight at the character, so face them South (toward the camera)
+    if (camPreset === 'front' || camPreset === 'portrait') { setFacing(0); engineRef.current?.setFacing(0); }
+  }, [camPreset]);
   useEffect(() => { engineRef.current?.setTurntable(turntable); }, [turntable]);
 
   const runExport = async (kind: 'png' | 'gif' | 'mp4') => {
@@ -272,6 +276,7 @@ export function CharacterViewer({ ctx, index }: { ctx: Ctx; index: unknown }) {
 
   const applyLook = async (p: ParsedChar) => {
     const eng = engineRef.current; if (!eng) return;
+    onCharacterName?.(null); // importing from a save is not one of the named saved characters
     const g = p.gender || gender;
     const tone = mapSkinTone(p, g);
     if (tone) { setSkin(tone); await eng.setSkin(tone).catch(() => {}); }
@@ -324,21 +329,11 @@ export function CharacterViewer({ ctx, index }: { ctx: Ctx; index: unknown }) {
     held: engineRef.current?.heldState() ?? [],
     scene: { bg, turntable, camPreset, studioAspect, facing, floor: floorSel, light, grid, shadow },
   });
-  // Portrait snapshot of the current character, downscaled to a small JPEG data-URL for the preset card.
-  const capturePreview = async (): Promise<string | undefined> => {
-    const eng = engineRef.current; if (!eng) return undefined;
-    try {
-      const blob = await exportPng(eng, 260, 340, { mode: 'solid', color1: '#1b1d24', color2: '#0a0b10', angle: 90 });
-      const url = URL.createObjectURL(blob);
-      try {
-        const img = await new Promise<HTMLImageElement>((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = url; });
-        const c = document.createElement('canvas'); c.width = 260; c.height = 340;
-        const cx = c.getContext('2d')!; cx.drawImage(img, 0, 0, 260, 340);
-        return c.toDataURL('image/jpeg', 0.72);
-      } finally { URL.revokeObjectURL(url); }
-    } catch { return undefined; }
+  // Front-35mm portrait snapshot of the current character (facing the camera), for the preset card.
+  const capturePreview = (): string | undefined => {
+    try { return engineRef.current?.snapshotFront(260, 340, '#1b1d24'); } catch { return undefined; }
   };
-  const savePreset = async (name: string) => { const n = name.trim(); if (!n) return; const thumb = await capturePreview(); setPresets((p) => ({ ...p, [n]: { ...buildPreset(n), thumb } })); };
+  const savePreset = async (name: string) => { const n = name.trim(); if (!n) return; const thumb = capturePreview(); setPresets((p) => ({ ...p, [n]: { ...buildPreset(n), thumb } })); };
   const deletePreset = (name: string) => setPresets((p) => { const n = { ...p }; delete n[name]; return n; });
   const applyPresetLook = async (preset: CharPreset) => {
     const eng = engineRef.current; if (!eng) return;
@@ -356,6 +351,7 @@ export function CharacterViewer({ ctx, index }: { ctx: Ctx; index: unknown }) {
     applyScene(preset.scene);
     setEquipTick((t) => t + 1);
     setNowPlaying(`loaded ${preset.name}`);
+    onCharacterName?.(preset.name);
   };
   applyPresetLookRef.current = applyPresetLook;
   const applyPreset = async (preset: CharPreset) => {

@@ -163,8 +163,10 @@ export class CharacterEngine {
     const b = this.bodyBounds;
     const H = b ? b.maxY - b.minY : 1;
     this.perspCam.setFocalLength(preset === 'portrait' ? 60 : 35); // fov from 35mm film gauge + current aspect
-    const extent = preset === 'portrait' ? 0.34 * H : 1.06 * H;                  // head+shoulders vs full body
-    const ty = preset === 'portrait' ? (b ? b.maxY : H) - 0.14 * H : (b ? b.minY : 0) + H / 2;
+    // Frame a bit looser than the body's measured bounds and bias the target upward, so tall hats
+    // and big hair (which sit ABOVE the body's maxY - bodyBounds is the bare body) aren't cropped.
+    const extent = preset === 'portrait' ? 0.46 * H : 1.28 * H;                  // head+shoulders vs full body
+    const ty = preset === 'portrait' ? (b ? b.maxY : H) - 0.04 * H : (b ? b.minY : 0) + 0.54 * H;
     const fovV = this.perspCam.fov * Math.PI / 180;
     this.orbit.setTarget(new THREE.Vector3(b ? b.cx : 0, ty, b ? b.cz : 0));
     this.orbit.state.radius = (extent / 2) / Math.tan(fovV / 2);
@@ -205,6 +207,34 @@ export class CharacterEngine {
     };
   }
   renderFrame() { this.drawFrame(); }
+
+  /** One-off portrait snapshot (JPEG data-URL) from the Front-35mm preset facing the camera (S),
+   *  for a saved-character preview. Restores the live camera, facing and viewport afterwards. */
+  snapshotFront(w: number, h: number, bgColor: string): string {
+    const cb = this.onCamMode; this.onCamMode = undefined; // don't perturb the UI's camera toggle
+    const prev = {
+      camera: this.camera, preset: this.preset, camMode: this.camMode, facing: this.rigs.facing,
+      orbit: { radius: this.orbit.state.radius, theta: this.orbit.state.theta, phi: this.orbit.state.phi, target: this.orbit.state.target.clone() },
+    };
+    const restore = this.beginExport(w, h);        // sets the export aspect first...
+    try {
+      this.applyCameraPreset('front');             // ...so the front framing is computed for it
+      this.setFacing(0);                           // S: face the camera
+      this.drawFrame();
+      const cap = document.createElement('canvas'); cap.width = w; cap.height = h;
+      const ctx = cap.getContext('2d')!;
+      ctx.fillStyle = bgColor; ctx.fillRect(0, 0, w, h);
+      ctx.drawImage(this.webglCanvas, 0, 0, w, h);
+      return cap.toDataURL('image/jpeg', 0.72);
+    } finally {
+      this.camera = prev.camera; this.preset = prev.preset; this.camMode = prev.camMode;
+      this.orbit.state.radius = prev.orbit.radius; this.orbit.state.theta = prev.orbit.theta; this.orbit.state.phi = prev.orbit.phi;
+      this.orbit.setTarget(prev.orbit.target);
+      this.rigs.setFacing(prev.facing);
+      restore();                                   // reinstates viewport + fit() (uses the restored camera)
+      this.onCamMode = cb;
+    }
+  }
 
   // Negate: the compass degrees are mirrored east-west relative to three's Y rotation
   // (N/S sit on the axis, so they're unaffected; E/W and diagonals need the flip).
