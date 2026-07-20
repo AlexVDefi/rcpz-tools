@@ -6,6 +6,9 @@ import { discoverWorkshopMods, modSources, type DiscoveredMod } from './platform
 import { idbHandles, idbCache, hasPermission, requestPermission, storageUsage } from './platform/idb';
 import { converter } from './render/converter';
 import { CharacterViewer } from './CharacterViewer';
+import { useAuth, type AuthState } from './cloud/auth';
+import { AuthModal } from './cloud/AuthModal';
+import { cloudConfigured } from './cloud/config';
 import logoUrl from './assets/logo.png';
 import kofiUrl from './assets/kofi_symbol.svg';
 
@@ -37,6 +40,8 @@ export function App() {
   const [needPerm, setNeedPerm] = useState(false);
   const [mods, setMods] = useState<DiscoveredMod[]>([]);
   const [activeKeys, setActiveKeys] = useState<string[]>(() => { try { return JSON.parse(localStorage.getItem(ACTIVE_KEY) || '[]'); } catch { return []; } });
+  const auth = useAuth();
+  const [authOpen, setAuthOpen] = useState(false);
 
   const ctx = useMemo(() => (index ? { resolver: (index as { resolver: unknown }).resolver, converter } : null), [index]);
   const activeMods = useMemo(() => activeKeys.map((k) => mods.find((m) => m.key === k)).filter(Boolean) as DiscoveredMod[], [activeKeys, mods]);
@@ -146,13 +151,18 @@ export function App() {
           </div>
         </div>
         {charName && <div title="Loaded character" style={{ position: 'absolute', left: '50%', top: '50%', transform: 'translate(-50%, -50%)', fontSize: 23, fontWeight: 600, color: 'var(--text)', pointerEvents: 'none', whiteSpace: 'nowrap', maxWidth: '40%', overflow: 'hidden', textOverflow: 'ellipsis' }}>{charName}</div>}
-        {index != null && (
+        {(index != null || auth.configured) && (
           <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-            <button className="secondary" onClick={() => setView('overview')} style={{ borderColor: view === 'overview' ? 'var(--accent)' : 'var(--line)', color: view === 'overview' ? '#fff' : 'var(--text)' }}>Overview</button>
-            <button onClick={() => setView('character')} style={{ padding: '9px 18px', fontWeight: 600, boxShadow: view === 'character' ? 'none' : '0 2px 10px #5b8cff55' }}>Character viewer →</button>
+            {index != null && <>
+              <button className="secondary" onClick={() => setView('overview')} style={{ borderColor: view === 'overview' ? 'var(--accent)' : 'var(--line)', color: view === 'overview' ? '#fff' : 'var(--text)' }}>Overview</button>
+              <button onClick={() => setView('character')} style={{ padding: '9px 18px', fontWeight: 600, boxShadow: view === 'character' ? 'none' : '0 2px 10px #5b8cff55' }}>Character viewer →</button>
+            </>}
+            {auth.configured && <AccountChip auth={auth} onSignIn={() => setAuthOpen(true)} />}
           </div>
         )}
       </header>
+
+      {authOpen && <AuthModal auth={auth} onClose={() => setAuthOpen(false)} />}
 
       {phase === 'unsupported' && (
         <div className="card" style={{ marginTop: 40, maxWidth: 560, marginInline: 'auto', textAlign: 'center', background: '#2c2226', borderColor: '#5a3a3a' }}>
@@ -166,7 +176,7 @@ export function App() {
         <section style={{ marginTop: 44, textAlign: 'center', maxWidth: 620, marginInline: 'auto' }}>
           <h2 style={{ fontSize: 26, margin: '0 0 12px', lineHeight: 1.2 }}>Bring your survivors to life in the browser</h2>
           <p style={{ color: 'var(--muted)', fontSize: 15, lineHeight: 1.65, margin: '0 0 24px' }}>
-            Point the tool at your local Project Zomboid folder to browse every outfit, weapon and animation, dress and pose a character, import a look straight from a save, and export stills, GIFs or MP4s. Everything runs on your machine, and nothing is uploaded.
+            Point the tool at your local Project Zomboid folder to browse every outfit, weapon and animation, dress and pose a character, import a look straight from a save, and export stills, GIFs or MP4s. It all runs on your machine, and your game files never leave it{cloudConfigured ? ' - only renders you choose to share online get uploaded.' : '.'}
           </p>
           <button onClick={pickInstall} style={{ padding: '11px 22px', fontSize: 15 }}>Choose your PZ install folder…</button>
           <div style={{ color: 'var(--muted)', fontSize: 12, marginTop: 10 }}>The folder that contains <code>media/</code>. Chromium browsers only.</div>
@@ -267,7 +277,7 @@ export function App() {
       )}
 
       {index != null && view === 'character' && ctx && (
-        <div style={{ marginTop: 12 }}><CharacterViewer ctx={ctx} index={index} onCharacterName={setCharName} /></div>
+        <div style={{ marginTop: 12 }}><CharacterViewer ctx={ctx} index={index} onCharacterName={setCharName} auth={auth} onRequestSignIn={() => setAuthOpen(true)} /></div>
       )}
 
       <div className="credit">
@@ -280,6 +290,20 @@ export function App() {
       </div>
 
       {overlay && <ScanOverlay scan={scan} closing={overlay === 'out'} />}
+    </div>
+  );
+}
+
+// Header account control for the optional online feature: a Sign in button when logged out, or
+// the signed-in email with a Sign out button.
+function AccountChip({ auth, onSignIn }: { auth: AuthState; onSignIn: () => void }) {
+  if (!auth.ready) return null;
+  if (!auth.user) return <button className="secondary" onClick={onSignIn} style={{ padding: '7px 12px', fontSize: 13 }}>Sign in</button>;
+  const email = auth.user.email || 'account';
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8, background: 'var(--panel)', border: '1px solid var(--line)', borderRadius: 8, padding: '4px 5px 4px 10px' }}>
+      <span title={email} style={{ fontSize: 12.5, color: 'var(--text)', maxWidth: 150, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{email}</span>
+      <button className="secondary" onClick={() => auth.signOut()} title="Sign out" style={{ padding: '3px 9px', fontSize: 11 }}>Sign out</button>
     </div>
   );
 }
@@ -330,7 +354,11 @@ function SafetyInfo() {
         <h4>Why it can't harm your files or your game</h4>
         <p><b>Read-only.</b> The browser only ever grants this page permission to <i>read</i>. It cannot create, write, move, rename or delete anything, and there is no code here that modifies files, so it cannot change or break your game or your saves.</p>
         <p><b>Only the folder you choose.</b> The File System Access API is sandboxed by the browser: the page can see only the exact folder you pick, nothing else on your PC, and only for this tab. The permission isn't remembered, so you grant it again each session.</p>
-        <p><b>Nothing is uploaded, and the browser enforces it.</b> There is no server behind this; it's a static page. A strict Content-Security-Policy instructs your browser to block <i>any</i> network request except loading the page's own code, so no game file, save or mod can leave your machine even if there were a bug.</p>
+        {cloudConfigured ? (
+          <p><b>Your game files never leave your machine.</b> This is a static page with no server of its own. A strict Content-Security-Policy tells your browser to block every network request except to this app and, only if you choose to sign in, its optional sign-in and sharing service. Your game files, saves and mods are read-only and are never uploaded - the only thing that can ever leave your machine is a render you explicitly click to share, and only that render.</p>
+        ) : (
+          <p><b>Nothing is uploaded, and the browser enforces it.</b> There is no server behind this; it's a static page. A strict Content-Security-Policy instructs your browser to block <i>any</i> network request except loading the page's own code, so no game file, save or mod can leave your machine even if there were a bug.</p>
+        )}
         <p><b>You stay in control.</b> Close the tab and all access ends. The only things kept are small local caches (thumbnails and converted meshes) in your browser's own storage, which you can wipe anytime with the <b>Clear</b> button. They are never sent anywhere.</p>
       </div>
     </details>

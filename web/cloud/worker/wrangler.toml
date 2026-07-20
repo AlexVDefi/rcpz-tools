@@ -1,0 +1,28 @@
+name = "pz-studio-cloud"
+main = "src/index.ts"
+compatibility_date = "2024-11-01"
+
+# The R2 bucket that stores shared renders. Create it first:
+#   wrangler r2 bucket create pz-studio-shares
+[[r2_buckets]]
+binding = "BUCKET"
+bucket_name = "pz-studio-shares"
+
+[vars]
+# Supabase project (Project Settings -> API). The anon key is public and only used here to
+# verify user tokens against /auth/v1/user.
+SUPABASE_URL = "https://YOUR-PROJECT.supabase.co"
+SUPABASE_ANON_KEY = "your-anon-public-key"
+# App origins allowed to call /upload and /object (comma-separated). Include localhost for dev.
+ALLOWED_ORIGINS = "https://your-app.vercel.app,http://localhost:5173"
+# 100 MB per user. Change here + in web/src/cloud/config.ts if you ever raise it.
+QUOTA_BYTES = "104857600"
+
+# Secret (NOT in this file) - set once with:
+#   wrangler secret put SUPABASE_SERVICE_ROLE
+# Paste the Supabase service_role key (Project Settings -> API). It bypasses RLS so the Worker
+# can read usage and write/delete rows on the user's behalf.
+
+# Custom share domain: after `wrangler deploy`, map a domain to this Worker in the Cloudflare
+# dashboard (Workers & Pages -> pz-studio-cloud -> Settings -> Domains & Routes -> Add custom
+# domain), e.g. share.yourdomain.com. That URL becomes VITE_CLOUD_API for the web app.

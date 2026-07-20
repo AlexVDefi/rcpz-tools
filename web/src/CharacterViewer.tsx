@@ -11,6 +11,10 @@ import { Thumb } from './Thumb';
 import { exportPng, exportGif, exportVideo, download, type BgConfig, type Content } from './render/export-media';
 import { discoverSaves, importCharacter, type SaveEntry, type ParsedChar } from './save/save-import';
 import { idbHandles, hasPermission, requestPermission } from './platform/idb';
+import { type AuthState } from './cloud/auth';
+import { useCloudUploads, type UploadRow } from './cloud/uploads';
+import { uploadRender } from './cloud/api';
+import { cloudConfigured, fmtBytes } from './cloud/config';
 const SAVES_KEY = 'pz-saves-folder'; // remembered Zomboid folder for the import dialog (session-scoped, like the game/mods handles)
 const TOUR_KEY = 'pz-viewer-tour-done'; // set once the first-time guided tour has been seen
 
@@ -84,7 +88,7 @@ function clipCategory(name: string): string {
   return 'Other';
 }
 
-export function CharacterViewer({ ctx, index, onCharacterName }: { ctx: Ctx; index: unknown; onCharacterName?: (name: string | null) => void }) {
+export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSignIn }: { ctx: Ctx; index: unknown; onCharacterName?: (name: string | null) => void; auth: AuthState; onRequestSignIn: () => void }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const engineRef = useRef<CharacterEngine | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -287,29 +291,50 @@ export function CharacterViewer({ ctx, index, onCharacterName }: { ctx: Ctx; ind
   const advanceTour = useCallback(() => setTourStep((s) => (s === null || s + 1 >= tourSteps.length ? null : s + 1)), [tourSteps.length]);
   const skipTour = useCallback(() => setTourStep(null), []);
 
-  const runExport = async (kind: 'png' | 'gif' | 'mp4') => {
-    const eng = engineRef.current; if (!eng || exporting) return;
+  // Render the current view to a blob for the chosen format (shared by local export + online share).
+  const renderBlob = async (kind: 'png' | 'gif' | 'mp4', onProgress: (p: number) => void): Promise<{ blob: Blob; ext: string }> => {
+    const eng = engineRef.current!;
     const aspect = studioAspect ?? eng.getCurrentAspect();
-    const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
     const content: Content = turntable ? 'turntable' : 'anim';
+    if (kind === 'png') { const [w, h] = evenDims(aspect, 1080); onProgress(1); return { blob: await exportPng(eng, w, h, bg), ext: 'png' }; }
+    if (kind === 'gif') { const [w, h] = evenDims(aspect, 512); return { blob: await exportGif(eng, w, h, bg, { mode: gifMode, seconds: 5, fps: gifMode === 'clip' ? 24 : 15, speed, content, onProgress }), ext: 'gif' }; }
+    const [w, h] = evenDims(aspect, 1080); return exportVideo(eng, w, h, bg, { seconds: mp4Seconds, fps: 30, content, onProgress });
+  };
+
+  const runExport = async (kind: 'png' | 'gif' | 'mp4') => {
+    const eng = engineRef.current; if (!eng || exporting || sharing) return;
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    const label = kind === 'png' ? 'PNG' : kind === 'gif' ? 'GIF' : 'video';
     try {
-      if (kind === 'png') {
-        setExporting({ label: 'PNG', progress: 1 });
-        const [w, h] = evenDims(aspect, 1080);
-        download(await exportPng(eng, w, h, bg), `pz-character-${stamp}.png`);
-      } else if (kind === 'gif') {
-        setExporting({ label: 'GIF', progress: 0 });
-        const [w, h] = evenDims(aspect, 512);
-        const blob = await exportGif(eng, w, h, bg, { mode: gifMode, seconds: 5, fps: gifMode === 'clip' ? 24 : 15, speed, content, onProgress: (p) => setExporting({ label: 'GIF', progress: p }) });
-        download(blob, `pz-character-${stamp}.gif`);
-      } else {
-        setExporting({ label: 'video', progress: 0 });
-        const [w, h] = evenDims(aspect, 1080);
-        const { blob, ext } = await exportVideo(eng, w, h, bg, { seconds: mp4Seconds, fps: 30, content, onProgress: (p) => setExporting({ label: 'video', progress: p }) });
-        download(blob, `pz-character-${stamp}.${ext}`);
-      }
+      setExporting({ label, progress: 0 });
+      const { blob, ext } = await renderBlob(kind, (p) => setExporting({ label, progress: p }));
+      download(blob, `pz-character-${stamp}.${ext}`);
     } catch (e) { setNowPlaying('export error: ' + (e instanceof Error ? e.message : String(e))); }
     finally { setExporting(null); }
+  };
+
+  // ---- online sharing (optional; only when signed in) ----
+  const cloudUploads = useCloudUploads(auth.session);
+  const [sharing, setSharing] = useState<{ phase: 'render' | 'upload'; progress: number } | null>(null);
+  const [shareUrl, setShareUrl] = useState<string | null>(null);
+  const [shareErr, setShareErr] = useState('');
+  const shareExport = async (kind: 'png' | 'gif' | 'mp4') => {
+    const eng = engineRef.current; if (!eng || sharing || exporting || !auth.session) return;
+    setShareErr(''); setShareUrl(null);
+    try {
+      setSharing({ phase: 'render', progress: 0 });
+      const { blob, ext } = await renderBlob(kind, (p) => setSharing({ phase: 'render', progress: p }));
+      setSharing({ phase: 'upload', progress: 0 });
+      const res = await uploadRender(auth.session.access_token, blob, { kind, ext, onProgress: (f) => setSharing({ phase: 'upload', progress: f }) });
+      setShareUrl(res.url);
+      await cloudUploads.refresh();
+    } catch (e) { setShareErr(e instanceof Error ? e.message : String(e)); }
+    finally { setSharing(null); }
+  };
+  const cloud: CloudCtl = {
+    signedIn: !!auth.user, ready: auth.ready, onSignIn: onRequestSignIn,
+    share: shareExport, sharing, shareUrl, shareErr, clearResult: () => { setShareUrl(null); setShareErr(''); },
+    used: cloudUploads.used, limit: cloudUploads.limit, rows: cloudUploads.rows, removeUpload: cloudUploads.remove,
   };
 
   // ---- import a character look from a save ----
@@ -650,7 +675,8 @@ export function CharacterViewer({ ctx, index, onCharacterName }: { ctx: Ctx; ind
 
           {tab === 'scene' && <SceneTab floorSel={floorSel} onPreset={pickPreset} onClear={clearFloor}
             scene={{ light, setL, grid, setGrid: (v) => { setGrid(v); engineRef.current?.setGridVisible(v); }, shadow, setShadow: (v) => { setShadow(v); engineRef.current?.setShadowVisible(v); }, onReset: resetScene }}
-            studio={{ camPreset, setCamPreset, studioAspect, setStudioAspect, bg, setBg, turntable, setTurntable, gifMode, setGifMode, mp4Seconds, setMp4Seconds, exporting, runExport }} />}
+            studio={{ camPreset, setCamPreset, studioAspect, setStudioAspect, bg, setBg, turntable, setTurntable, gifMode, setGifMode, mp4Seconds, setMp4Seconds, exporting, runExport }}
+            cloud={cloud} />}
         </div>
       </div>
 
@@ -770,9 +796,20 @@ interface SceneCtl {
   shadow: boolean; setShadow: (v: boolean) => void;
   onReset: () => void;
 }
-function SceneTab({ floorSel, onPreset, onClear, scene, studio }: {
+
+// Optional online-sharing controls. Only meaningful when the cloud feature is configured (the
+// whole block is hidden otherwise, since the Scene tab passes cloud through unconditionally).
+interface CloudCtl {
+  signedIn: boolean; ready: boolean; onSignIn: () => void;
+  share: (kind: 'png' | 'gif' | 'mp4') => void;
+  sharing: { phase: 'render' | 'upload'; progress: number } | null;
+  shareUrl: string | null; shareErr: string; clearResult: () => void;
+  used: number; limit: number; rows: UploadRow[]; removeUpload: (key: string) => void;
+}
+
+function SceneTab({ floorSel, onPreset, onClear, scene, studio, cloud }: {
   floorSel: string | null; onPreset: (name: string, tiles: string[]) => void; onClear: () => void;
-  scene: SceneCtl; studio: StudioCtl;
+  scene: SceneCtl; studio: StudioCtl; cloud: CloudCtl;
 }) {
   const { light, setL, grid, setGrid, shadow, setShadow } = scene;
   const label = { color: 'var(--muted)', fontSize: 12, display: 'block', margin: '14px 0 6px' } as const;
@@ -813,16 +850,16 @@ function SceneTab({ floorSel, onPreset, onClear, scene, studio }: {
           style={{ padding: '6px 12px', background: shadow ? 'var(--accent)' : 'var(--panel)', color: shadow ? '#fff' : 'var(--text)' }}>Shadow</button>
       </div>
 
-      <ExportSection studio={studio} />
+      <ExportSection studio={studio} cloud={cloud} />
     </div>
   );
 }
 
 // Studio / export controls: camera presets, framing aspect (letterboxed viewfinder in the
 // live view), background, and the PNG/GIF/MP4 exporters.
-function ExportSection({ studio }: { studio: StudioCtl }) {
+function ExportSection({ studio, cloud }: { studio: StudioCtl; cloud: CloudCtl }) {
   const s = studio;
-  const busy = !!s.exporting;
+  const busy = !!s.exporting || !!cloud.sharing;
   const label = { color: 'var(--muted)', fontSize: 12, display: 'block', margin: '14px 0 6px' } as const;
   const seg = (on: boolean) => ({ borderRadius: 0, padding: '6px 10px', background: on ? 'var(--accent)' : 'var(--panel)', color: on ? '#fff' : 'var(--muted)', fontSize: 12 }) as const;
   const chip = (on: boolean) => ({ padding: '6px 11px', borderRadius: 6, background: on ? 'var(--accent)' : 'var(--panel)', color: on ? '#fff' : 'var(--text)', fontSize: 12 }) as const;
@@ -876,7 +913,115 @@ function ExportSection({ studio }: { studio: StudioCtl }) {
       </div>
       ); })()}
       <div style={{ color: 'var(--muted)', fontSize: 11, marginTop: 6 }}>
-        GIF “Clip loop” captures one full loop of the current animation at your chosen playback speed, for seamless loops. Transparent background applies to PNG + GIF; video always uses the chosen colour. Everything is generated in your browser, and nothing is uploaded.
+        GIF “Clip loop” captures one full loop of the current animation at your chosen playback speed, for seamless loops. Transparent background applies to PNG + GIF; video always uses the chosen colour. Everything is generated in your browser and saved straight to your device.
+      </div>
+
+      {cloudConfigured && <ShareSection cloud={cloud} busy={busy} label={label} />}
+    </div>
+  );
+}
+
+// Optional "Share online" block under the exporter: sign-in prompt when logged out; otherwise a
+// usage meter, one-click render-and-upload buttons, the resulting share link, the 100 MB
+// explainer, and the user's list of shares.
+function ShareSection({ cloud, busy, label }: { cloud: CloudCtl; busy: boolean; label: React.CSSProperties }) {
+  const over = cloud.used >= cloud.limit;
+  return (
+    <div style={{ marginTop: 20, paddingTop: 12, borderTop: '1px solid var(--line)' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <div style={{ color: 'var(--text)', fontSize: 13, fontWeight: 600 }}>Share online</div>
+        <span style={{ fontSize: 9.5, fontWeight: 700, letterSpacing: '.05em', color: 'var(--accent)', border: '1px solid var(--line)', borderRadius: 4, padding: '1px 5px' }}>OPTIONAL</span>
+      </div>
+
+      {!cloud.ready ? null : !cloud.signedIn ? (
+        <div style={{ marginTop: 8 }}>
+          <div style={{ color: 'var(--muted)', fontSize: 12, lineHeight: 1.55, marginBottom: 8 }}>
+            Sign in to render straight to a shareable link. Everything here works fully offline; this is only for sharing your renders with others.
+          </div>
+          <button onClick={cloud.onSignIn} style={{ padding: '8px 14px' }}>Sign in to upload &amp; share</button>
+        </div>
+      ) : (
+        <>
+          <UsageBar used={cloud.used} limit={cloud.limit} />
+
+          <label style={label}>Upload &amp; share (uses current settings)</label>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+            {(['png', 'gif', 'mp4'] as const).map((k) => (
+              <button key={k} disabled={busy || over} onClick={() => cloud.share(k)}
+                style={{ padding: '7px 14px', fontWeight: 600, opacity: (busy || over) ? 0.5 : 1 }}>{k.toUpperCase()}</button>
+            ))}
+            {cloud.sharing && (
+              <span style={{ fontSize: 12, color: 'var(--muted)' }}>
+                <span className="spinner" /> {cloud.sharing.phase === 'render' ? 'Rendering' : 'Uploading'} {Math.round(cloud.sharing.progress * 100)}%
+              </span>
+            )}
+          </div>
+          {over && <div style={{ color: '#ffb454', fontSize: 11.5, marginTop: 6 }}>You are at your storage limit. Delete a share below to free space.</div>}
+          {cloud.shareErr && <div style={{ color: '#ff8a8a', fontSize: 12, marginTop: 6 }}>{cloud.shareErr}</div>}
+          {cloud.shareUrl && <ShareResult url={cloud.shareUrl} onClose={cloud.clearResult} />}
+
+          <div style={{ color: 'var(--muted)', fontSize: 11, lineHeight: 1.55, marginTop: 10 }}>
+            Each account gets 100 MB of cloud storage. This is a free web app and I can't afford much storage, so the cap keeps it sustainable. You can always export locally (above) and upload it wherever you like to share it.
+          </div>
+
+          {cloud.rows.length > 0 && <MyShares rows={cloud.rows} onRemove={cloud.removeUpload} />}
+        </>
+      )}
+    </div>
+  );
+}
+
+function UsageBar({ used, limit }: { used: number; limit: number }) {
+  const pct = Math.min(100, limit ? (used / limit) * 100 : 0);
+  const warn = pct > 85;
+  return (
+    <div style={{ marginTop: 12 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11.5, color: 'var(--muted)', marginBottom: 4 }}>
+        <span>Cloud storage used</span>
+        <span><b style={{ color: warn ? '#ffb454' : 'var(--text)' }}>{fmtBytes(used)}</b> of {fmtBytes(limit)}</span>
+      </div>
+      <div style={{ height: 7, background: '#0e0e13', border: '1px solid var(--line)', borderRadius: 999, overflow: 'hidden' }}>
+        <div style={{ height: '100%', width: pct + '%', background: warn ? 'linear-gradient(90deg,#e0913a,#ffb454)' : 'linear-gradient(90deg,#4b7bff,#7ea6ff)', transition: 'width .3s' }} />
+      </div>
+    </div>
+  );
+}
+
+function ShareResult({ url, onClose }: { url: string; onClose: () => void }) {
+  const [copied, setCopied] = useState(false);
+  const copy = async () => { try { await navigator.clipboard.writeText(url); setCopied(true); setTimeout(() => setCopied(false), 1500); } catch { /* clipboard blocked */ } };
+  return (
+    <div style={{ marginTop: 10, background: '#0e1524', border: '1px solid #2a3a5a', borderRadius: 8, padding: 10 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+        <span style={{ fontSize: 12, color: '#7ea6ff', fontWeight: 600 }}>Shared. Your link is ready.</span>
+        <span role="button" onClick={onClose} title="dismiss" style={{ cursor: 'pointer', color: 'var(--muted)' }}>✕</span>
+      </div>
+      <div style={{ display: 'flex', gap: 6 }}>
+        <input readOnly value={url} onFocus={(e) => e.currentTarget.select()} style={{ flex: 1, minWidth: 0, background: '#14141a', color: 'var(--text)', border: '1px solid var(--line)', borderRadius: 6, padding: '6px 8px', fontSize: 12 }} />
+        <button className="secondary" onClick={copy} style={{ padding: '6px 10px', fontSize: 12 }}>{copied ? 'Copied' : 'Copy'}</button>
+        <a href={url} target="_blank" rel="noopener noreferrer" className="secondary" style={{ padding: '6px 10px', fontSize: 12, textDecoration: 'none', display: 'inline-flex', alignItems: 'center', borderRadius: 6, border: '1px solid var(--line)', background: 'var(--panel)', color: 'var(--text)' }}>Open</a>
+      </div>
+    </div>
+  );
+}
+
+function MyShares({ rows, onRemove }: { rows: UploadRow[]; onRemove: (key: string) => void }) {
+  const [busyKey, setBusyKey] = useState<string | null>(null);
+  const del = async (key: string) => { setBusyKey(key); try { await onRemove(key); } catch { /* surfaced elsewhere */ } finally { setBusyKey(null); } };
+  const copy = (url: string) => { navigator.clipboard?.writeText(url).catch(() => {}); };
+  return (
+    <div style={{ marginTop: 12 }}>
+      <div style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '.05em', color: 'var(--muted)', marginBottom: 6 }}>Your shares ({rows.length})</div>
+      <div style={{ display: 'grid', gap: 4, maxHeight: 210, overflow: 'auto' }}>
+        {rows.map((r) => (
+          <div key={r.id} style={{ display: 'flex', alignItems: 'center', gap: 6, background: '#14141a', border: '1px solid var(--line)', borderRadius: 7, padding: '5px 8px' }}>
+            <span style={{ fontSize: 9, color: 'var(--muted)', border: '1px solid var(--line)', borderRadius: 3, padding: '0 4px', textTransform: 'uppercase' }}>{r.kind || '?'}</span>
+            <span style={{ flex: 1, minWidth: 0, fontSize: 11.5, color: 'var(--muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={r.url}>{new Date(r.created_at).toLocaleDateString()} · {fmtBytes(r.size)}</span>
+            <button className="secondary" onClick={() => copy(r.url)} title="copy link" style={{ padding: '2px 8px', fontSize: 11 }}>Copy</button>
+            <a href={r.url} target="_blank" rel="noopener noreferrer" title="open" style={{ padding: '2px 8px', fontSize: 11, textDecoration: 'none', border: '1px solid var(--line)', borderRadius: 6, color: 'var(--text)', display: 'inline-flex', alignItems: 'center' }}>Open</a>
+            <button className="secondary" disabled={busyKey === r.key} onClick={() => del(r.key)} title="delete" style={{ padding: '2px 8px', fontSize: 12, color: '#ff6b6b' }}>{busyKey === r.key ? '…' : '✕'}</button>
+          </div>
+        ))}
       </div>
     </div>
   );
