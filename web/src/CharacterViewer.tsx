@@ -14,7 +14,7 @@ import { idbHandles, hasPermission, requestPermission } from './platform/idb';
 const SAVES_KEY = 'pz-saves-folder'; // remembered Zomboid folder for the import dialog (session-scoped, like the game/mods handles)
 const TOUR_KEY = 'pz-viewer-tour-done'; // set once the first-time guided tour has been seen
 
-type TourStep = { target: string; title: string; body: string };
+type TourStep = { target: string; title: string; body: string; interactive?: boolean };
 
 const rgb01 = (rgb: number[]) => [rgb[0] / 255, rgb[1] / 255, rgb[2] / 255];
 const rgbHex = (rgb: number[]) => '#' + rgb.map((c) => Math.max(0, Math.min(255, c)).toString(16).padStart(2, '0')).join('');
@@ -252,8 +252,8 @@ export function CharacterViewer({ ctx, index, onCharacterName }: { ctx: Ctx; ind
   const tourSteps = useMemo<TourStep[]>(() => [
     { target: '[data-tour="tabs"]', title: 'Build your character here',
       body: 'Every tool lives in these tabs: set the body and skin under Character, then browse Clothing, Held items, Animations, the Floor, and Scene and export options.' },
-    { target: '[data-tour="camera"]', title: 'Orbit or PZ isometric',
-      body: 'Switch between free orbit - drag to rotate, scroll to zoom - and the fixed Project Zomboid isometric camera. The iso view adds a facing compass to turn the character.' },
+    { target: '[data-tour="camera"]', title: 'Orbit or PZ isometric', interactive: true,
+      body: 'Switch between free orbit - drag to rotate, scroll to zoom - and the fixed Project Zomboid isometric camera, which adds a facing compass. Try both buttons now; it will not end the tour.' },
     { target: '[data-tour="idle"]', title: 'Back to idle',
       body: 'Once you play an animation, this button snaps the character back to the neutral idle pose at any time.' },
     { target: '[data-tour="equipmenu"]', title: tourItem ? `Equipped ${tourItem.label}` : 'The Equipped panel',
@@ -697,8 +697,21 @@ function ViewerTour({ steps, step, onNext, onSkip }: { steps: TourStep[]; step: 
 
   return (
     <div style={{ position: 'fixed', inset: 0, zIndex: 500, pointerEvents: 'none' }}>
-      {/* swallow clicks over the dimmed area so the app stays put while the tour runs */}
-      <div style={{ position: 'absolute', inset: 0, pointerEvents: 'auto' }} onClick={(e) => e.stopPropagation()} />
+      {/* Swallow clicks over the dimmed area so the app stays put while the tour runs. On an
+          interactive step, leave a hole over the spotlighted control (a four-rect frame) so the
+          user can operate it - e.g. toggle the camera - without the click closing the tour. */}
+      {cur?.interactive && rect ? (
+        ([
+          { left: 0, top: 0, width: vw, height: Math.max(0, rect.top) },
+          { left: 0, top: rect.bottom, width: vw, height: Math.max(0, vh - rect.bottom) },
+          { left: 0, top: rect.top, width: Math.max(0, rect.left), height: rect.height },
+          { left: rect.right, top: rect.top, width: Math.max(0, vw - rect.right), height: rect.height },
+        ] as const).map((r, i) => (
+          <div key={i} style={{ position: 'fixed', left: r.left, top: r.top, width: r.width, height: r.height, pointerEvents: 'auto' }} onClick={(e) => e.stopPropagation()} />
+        ))
+      ) : (
+        <div style={{ position: 'absolute', inset: 0, pointerEvents: 'auto' }} onClick={(e) => e.stopPropagation()} />
+      )}
       {rect && <div style={{ position: 'fixed', left: rect.left - 6, top: rect.top - 6, width: rect.width + 12, height: rect.height + 12,
         borderRadius: 10, boxShadow: '0 0 0 9999px rgba(8, 9, 13, 0.66)', outline: '2px solid var(--accent)', outlineOffset: 2,
         pointerEvents: 'none', transition: 'left .2s ease, top .2s ease, width .2s ease, height .2s ease' }} />}
