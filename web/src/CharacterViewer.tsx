@@ -31,7 +31,7 @@ type FavKind = 'clothing' | 'held' | 'hair' | 'beard';
 type Light = { ambient: number; keyBright: number; kx: number; ky: number; kz: number };
 type ScenePreset = { bg: BgConfig; turntable: boolean; camPreset: CamPreset; studioAspect: number | null; facing: number | null; floor: string | null; light: Light; grid: boolean; shadow: boolean };
 type CharPreset = {
-  name: string; gender: 'male' | 'female'; skin: string;
+  name: string; gender: 'male' | 'female'; skin: string; thumb?: string; // thumb = data-URL preview
   hair: { sel: string; color: string }; beard: { sel: string; color: string };
   clothing: { name: string; tint: number[] | null; hidden: boolean }[];
   held: { name: string; hand: 'right' | 'left'; hidden: boolean; attachments: { slot: string; option: AttachOption }[] }[];
@@ -127,6 +127,7 @@ export function CharacterViewer({ ctx, index }: { ctx: Ctx; index: unknown }) {
   const setL = (k: keyof Light, v: number) => { setLight((s) => ({ ...s, [k]: v })); engineRef.current?.setLight(k, v); };
   const [presets, setPresets] = useState<Record<string, CharPreset>>(() => { try { return JSON.parse(localStorage.getItem('pz-char-presets') || '{}'); } catch { return {}; } });
   useEffect(() => { localStorage.setItem('pz-char-presets', JSON.stringify(presets)); }, [presets]);
+  const [presetsOpen, setPresetsOpen] = useState(false);
   const pendingPresetRef = useRef<CharPreset | null>(null);
   const applyPresetLookRef = useRef<((p: CharPreset) => Promise<void>) | null>(null);
   const scrubRef = useRef<HTMLInputElement>(null);
@@ -323,7 +324,21 @@ export function CharacterViewer({ ctx, index }: { ctx: Ctx; index: unknown }) {
     held: engineRef.current?.heldState() ?? [],
     scene: { bg, turntable, camPreset, studioAspect, facing, floor: floorSel, light, grid, shadow },
   });
-  const savePreset = (name: string) => { const n = name.trim(); if (n) setPresets((p) => ({ ...p, [n]: buildPreset(n) })); };
+  // Portrait snapshot of the current character, downscaled to a small JPEG data-URL for the preset card.
+  const capturePreview = async (): Promise<string | undefined> => {
+    const eng = engineRef.current; if (!eng) return undefined;
+    try {
+      const blob = await exportPng(eng, 260, 340, { mode: 'solid', color1: '#1b1d24', color2: '#0a0b10', angle: 90 });
+      const url = URL.createObjectURL(blob);
+      try {
+        const img = await new Promise<HTMLImageElement>((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = url; });
+        const c = document.createElement('canvas'); c.width = 260; c.height = 340;
+        const cx = c.getContext('2d')!; cx.drawImage(img, 0, 0, 260, 340);
+        return c.toDataURL('image/jpeg', 0.72);
+      } finally { URL.revokeObjectURL(url); }
+    } catch { return undefined; }
+  };
+  const savePreset = async (name: string) => { const n = name.trim(); if (!n) return; const thumb = await capturePreview(); setPresets((p) => ({ ...p, [n]: { ...buildPreset(n), thumb } })); };
   const deletePreset = (name: string) => setPresets((p) => { const n = { ...p }; delete n[name]; return n; });
   const applyPresetLook = async (preset: CharPreset) => {
     const eng = engineRef.current; if (!eng) return;
@@ -375,6 +390,7 @@ export function CharacterViewer({ ctx, index }: { ctx: Ctx; index: unknown }) {
   return (
     <div ref={containerRef} style={{ display: 'flex', height: 'calc(100vh - 128px)', minHeight: 460 }}>
       {importOpen && <ImportModal onClose={() => setImportOpen(false)} onImport={applyImport} />}
+      {presetsOpen && <PresetsModal presets={presets} onClose={() => setPresetsOpen(false)} onSave={savePreset} onLoad={(p) => { void applyPreset(p); setPresetsOpen(false); }} onDelete={deletePreset} />}
       <div style={{ flex: 1, minWidth: 320, position: 'relative', background: '#14141a', border: '1px solid var(--line)', borderRadius: 8, overflow: 'hidden' }}>
         {/* studio layer: background sits behind the (transparent) WebGL canvas, clipped to the
             viewfinder rect so outside the frame stays the neutral letterbox */}
@@ -547,7 +563,7 @@ export function CharacterViewer({ ctx, index }: { ctx: Ctx; index: unknown }) {
           )}
 
           {tab === 'character' && <CharacterTab hairData={hairData} gender={gender} setGender={setGender} skin={skin} tones={tones} onSkin={(t) => { setSkin(t); engineRef.current?.setSkin(t); }} thumbs={thumbs} hairSel={hairSel} beardSel={beardSel} hairColor={hairColor} beardColor={beardColor} onPickPart={applyHairPart} onRecolour={recolourPart} favs={favs} onToggleFav={toggleFav} onImport={() => setImportOpen(true)}
-            presets={{ list: presets, onSave: savePreset, onLoad: applyPreset, onDelete: deletePreset }} />}
+            savedCount={Object.keys(presets).length} onOpenSaved={() => setPresetsOpen(true)} />}
 
           {tab === 'floor' && (
             <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
@@ -736,7 +752,7 @@ const NONE_HAIR: HairItem = { name: 'None', key: 'None', label: 'None', facet: '
 // Character tab: identity (gender + skin texture) as a compact header, then a browsable
 // thumbnail grid for the active appearance kind (Hair or Beard) filling the rest. Selection
 // and colour are lifted to the parent so the Favorites tab stays in sync.
-function CharacterTab({ hairData, gender, setGender, skin, tones, onSkin, thumbs, hairSel, beardSel, hairColor, beardColor, onPickPart, onRecolour, favs, onToggleFav, onImport, presets }: {
+function CharacterTab({ hairData, gender, setGender, skin, tones, onSkin, thumbs, hairSel, beardSel, hairColor, beardColor, onPickPart, onRecolour, favs, onToggleFav, onImport, savedCount, onOpenSaved }: {
   hairData: HairData;
   gender: 'male' | 'female';
   setGender: (g: 'male' | 'female') => void;
@@ -753,12 +769,10 @@ function CharacterTab({ hairData, gender, setGender, skin, tones, onSkin, thumbs
   favs: Set<string>;
   onToggleFav: (kind: FavKind, name: string) => void;
   onImport: () => void;
-  presets: { list: Record<string, CharPreset>; onSave: (name: string) => void; onLoad: (preset: CharPreset) => void; onDelete: (name: string) => void };
+  savedCount: number;
+  onOpenSaved: () => void;
 }) {
   const [kind, setKind] = useState<'hair' | 'beard'>('hair');
-  const [saveName, setSaveName] = useState('');
-  const saved = Object.values(presets.list).sort((a, b) => a.name.localeCompare(b.name));
-  const doSave = () => { if (saveName.trim()) { presets.onSave(saveName); setSaveName(''); } };
 
   const hairItems = useMemo(() => [NONE_HAIR, ...(gender === 'female' ? hairData.hair.female : hairData.hair.male).map(toHairItem)], [hairData, gender]);
   const beardItems = useMemo(() => [NONE_HAIR, ...hairData.beards.map(toHairItem)], [hairData]);
@@ -774,25 +788,12 @@ function CharacterTab({ hairData, gender, setGender, skin, tones, onSkin, thumbs
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
       <div style={{ padding: 12, borderBottom: '1px solid var(--line)' }}>
-        <label style={{ color: 'var(--muted)', fontSize: 12 }}>Saved characters</label>
-        <div style={{ display: 'flex', gap: 6, margin: '4px 0 6px' }}>
-          <input value={saveName} onChange={(e) => setSaveName(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') doSave(); }} placeholder="Name this character…"
-            style={{ flex: 1, background: '#14141a', border: '1px solid var(--line)', borderRadius: 6, color: 'var(--text)', padding: '6px 8px', fontSize: 12 }} />
-          <button className="secondary" disabled={!saveName.trim()} onClick={doSave} style={{ padding: '6px 14px' }}>Save</button>
+        <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+          <button className="secondary" onClick={onOpenSaved} style={{ flex: 1, padding: '8px 12px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}>
+            <span style={{ fontSize: 14 }}>★</span> Saved characters{savedCount ? ` (${savedCount})` : ''}
+          </button>
+          <button className="secondary" onClick={onImport} style={{ flex: 1, padding: '8px 12px', background: 'var(--accent)', color: '#fff' }}>Import from save…</button>
         </div>
-        {saved.length > 0 && (
-          <div style={{ maxHeight: 132, overflow: 'auto', border: '1px solid var(--line)', borderRadius: 7, marginBottom: 12 }}>
-            {saved.map((p) => (
-              <div key={p.name} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '5px 8px', borderBottom: '1px solid var(--line)' }}>
-                <span style={{ flex: 1, fontSize: 12, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={`${p.name} (${p.gender})`}>{p.name}</span>
-                <button className="secondary" onClick={() => presets.onLoad(p)} style={{ padding: '3px 12px', fontSize: 11 }}>Load</button>
-                <button className="secondary" title="delete" onClick={() => presets.onDelete(p.name)} style={{ padding: '3px 8px', fontSize: 12, color: '#ff6b6b' }}>✕</button>
-              </div>
-            ))}
-          </div>
-        )}
-        {!saved.length && <div style={{ marginBottom: 12 }} />}
-        <button className="secondary" onClick={onImport} style={{ width: '100%', padding: '8px 12px', marginBottom: 12, background: 'var(--accent)', color: '#fff' }}>Import look from a save…</button>
         <label style={{ color: 'var(--muted)', fontSize: 12 }}>Gender</label>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', margin: '4px 0 12px' }}>
           <div style={{ display: 'flex', border: '1px solid var(--line)', borderRadius: 6, overflow: 'hidden' }}>
@@ -829,6 +830,56 @@ function CharacterTab({ hairData, gender, setGender, skin, tones, onSkin, thumbs
           renderThumb={(it) => it.name === 'None'
             ? <span style={{ color: 'var(--muted)', fontSize: 13 }}>None</span>
             : <Thumb depKey={`hair:${kind}:${it.name}:${gender}`} getUrl={() => thumbs.hair(it, kind, gender)} />} />
+      </div>
+    </div>
+  );
+}
+
+// Modal: gallery of saved characters, each with a preview snapshot; save the current one, load or delete.
+function PresetsModal({ presets, onClose, onSave, onLoad, onDelete }: {
+  presets: Record<string, CharPreset>;
+  onClose: () => void;
+  onSave: (name: string) => Promise<void>;
+  onLoad: (preset: CharPreset) => void;
+  onDelete: (name: string) => void;
+}) {
+  const [name, setName] = useState('');
+  const [saving, setSaving] = useState(false);
+  const saved = Object.values(presets).sort((a, b) => a.name.localeCompare(b.name));
+  const doSave = async () => { const n = name.trim(); if (!n || saving) return; setSaving(true); try { await onSave(n); setName(''); } finally { setSaving(false); } };
+  const input = { background: '#14141a', color: 'var(--text)', border: '1px solid var(--line)', borderRadius: 6, padding: '8px 10px', fontSize: 13 } as const;
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: '#000000aa', zIndex: 50, display: 'flex', alignItems: 'center', justifyContent: 'center' }} onClick={onClose}>
+      <div onClick={(e) => e.stopPropagation()} style={{ width: 640, maxWidth: '92vw', maxHeight: '84vh', background: 'var(--panel)', border: '1px solid var(--line)', borderRadius: 10, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+        <div style={{ padding: '12px 14px', borderBottom: '1px solid var(--line)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <span style={{ fontWeight: 600 }}>Saved characters{saved.length ? ` (${saved.length})` : ''}</span>
+          <span role="button" onClick={onClose} title="close" style={{ cursor: 'pointer', color: 'var(--muted)' }}>✕</span>
+        </div>
+        <div style={{ padding: '12px 14px', display: 'flex', gap: 8, borderBottom: '1px solid var(--line)' }}>
+          <input value={name} onChange={(e) => setName(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') doSave(); }} placeholder="Name the current character…" style={{ ...input, flex: 1 }} />
+          <button disabled={!name.trim() || saving} onClick={doSave} style={{ padding: '8px 16px' }}>{saving ? 'Saving…' : 'Save current'}</button>
+        </div>
+        <div style={{ padding: 14, overflow: 'auto' }}>
+          {!saved.length
+            ? <div style={{ color: 'var(--muted)', fontSize: 13, textAlign: 'center', padding: '44px 12px', lineHeight: 1.6 }}>No saved characters yet.<br />Dress a survivor, name it above and hit <b>Save current</b> — a preview snapshot is stored with each.</div>
+            : (
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(132px, 1fr))', gap: 12 }}>
+                {saved.map((p) => (
+                  <div key={p.name} className="preset-card">
+                    <button className="preset-thumb" onClick={() => onLoad(p)} title={`Load ${p.name}`}>
+                      {p.thumb ? <img src={p.thumb} alt="" /> : <span className="preset-noimg">◈</span>}
+                      <span className="preset-badge">{p.gender === 'female' ? 'F' : 'M'}</span>
+                      <span className="preset-load">Load</span>
+                    </button>
+                    <div className="preset-foot">
+                      <span className="preset-name" title={p.name}>{p.name}</span>
+                      <button className="preset-del" title="delete" onClick={() => onDelete(p.name)}>✕</button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+        </div>
       </div>
     </div>
   );

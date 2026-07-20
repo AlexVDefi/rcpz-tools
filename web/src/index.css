@@ -89,6 +89,23 @@ details[open] .chev { transform: rotate(180deg); }
 .scan-step.done .scan-step-dot { background: #5fd07a; }
 .scan-detail { color: var(--muted); font-size: 12.5px; margin-top: 8px; }
 .scan-detail b { color: var(--text); font-variant-numeric: tabular-nums; }
+/* ---- saved-character gallery cards ---- */
+.preset-card { display: flex; flex-direction: column; }
+.preset-thumb { all: unset; position: relative; cursor: pointer; display: block; aspect-ratio: 26 / 34; border-radius: 9px; overflow: hidden;
+  background: #14141a; border: 1px solid var(--line); transition: border-color .12s, transform .06s; }
+.preset-thumb:hover { border-color: var(--accent); }
+.preset-thumb:active { transform: translateY(1px); }
+.preset-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.preset-noimg { position: absolute; inset: 0; display: grid; place-items: center; font-size: 30px; color: #3a3a44; }
+.preset-badge { position: absolute; top: 5px; left: 5px; width: 18px; height: 18px; border-radius: 5px; display: grid; place-items: center;
+  font-size: 10px; font-weight: 700; background: #0e0e13cc; color: var(--muted); border: 1px solid var(--line); }
+.preset-load { position: absolute; inset: 0; display: grid; place-items: center; font-weight: 700; font-size: 13px; color: #fff;
+  background: linear-gradient(0deg, #5b8cffcc, #5b8cff55); opacity: 0; transition: opacity .14s; }
+.preset-thumb:hover .preset-load { opacity: 1; }
+.preset-foot { display: flex; align-items: center; gap: 4px; margin-top: 6px; }
+.preset-name { flex: 1; min-width: 0; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.preset-del { all: unset; cursor: pointer; color: var(--muted); font-size: 13px; padding: 0 4px; border-radius: 4px; }
+.preset-del:hover { color: #ff8a8a; }
 .overview-enter { animation: overviewEnter .5s ease .05s both; }
 @keyframes overviewEnter { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
 @media (prefers-reduced-motion: reduce) {
