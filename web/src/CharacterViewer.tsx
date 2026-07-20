@@ -113,7 +113,7 @@ export function CharacterViewer({ ctx, index, onCharacterName }: { ctx: Ctx; ind
   // studio / export
   const [camPreset, setCamPreset] = useState<CamPreset>('orbit');
   const [studioAspect, setStudioAspect] = useState<number | null>(null);
-  const [bg, setBg] = useState<BgConfig>({ mode: 'solid', color1: '#20242c', color2: '#0a0b10', angle: 90 });
+  const [bg, setBg] = useState<BgConfig>(BG_DEFAULT);
   const [turntable, setTurntable] = useState(false);
   const [gifMode, setGifMode] = useState<'clip' | 'fixed'>('clip');
   const [mp4Seconds, setMp4Seconds] = useState(10);
@@ -628,7 +628,7 @@ const FACING_GRID: ([string, number] | null)[] = [
   ['S', 0], ['SE', 315], ['E', 270],
 ];
 const LIGHT_DEFAULT: Light = { ambient: 0.55, keyBright: 0.5, kx: 0.12, ky: 0.28, kz: 1.0 };
-const BG_DEFAULT: BgConfig = { mode: 'solid', color1: '#20242c', color2: '#0a0b10', angle: 90 };
+const BG_DEFAULT: BgConfig = { mode: 'solid', color1: '#0d0d0d', color2: '#0a0b10', angle: 90 };
 const SCENE_DEFAULT: ScenePreset = { bg: BG_DEFAULT, turntable: false, camPreset: 'orbit', studioAspect: null, facing: 0, floor: null, light: LIGHT_DEFAULT, grid: true, shadow: true };
 
 interface StudioCtl {
