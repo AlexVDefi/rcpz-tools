@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useMemo } from 'react';
+import { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { buildAssetIndex } from '@shared/asset-index.js';
 import { listClothing, listClips, listHair, listHeldItems } from '@shared/character-core.js';
 import { createFsaAssetSource } from './platform/fsa-source';
@@ -7,6 +7,7 @@ import { idbHandles, idbCache, hasPermission, requestPermission, storageUsage } 
 import { converter } from './render/converter';
 import { CharacterViewer } from './CharacterViewer';
 import logoUrl from './assets/logo.png';
+import kofiUrl from './assets/kofi_symbol.svg';
 
 const INSTALL_KEY = 'pz-install';
 const WORKSHOP_KEY = 'pz-workshop';
@@ -41,17 +42,12 @@ export function App() {
   const activeMods = useMemo(() => activeKeys.map((k) => mods.find((m) => m.key === k)).filter(Boolean) as DiscoveredMod[], [activeKeys, mods]);
   useEffect(() => { localStorage.setItem(ACTIVE_KEY, JSON.stringify(activeKeys)); }, [activeKeys]);
 
-  // scan overlay: show while scanning, then fade out (revealing the cards) once done
-  useEffect(() => {
-    if (phase === 'scanning') { setOverlay('in'); return; }
-    let live = true;
-    setOverlay((o) => (o === 'in' ? 'out' : o));
-    const t = setTimeout(() => { if (live) { setOverlay(null); setScan(null); } }, 480);
-    return () => { live = false; clearTimeout(t); };
-  }, [phase]);
-
+  const fadeTimer = useRef<number | null>(null);
   const rebuild = useCallback(async (installH: FileSystemDirectoryHandle, active: DiscoveredMod[]) => {
-    setPhase('scanning'); setError('');
+    // show the scan overlay in the SAME render as phase='scanning' (batched), so it's the first
+    // thing on screen - no flash of the empty Sources card before the modal appears.
+    if (fadeTimer.current) { clearTimeout(fadeTimer.current); fadeTimer.current = null; }
+    setPhase('scanning'); setOverlay('in'); setError('');
     const t0 = performance.now();
     try {
       const sources = [...modSources(active), createFsaAssetSource(installH, { id: 'install', isMod: false })];
@@ -67,6 +63,11 @@ export function App() {
       setProgress(`scanned ${sources.length} root${sources.length === 1 ? '' : 's'} in ${((performance.now() - t0) / 1000).toFixed(1)}s`);
       setPhase('ready');
     } catch (e) { setError(e instanceof Error ? e.message : String(e)); setPhase('error'); }
+    finally {
+      // fade the modal out (revealing the cards behind it) once the scan settles
+      setOverlay('out');
+      fadeTimer.current = window.setTimeout(() => { setOverlay(null); setScan(null); fadeTimer.current = null; }, 480);
+    }
   }, []);
 
   // restore install (+ workshop mods) on load
@@ -264,8 +265,14 @@ export function App() {
         <div style={{ marginTop: 12 }}><CharacterViewer ctx={ctx} index={index} onCharacterName={setCharName} /></div>
       )}
 
-      <a className="watermark" href="https://steamcommunity.com/id/mreastman/myworkshopfiles/?appid=108600"
-        target="_blank" rel="noopener noreferrer" title="RedChili on the Steam Workshop">Made by RedChili</a>
+      <div className="credit">
+        <a className="watermark" href="https://steamcommunity.com/id/mreastman/myworkshopfiles/?appid=108600"
+          target="_blank" rel="noopener noreferrer" title="RedChili on the Steam Workshop">Made by RedChili</a>
+        <a className="kofi-link" href="https://ko-fi.com/redchili" target="_blank" rel="noopener noreferrer"
+          title="Support RedChili on Ko-fi" aria-label="Support RedChili on Ko-fi">
+          <img src={kofiUrl} alt="" />
+        </a>
+      </div>
 
       {overlay && <ScanOverlay scan={scan} closing={overlay === 'out'} />}
     </div>

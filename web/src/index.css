@@ -45,8 +45,13 @@ details[open] .chev { transform: rotate(180deg); }
 .infoi .tip { display: none; position: absolute; top: 21px; left: -9px; width: 268px; background: #0e0e13; border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; font: 400 12px/1.5 system-ui, sans-serif; color: var(--muted); z-index: 30; box-shadow: 0 8px 22px #00000077; }
 .infoi:hover .tip { display: block; }
 .infoi .tip b { color: var(--text); }
-.watermark { position: fixed; right: 10px; bottom: 8px; z-index: 60; font-size: 11px; color: var(--muted); text-decoration: none; background: #00000073; padding: 3px 9px; border-radius: 6px; transition: color .12s ease, background .12s ease; }
+.credit { position: fixed; right: 10px; bottom: 8px; z-index: 60; display: flex; align-items: center; gap: 6px; }
+.watermark { font-size: 11px; color: var(--muted); text-decoration: none; background: #00000073; padding: 3px 9px; border-radius: 6px; transition: color .12s ease, background .12s ease; }
 .watermark:hover { color: var(--text); background: #000000b3; }
+.kofi-link { display: inline-grid; place-items: center; width: 26px; height: 26px; border-radius: 50%; background: #00000073; transition: background .12s ease, transform .06s ease; }
+.kofi-link:hover { background: #000000b3; }
+.kofi-link:active { transform: translateY(1px); }
+.kofi-link img { width: 16px; height: auto; display: block; }
 .modrow { display: flex; gap: 8px; align-items: center; padding: 6px 8px; background: #14141a; border: 1px solid var(--line); border-radius: 7px; }
 .iconbtn { display: inline-grid; place-items: center; width: 26px; height: 26px; padding: 0; font-size: 14px; line-height: 1; background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 6px; cursor: pointer; flex-shrink: 0; }
 .iconbtn:hover:not(:disabled) { border-color: var(--accent); }
