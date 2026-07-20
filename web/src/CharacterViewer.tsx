@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { listClips, listClothing, listHeldItems, listHair, clothingGroup, CLOTHING_GROUP_ORDER, HELD_GROUP_ORDER, SKIN_TONES } from '@shared/character-core.js';
 import { CharacterEngine, type Ctx, type AttachOption } from './render/character-engine';
 
@@ -12,6 +12,9 @@ import { exportPng, exportGif, exportVideo, download, type BgConfig, type Conten
 import { discoverSaves, importCharacter, type SaveEntry, type ParsedChar } from './save/save-import';
 import { idbHandles, hasPermission, requestPermission } from './platform/idb';
 const SAVES_KEY = 'pz-saves-folder'; // remembered Zomboid folder for the import dialog (session-scoped, like the game/mods handles)
+const TOUR_KEY = 'pz-viewer-tour-done'; // set once the first-time guided tour has been seen
+
+type TourStep = { target: string; title: string; body: string };
 
 const rgb01 = (rgb: number[]) => [rgb[0] / 255, rgb[1] / 255, rgb[2] / 255];
 const rgbHex = (rgb: number[]) => '#' + rgb.map((c) => Math.max(0, Math.min(255, c)).toString(16).padStart(2, '0')).join('');
@@ -238,6 +241,52 @@ export function CharacterViewer({ ctx, index, onCharacterName }: { ctx: Ctx; ind
   }, [camPreset]);
   useEffect(() => { engineRef.current?.setTurntable(turntable); }, [turntable]);
 
+  // ---- first-time guided tour ----
+  const [tourStep, setTourStep] = useState<number | null>(null);
+  const tourStartedRef = useRef(false);
+  const tourEquippedRef = useRef(false);
+  // a recognisable weapon to equip for the demo step, falling back to the first held item
+  const tourItem = useMemo(() => held.length
+    ? held.find((h) => /baseball ?bat|\bbat\b|\baxe\b|hammer|pistol|revolver|rifle|shotgun|knife|crowbar|\bpan\b|machete/i.test(h.name)) || held[0]
+    : null, [held]);
+  const tourSteps = useMemo<TourStep[]>(() => [
+    { target: '[data-tour="tabs"]', title: 'Build your character here',
+      body: 'Every tool lives in these tabs: set the body and skin under Character, then browse Clothing, Held items, Animations, the Floor, and Scene and export options.' },
+    { target: '[data-tour="camera"]', title: 'Orbit or PZ isometric',
+      body: 'Switch between free orbit - drag to rotate, scroll to zoom - and the fixed Project Zomboid isometric camera. The iso view adds a facing compass to turn the character.' },
+    { target: '[data-tour="idle"]', title: 'Back to idle',
+      body: 'Once you play an animation, this button snaps the character back to the neutral idle pose at any time.' },
+    { target: '[data-tour="equipmenu"]', title: tourItem ? `Equipped ${tourItem.label}` : 'The Equipped panel',
+      body: 'We just equipped an item for you. The Equipped panel lists everything worn or held, and lets you switch hands, add attachments, hide, or unequip each one.' },
+  ], [tourItem]);
+
+  // start the tour once, for first-time visitors, after the scene is ready. The started latch is
+  // set inside the timer (not before it) so StrictMode's mount cleanup can't cancel the only
+  // scheduled start - the second mount simply reschedules.
+  useEffect(() => {
+    if (tourStartedRef.current || localStorage.getItem(TOUR_KEY)) return;
+    if (status !== '' || !idleClip || !held.length) return;
+    const t = window.setTimeout(() => { if (!tourStartedRef.current) { tourStartedRef.current = true; setTourStep(0); } }, 700);
+    return () => clearTimeout(t);
+  }, [status, idleClip, held.length]);
+
+  // when the equip step is reached, actually equip the demo item and open the Equipped panel
+  useEffect(() => {
+    if (tourStep === null || tourSteps[tourStep]?.target !== '[data-tour="equipmenu"]') return;
+    if (!tourEquippedRef.current && tourItem && !engineRef.current?.isHeld(tourItem.name)) {
+      tourEquippedRef.current = true;
+      toggleHeld(tourItem);
+    }
+    setEquipOpen(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tourStep, tourSteps, tourItem]);
+
+  // remember the tour was seen once it closes (finished or skipped)
+  useEffect(() => { if (tourStep === null && tourStartedRef.current) localStorage.setItem(TOUR_KEY, '1'); }, [tourStep]);
+
+  const advanceTour = useCallback(() => setTourStep((s) => (s === null || s + 1 >= tourSteps.length ? null : s + 1)), [tourSteps.length]);
+  const skipTour = useCallback(() => setTourStep(null), []);
+
   const runExport = async (kind: 'png' | 'gif' | 'mp4') => {
     const eng = engineRef.current; if (!eng || exporting) return;
     const aspect = studioAspect ?? eng.getCurrentAspect();
@@ -422,13 +471,13 @@ export function CharacterViewer({ ctx, index, onCharacterName }: { ctx: Ctx; ind
         <div style={{ position: 'absolute', left: 12, top: 12, display: 'flex', gap: 8, alignItems: 'center' }}>
           {status && <span style={{ color: 'var(--muted)', background: '#00000099', padding: '4px 8px', borderRadius: 6 }}>{status}</span>}
           <span style={{ color: 'var(--muted)', background: '#00000099', padding: '4px 8px', borderRadius: 6, maxWidth: 340, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{nowPlaying || 'pick a clip →'}</span>
-          {idleClip && <button className="secondary" title="Reset to idle animation" onClick={() => playClip(idleClip)} style={{ padding: '4px 10px', fontSize: 12, lineHeight: 1 }}>↺ Idle</button>}
+          {idleClip && <button data-tour="idle" className="secondary" title="Reset to idle animation" onClick={() => playClip(idleClip)} style={{ padding: '4px 10px', fontSize: 12, lineHeight: 1 }}>↺ Idle</button>}
         </div>
         <div style={{ position: 'absolute', right: 12, top: 12, display: 'flex', flexDirection: 'column', gap: 8, alignItems: 'flex-end' }}>
           <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
             <button className="secondary" title="Equipped items" onClick={() => setEquipOpen((v) => !v)}
               style={{ borderRadius: 6, padding: '7px 12px', fontSize: 13, lineHeight: 1, border: '1px solid var(--line)', background: equipOpen ? 'var(--accent)' : 'var(--panel)', color: equipOpen ? '#fff' : 'var(--text)' }}>Equipped{equipList.length ? ` (${equipList.length})` : ''}</button>
-            <div style={{ display: 'flex', border: '1px solid var(--line)', borderRadius: 6, overflow: 'hidden' }}>
+            <div data-tour="camera" style={{ display: 'flex', border: '1px solid var(--line)', borderRadius: 6, overflow: 'hidden' }}>
               <button className="secondary" title="Free orbit" onClick={() => setCamPreset('orbit')}
                 style={{ borderRadius: 0, padding: '5px 11px', fontSize: 24, lineHeight: 1, background: camMode === 'orbit' ? 'var(--accent)' : 'var(--panel)', color: camMode === 'orbit' ? '#fff' : 'var(--text)' }}>⟳</button>
               <button className="secondary" title="PZ iso" onClick={() => setCamPreset('iso')}
@@ -447,7 +496,7 @@ export function CharacterViewer({ ctx, index, onCharacterName }: { ctx: Ctx; ind
           )}
         </div>
         {equipOpen && (
-          <div style={{ position: 'absolute', right: 12, top: 54, width: 264, maxHeight: '68%', overflow: 'auto', background: '#0e0e13f2', border: '1px solid var(--line)', borderRadius: 8, padding: 8 }}>
+          <div data-tour="equipmenu" style={{ position: 'absolute', right: 12, top: 54, width: 264, maxHeight: '68%', overflow: 'auto', background: '#0e0e13f2', border: '1px solid var(--line)', borderRadius: 8, padding: 8 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
               <span style={{ fontSize: 12, color: 'var(--muted)' }}>Equipped ({equipList.length})</span>
               <span role="button" onClick={() => setEquipOpen(false)} title="close" style={{ cursor: 'pointer', color: 'var(--muted)', padding: '0 4px' }}>✕</span>
@@ -518,7 +567,7 @@ export function CharacterViewer({ ctx, index, onCharacterName }: { ctx: Ctx; ind
       </div>
 
       <div style={{ width: panelW, flexShrink: 0, minWidth: 300, display: 'flex', flexDirection: 'column', minHeight: 0, background: 'var(--panel)', border: '1px solid var(--line)', borderRadius: 8 }}>
-        <div style={{ display: 'flex', borderBottom: '1px solid var(--line)' }}>
+        <div data-tour="tabs" style={{ display: 'flex', borderBottom: '1px solid var(--line)' }}>
           {tabs.map(([t, label]) => (
             <button key={t} onClick={() => setTab(t)} className="secondary" style={{ flex: 1, borderRadius: 0, background: tab === t ? 'var(--accent)' : 'transparent', color: tab === t ? '#fff' : 'var(--text)' }}>{label}</button>
           ))}
@@ -602,6 +651,66 @@ export function CharacterViewer({ ctx, index, onCharacterName }: { ctx: Ctx; ind
           {tab === 'scene' && <SceneTab floorSel={floorSel} onPreset={pickPreset} onClear={clearFloor}
             scene={{ light, setL, grid, setGrid: (v) => { setGrid(v); engineRef.current?.setGridVisible(v); }, shadow, setShadow: (v) => { setShadow(v); engineRef.current?.setShadowVisible(v); }, onReset: resetScene }}
             studio={{ camPreset, setCamPreset, studioAspect, setStudioAspect, bg, setBg, turntable, setTurntable, gifMode, setGifMode, mp4Seconds, setMp4Seconds, exporting, runExport }} />}
+        </div>
+      </div>
+
+      {tourStep !== null && <ViewerTour steps={tourSteps} step={tourStep} onNext={advanceTour} onSkip={skipTour} />}
+    </div>
+  );
+}
+
+// First-time guided tour: dims the page, spotlights one anchored element per step, and shows a
+// tooltip card next to it. Anchors are found by their data-tour attribute and re-measured every
+// frame (via rAF) so the spotlight stays glued as the layout shifts (e.g. the Equipped panel
+// opening). Clicks on the dimmed area are swallowed so the walkthrough drives the interaction.
+function ViewerTour({ steps, step, onNext, onSkip }: { steps: TourStep[]; step: number; onNext: () => void; onSkip: () => void }) {
+  const [rect, setRect] = useState<DOMRect | null>(null);
+  const cur = steps[step];
+  const last = step >= steps.length - 1;
+  useEffect(() => {
+    let raf = 0;
+    const tick = () => {
+      const el = cur ? document.querySelector(cur.target) : null;
+      const r = el ? el.getBoundingClientRect() : null;
+      setRect((prev) => (prev && r && prev.left === r.left && prev.top === r.top && prev.width === r.width && prev.height === r.height ? prev : r));
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [cur]);
+
+  const clamp = (v: number, lo: number, hi: number) => Math.min(Math.max(v, lo), hi);
+  const vw = window.innerWidth, vh = window.innerHeight;
+  const cardW = 320, cardH = 200; // cardH is an estimate used only for placement clamping
+  let cardLeft = vw / 2 - cardW / 2, cardTop = vh / 2 - cardH / 2, transform = 'none';
+  if (rect) {
+    if (vh - rect.bottom > cardH + 24) { // below
+      cardTop = rect.bottom + 14; cardLeft = clamp(rect.left + rect.width / 2 - cardW / 2, 12, vw - cardW - 12);
+    } else if (rect.left > cardW + 24) { // to the left
+      cardLeft = rect.left - cardW - 14; cardTop = clamp(rect.top, 12, vh - cardH - 12);
+    } else if (vw - rect.right > cardW + 24) { // to the right
+      cardLeft = rect.right + 14; cardTop = clamp(rect.top, 12, vh - cardH - 12);
+    } else { // above
+      cardTop = rect.top - 14; transform = 'translateY(-100%)'; cardLeft = clamp(rect.left + rect.width / 2 - cardW / 2, 12, vw - cardW - 12);
+    }
+  }
+
+  return (
+    <div style={{ position: 'fixed', inset: 0, zIndex: 500, pointerEvents: 'none' }}>
+      {/* swallow clicks over the dimmed area so the app stays put while the tour runs */}
+      <div style={{ position: 'absolute', inset: 0, pointerEvents: 'auto' }} onClick={(e) => e.stopPropagation()} />
+      {rect && <div style={{ position: 'fixed', left: rect.left - 6, top: rect.top - 6, width: rect.width + 12, height: rect.height + 12,
+        borderRadius: 10, boxShadow: '0 0 0 9999px rgba(8, 9, 13, 0.66)', outline: '2px solid var(--accent)', outlineOffset: 2,
+        pointerEvents: 'none', transition: 'left .2s ease, top .2s ease, width .2s ease, height .2s ease' }} />}
+      <div style={{ position: 'fixed', left: cardLeft, top: cardTop, width: cardW, transform, pointerEvents: 'auto' }}>
+        <div className="tour-card" style={{ background: 'linear-gradient(180deg, #23232b, #1b1b21)', border: '1px solid var(--line)', borderRadius: 12, padding: '16px 16px 12px', boxShadow: '0 18px 50px #000000aa' }}>
+          <div style={{ fontSize: 11, color: 'var(--muted)', letterSpacing: '.04em', marginBottom: 6 }}>STEP {step + 1} OF {steps.length}</div>
+          <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 6 }}>{cur?.title}</div>
+          <div style={{ fontSize: 13, color: 'var(--muted)', lineHeight: 1.55 }}>{cur?.body}</div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 14 }}>
+            <button className="secondary" onClick={onSkip} style={{ padding: '6px 12px', fontSize: 12 }}>Skip</button>
+            <button onClick={onNext} style={{ padding: '6px 18px', fontSize: 13, fontWeight: 600 }}>{last ? 'Done' : 'Next'}</button>
+          </div>
         </div>
       </div>
     </div>

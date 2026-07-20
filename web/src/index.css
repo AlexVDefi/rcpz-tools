@@ -113,7 +113,10 @@ details[open] .chev { transform: rotate(180deg); }
 .preset-del:hover { color: #ff8a8a; }
 .overview-enter { animation: overviewEnter .5s ease .05s both; }
 @keyframes overviewEnter { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+/* ---- first-time guided tour ---- */
+.tour-card { animation: tourPop .22s cubic-bezier(.2,.9,.3,1.15) both; }
+@keyframes tourPop { from { opacity: 0; transform: translateY(6px) scale(.98); } to { opacity: 1; transform: none; } }
 @media (prefers-reduced-motion: reduce) {
-  .scan-overlay, .scan-card, .scan-logo, .scan-bar-fill, .scan-step.active .scan-step-dot, .overview-enter { animation: none; }
+  .scan-overlay, .scan-card, .scan-logo, .scan-bar-fill, .scan-step.active .scan-step-dot, .overview-enter, .tour-card { animation: none; }
   .scan-overlay.closing { opacity: 0; }
 }
