@@ -45,6 +45,8 @@ async function realSubdir(source, relLower) {
 export async function buildAssetIndex(sources, opts = {}) {
   const onProgress = opts.onProgress || (() => {});
   const resolver = createResolver(sources);
+  // structured progress so the UI can draw a real bar: which source, which step, running count
+  const report = (si, src, step, count) => onProgress({ source: si + 1, total: sources.length, step, count, name: src.modName || (src.isMod ? src.id : 'Game install') });
 
   const scriptFiles = [];   // { rel, text, isMod, sourceIndex }
   const clothingFiles = []; // { rel, text, isMod }
@@ -64,7 +66,7 @@ export async function buildAssetIndex(sources, opts = {}) {
       if (seenScript.has(key)) return; seenScript.add(key);
       try { scriptFiles.push({ rel, text: await src.readText(rel), isMod, sourceIndex: si }); } catch {}
     });
-    onProgress(`scripts: ${scriptFiles.length}`);
+    report(si, src, 'scripts', scriptFiles.length);
 
     // clothingItems (read xml)
     const clothDir = await realSubdir(src, 'media/clothing/clothingItems');
@@ -74,7 +76,7 @@ export async function buildAssetIndex(sources, opts = {}) {
       if (seenCloth.has(key)) return; seenCloth.add(key);
       try { clothingFiles.push({ rel, text: await src.readText(rel), isMod, sourceIndex: si }); } catch {}
     });
-    onProgress(`clothing: ${clothingFiles.length}`);
+    report(si, src, 'clothing', clothingFiles.length);
 
     // hairstyle manifests (first source that has them wins)
     if (hairXml == null) {
@@ -102,7 +104,7 @@ export async function buildAssetIndex(sources, opts = {}) {
         clip: baseNoExt(name),
       });
     });
-    onProgress(`anims: ${animClips.length}`);
+    report(si, src, 'anims', animClips.length);
   }
 
   return { sources, resolver, scriptFiles, clothingFiles, hairXml, beardXml, animClips };

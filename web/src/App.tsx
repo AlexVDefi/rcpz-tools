@@ -15,11 +15,18 @@ const fsaSupported = typeof (window as unknown as { showDirectoryPicker?: unknow
 
 type Phase = 'unsupported' | 'idle' | 'need-permission' | 'scanning' | 'ready' | 'error';
 type View = 'overview' | 'character';
+type ScanStep = 'scripts' | 'clothing' | 'anims';
+type Scan = { source: number; total: number; step: ScanStep; count: number; name: string };
+const SCAN_STEPS: ScanStep[] = ['scripts', 'clothing', 'anims'];
+const STEP_NAME: Record<ScanStep, string> = { scripts: 'Scripts', clothing: 'Clothing', anims: 'Animations' };
+const STEP_VERB: Record<ScanStep, string> = { scripts: 'Reading scripts', clothing: 'Reading clothing', anims: 'Indexing animations' };
 interface Counts { clothing: number; clips: number; held: number; hairM: number; hairF: number; beards: number; modClothing: number; }
 
 export function App() {
   const [phase, setPhase] = useState<Phase>(fsaSupported ? 'idle' : 'unsupported');
   const [progress, setProgress] = useState('');
+  const [scan, setScan] = useState<Scan | null>(null);
+  const [overlay, setOverlay] = useState<'in' | 'out' | null>(null); // scan modal: fading in, fading out, or gone
   const [error, setError] = useState('');
   const [counts, setCounts] = useState<Counts | null>(null);
   const [index, setIndex] = useState<unknown>(null);
@@ -33,12 +40,21 @@ export function App() {
   const activeMods = useMemo(() => activeKeys.map((k) => mods.find((m) => m.key === k)).filter(Boolean) as DiscoveredMod[], [activeKeys, mods]);
   useEffect(() => { localStorage.setItem(ACTIVE_KEY, JSON.stringify(activeKeys)); }, [activeKeys]);
 
+  // scan overlay: show while scanning, then fade out (revealing the cards) once done
+  useEffect(() => {
+    if (phase === 'scanning') { setOverlay('in'); return; }
+    let live = true;
+    setOverlay((o) => (o === 'in' ? 'out' : o));
+    const t = setTimeout(() => { if (live) { setOverlay(null); setScan(null); } }, 480);
+    return () => { live = false; clearTimeout(t); };
+  }, [phase]);
+
   const rebuild = useCallback(async (installH: FileSystemDirectoryHandle, active: DiscoveredMod[]) => {
     setPhase('scanning'); setError('');
     const t0 = performance.now();
     try {
       const sources = [...modSources(active), createFsaAssetSource(installH, { id: 'install', isMod: false })];
-      const idx = await buildAssetIndex(sources, { onProgress: (m: string) => setProgress(m) });
+      const idx = await buildAssetIndex(sources, { onProgress: (p: Scan) => setScan(p) });
       const clothing = listClothing(idx);
       const { hair, beards } = listHair(idx);
       setCounts({
@@ -157,11 +173,11 @@ export function App() {
       )}
 
       {phase !== 'unsupported' && view === 'overview' && !firstRun && (
-        <div style={{ marginTop: 18, display: 'grid', gap: 14 }}>
+        <div className="overview-enter" style={{ marginTop: 18, display: 'grid', gap: 14 }}>
           <div className="card">
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
               <b style={{ fontSize: 13 }}>Sources</b>
-              {phase === 'scanning' && <span style={{ color: 'var(--muted)', fontSize: 12.5 }}><span className="spinner" /> {progress || 'scanning…'}</span>}
+              {phase === 'scanning' && <span style={{ color: 'var(--muted)', fontSize: 12.5 }}><span className="spinner" /> scanning…</span>}
               {phase === 'ready' && progress && <span style={{ color: 'var(--muted)', fontSize: 12.5, marginLeft: 'auto' }}>{progress}</span>}
             </div>
             <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
@@ -248,6 +264,33 @@ export function App() {
 
       <a className="watermark" href="https://steamcommunity.com/id/mreastman/myworkshopfiles/?appid=108600"
         target="_blank" rel="noopener noreferrer" title="RedChili on the Steam Workshop">Made by RedChili</a>
+
+      {overlay && <ScanOverlay scan={scan} closing={overlay === 'out'} />}
+    </div>
+  );
+}
+
+// Full-screen scanning modal: blurs the page behind it, shows a live progress bar + step chips,
+// then fades out to reveal the freshly-scanned library.
+function ScanOverlay({ scan, closing }: { scan: Scan | null; closing: boolean }) {
+  const stepIdx = scan ? SCAN_STEPS.indexOf(scan.step) : 0;
+  const pct = closing || !scan ? 100 : Math.min(99, Math.round(((scan.source - 1) * 3 + stepIdx + 1) / (scan.total * 3) * 100));
+  return (
+    <div className={'scan-overlay' + (closing ? ' closing' : '')} role="status" aria-live="polite">
+      <div className="scan-card">
+        <img src={logoUrl} className="scan-logo" width={54} height={54} alt="" />
+        <div className="scan-title">{closing ? 'Ready' : 'Scanning your game files'}</div>
+        <div className="scan-sub">{scan ? `Source ${scan.source} of ${scan.total} · ${scan.name}` : 'Preparing…'}</div>
+        <div className="scan-bar"><div className="scan-bar-fill" style={{ width: pct + '%' }} /></div>
+        <div className="scan-steps">
+          {SCAN_STEPS.map((st, i) => (
+            <div key={st} className={'scan-step' + (closing || i < stepIdx ? ' done' : i === stepIdx ? ' active' : '')}>
+              <span className="scan-step-dot" />{STEP_NAME[st]}
+            </div>
+          ))}
+        </div>
+        <div className="scan-detail">{scan && !closing ? <>{STEP_VERB[scan.step]}… <b>{scan.count.toLocaleString()}</b> found</> : 'Building your library…'}</div>
+      </div>
     </div>
   );
 }

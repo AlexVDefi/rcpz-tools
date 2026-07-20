@@ -57,3 +57,41 @@ details[open] .chev { transform: rotate(180deg); }
 .modlabel { text-transform: uppercase; letter-spacing: .05em; font-size: 11px; color: var(--muted); }
 @keyframes spin { to { transform: rotate(360deg); } }
 .spinner { display: inline-block; width: 13px; height: 13px; border: 2px solid var(--line); border-top-color: var(--accent); border-radius: 50%; animation: spin .7s linear infinite; vertical-align: -2px; }
+
+/* ---- scan loading modal ---- */
+.scan-overlay { position: fixed; inset: 0; z-index: 200; display: grid; place-items: center; padding: 20px;
+  background: rgba(12, 13, 18, 0.55); backdrop-filter: blur(9px); -webkit-backdrop-filter: blur(9px);
+  animation: scanFade .28s ease both; }
+.scan-overlay.closing { animation: scanFadeOut .42s ease forwards; }
+@keyframes scanFade { from { opacity: 0; } to { opacity: 1; } }
+@keyframes scanFadeOut { from { opacity: 1; } to { opacity: 0; backdrop-filter: blur(0px); -webkit-backdrop-filter: blur(0px); } }
+.scan-card { width: 380px; max-width: 100%; text-align: center; background: linear-gradient(180deg, #23232b, #1b1b21);
+  border: 1px solid var(--line); border-radius: 16px; padding: 30px 28px 26px; box-shadow: 0 24px 70px #000000aa, 0 0 0 1px #ffffff08 inset;
+  animation: scanPop .34s cubic-bezier(.2,.9,.3,1.2) both; }
+.scan-overlay.closing .scan-card { animation: scanPopOut .42s ease forwards; }
+@keyframes scanPop { from { opacity: 0; transform: translateY(10px) scale(.96); } to { opacity: 1; transform: none; } }
+@keyframes scanPopOut { to { opacity: 0; transform: translateY(-6px) scale(.98); } }
+.scan-logo { width: 54px; height: 54px; border-radius: 13px; object-fit: cover; border: 1px solid var(--line);
+  box-shadow: 0 0 0 0 #5b8cff66; animation: scanPulse 1.8s ease-in-out infinite; }
+@keyframes scanPulse { 0%, 100% { box-shadow: 0 0 0 0 #5b8cff55; } 50% { box-shadow: 0 0 22px 3px #5b8cff44; } }
+.scan-title { font-size: 17px; font-weight: 700; margin: 14px 0 4px; }
+.scan-sub { color: var(--muted); font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.scan-bar { height: 8px; background: #0e0e13; border: 1px solid var(--line); border-radius: 999px; overflow: hidden; margin: 18px 0 8px; }
+.scan-bar-fill { height: 100%; border-radius: 999px; background: linear-gradient(90deg, #4b7bff, #7ea6ff);
+  background-size: 200% 100%; transition: width .35s ease; animation: barShimmer 1.3s linear infinite; }
+@keyframes barShimmer { to { background-position: -200% 0; } }
+.scan-steps { display: flex; justify-content: center; gap: 14px; margin: 12px 0 6px; }
+.scan-step { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); transition: color .3s; }
+.scan-step .scan-step-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--line); transition: background .3s, box-shadow .3s; }
+.scan-step.active { color: var(--text); }
+.scan-step.active .scan-step-dot { background: var(--accent); box-shadow: 0 0 8px var(--accent); animation: spin 1s linear infinite; }
+.scan-step.done { color: #6fd08a; }
+.scan-step.done .scan-step-dot { background: #5fd07a; }
+.scan-detail { color: var(--muted); font-size: 12.5px; margin-top: 8px; }
+.scan-detail b { color: var(--text); font-variant-numeric: tabular-nums; }
+.overview-enter { animation: overviewEnter .5s ease .05s both; }
+@keyframes overviewEnter { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) {
+  .scan-overlay, .scan-card, .scan-logo, .scan-bar-fill, .scan-step.active .scan-step-dot, .overview-enter { animation: none; }
+  .scan-overlay.closing { opacity: 0; }
+}
