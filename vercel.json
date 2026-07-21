@@ -1,5 +1,4 @@
 {
-  "$comment": "Repo-root Vercel config so the build runs from the repository ROOT and web/ can import ../shared WITHOUT needing the 'Include files outside the Root Directory' toggle. Set the Vercel project's Root Directory to EMPTY (the repo root). installCommand/buildCommand cd into web/ so only web's deps are installed (never the root Electron tool's native deps) and vite resolves ../shared. If you instead set Root Directory to 'web', this file is ignored and web/vercel.json applies (that path needs the toggle). Keep the connect-src here in sync with web/vercel.json and VITE_CLOUD_API.",
   "installCommand": "cd web && npm install",
   "buildCommand": "cd web && npm run build",
   "outputDirectory": "web/dist",

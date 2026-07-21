@@ -74,10 +74,24 @@ VITE_CLOUD_API=https://share.yourdomain.com
 On **Vercel**: add the same three vars in Project Settings → Environment Variables, then redeploy.
 
 The build-time meta-tag CSP picks these up automatically and widens `connect-src` to exactly the
-Supabase project + your Worker origin. **Also edit [`web/vercel.json`](../vercel.json)**: replace
-`https://YOUR-CLOUD-DOMAIN` in `connect-src` with your `VITE_CLOUD_API` origin - production
-enforces both the header (static, in vercel.json) and the meta tag, so the header must allow it
-too. The `https://*.supabase.co` entry already covers any Supabase project.
+Supabase project + your Worker origin. The static header CSP (in the vercel.json files) must allow
+the same origins, since production enforces both the header and the meta tag. Keep the
+`connect-src` line's Worker origin in sync with `VITE_CLOUD_API`; the `https://*.supabase.co` entry
+already covers any Supabase project. (Note: `vercel.json` cannot contain comments - Vercel rejects
+any unknown key such as `$comment`.)
+
+### Where the app builds from (the two vercel.json files)
+
+`web/` imports `../shared`, so the build must see the repo root. Two supported setups:
+
+- **Root Directory empty (recommended).** The **repo-root [`vercel.json`](../../vercel.json)**
+  builds `web/` from the root (`cd web && npm install|run build`, output `web/dist`) so `../shared`
+  resolves. No extra Vercel toggle needed.
+- **Root Directory = `web`.** Then Vercel reads [`web/vercel.json`](../vercel.json) instead, and you
+  must enable **Settings → Build and Deployment → Root Directory → "Include files outside of the
+  Root Directory in the Build Step"** (the checkbox appears only after you set the Root Directory).
+
+Both files carry the same security headers; keep their `connect-src` in sync.
 
 ## 5. Verify
 

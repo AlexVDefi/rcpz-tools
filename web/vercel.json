@@ -1,5 +1,4 @@
 {
-  "$comment": "Security headers used when the Vercel Root Directory is set to 'web' (needs the 'Include files outside the Root Directory' toggle for ../shared). If you instead leave Root Directory EMPTY, the repo-root vercel.json applies instead. Keep connect-src in sync there and with VITE_CLOUD_API. connect-src is the exfiltration lock, widened only to Supabase + the upload Worker (custom domain and its workers.dev URL).",
   "headers": [
     {
       "source": "/(.*)",
