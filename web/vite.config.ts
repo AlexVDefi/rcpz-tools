@@ -18,12 +18,15 @@ function buildCsp(env: Record<string, string>): string {
   const api = originOf(env.VITE_CLOUD_API);
   if (sb) { connect.add(sb); connect.add(sb.replace(/^https:/, 'wss:')); } // Supabase realtime uses wss
   if (api) connect.add(api);
+  // Shared renders are served from the Worker origin, so it must be allowed as an image/media
+  // source too (only when the online feature is configured).
+  const mediaExtra = api ? ` ${api}` : '';
   return [
     "default-src 'self'",
     "script-src 'self' 'wasm-unsafe-eval' 'unsafe-eval'",
     "style-src 'self' 'unsafe-inline'",
-    "img-src 'self' data: blob:",
-    "media-src 'self' blob:",
+    `img-src 'self' data: blob:${mediaExtra}`,
+    `media-src 'self' blob:${mediaExtra}`,
     "font-src 'self'",
     `connect-src ${[...connect].join(' ')}`,
     "worker-src 'self' blob:",

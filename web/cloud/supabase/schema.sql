@@ -7,8 +7,12 @@ create table if not exists public.uploads (
   size         bigint not null,               -- stored size in bytes
   content_type text,
   kind         text,                          -- png | gif | mp4
+  meta         jsonb,                          -- what the render depicts: equipped clothing/held + mod sources (see ShareMeta)
   created_at   timestamptz not null default now()
 );
+
+-- Existing installs: add the column if the table predates it.
+alter table public.uploads add column if not exists meta jsonb;
 
 create index if not exists uploads_user_idx on public.uploads(user_id);
 

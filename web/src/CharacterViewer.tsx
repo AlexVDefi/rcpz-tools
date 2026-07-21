@@ -14,6 +14,7 @@ import { idbHandles, hasPermission, requestPermission } from './platform/idb';
 import { type AuthState } from './cloud/auth';
 import { useCloudUploads, type UploadRow } from './cloud/uploads';
 import { uploadRender } from './cloud/api';
+import type { ShareMeta } from './cloud/share-meta';
 import { cloudConfigured, fmtBytes } from './cloud/config';
 const SAVES_KEY = 'pz-saves-folder'; // remembered Zomboid folder for the import dialog (session-scoped, like the game/mods handles)
 const TOUR_KEY = 'pz-viewer-tour-done'; // set once the first-time guided tour has been seen
@@ -318,14 +319,26 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
   const [sharing, setSharing] = useState<{ phase: 'render' | 'upload'; progress: number } | null>(null);
   const [shareUrl, setShareUrl] = useState<string | null>(null);
   const [shareErr, setShareErr] = useState('');
+  // Snapshot what the render depicts - the visible equipped items and which mod each comes from -
+  // so the share viewer can show it. Hidden items are excluded since they aren't in the picture.
+  const buildShareMeta = (): ShareMeta => {
+    const list = (engineRef.current?.equippedList() ?? []).filter((e) => !e.hidden);
+    const modOfClothing = (name: string) => clothing.find((c) => c.name === name)?.modName ?? null;
+    const modOfHeld = (name: string) => held.find((h) => h.name === name)?.modName ?? null;
+    const cl = list.filter((e) => e.type === 'clothing').map((e) => ({ name: e.name, mod: modOfClothing(e.name) }));
+    const hl = list.filter((e) => e.type === 'held').map((e) => ({ name: e.name, hand: e.hand ?? 'right', mod: modOfHeld(e.name) }));
+    const mods = [...new Set([...cl, ...hl].map((x) => x.mod).filter((m): m is string => !!m))];
+    return { v: 1, gender, clothing: cl, held: hl, mods };
+  };
   const shareExport = async (kind: 'png' | 'gif' | 'mp4') => {
     const eng = engineRef.current; if (!eng || sharing || exporting || !auth.session) return;
     setShareErr(''); setShareUrl(null);
     try {
       setSharing({ phase: 'render', progress: 0 });
+      const meta = buildShareMeta();
       const { blob, ext } = await renderBlob(kind, (p) => setSharing({ phase: 'render', progress: p }));
       setSharing({ phase: 'upload', progress: 0 });
-      const res = await uploadRender(auth.session.access_token, blob, { kind, ext, onProgress: (f) => setSharing({ phase: 'upload', progress: f }) });
+      const res = await uploadRender(auth.session.access_token, blob, { kind, ext, meta, onProgress: (f) => setSharing({ phase: 'upload', progress: f }) });
       setShareUrl(res.url);
       await cloudUploads.refresh();
     } catch (e) { setShareErr(e instanceof Error ? e.message : String(e)); }
