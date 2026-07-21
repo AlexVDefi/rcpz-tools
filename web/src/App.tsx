@@ -298,7 +298,7 @@ export function App() {
 // the signed-in email with a Sign out button.
 function AccountChip({ auth, onSignIn }: { auth: AuthState; onSignIn: () => void }) {
   if (!auth.ready) return null;
-  if (!auth.user) return <button className="secondary" onClick={onSignIn} style={{ padding: '7px 12px', fontSize: 13 }}>Sign in</button>;
+  if (!auth.user) return <button className="secondary" onClick={onSignIn} style={{ padding: '7px 12px', fontSize: 13 }}>Sign in (Optional)</button>;
   const email = auth.user.email || 'account';
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 8, background: 'var(--panel)', border: '1px solid var(--line)', borderRadius: 8, padding: '4px 5px 4px 10px' }}>

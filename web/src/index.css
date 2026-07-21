@@ -113,6 +113,14 @@ details[open] .chev { transform: rotate(180deg); }
 .preset-del:hover { color: #ff8a8a; }
 .overview-enter { animation: overviewEnter .5s ease .05s both; }
 @keyframes overviewEnter { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+/* ---- panel tab strip (scrolls when it overflows) ---- */
+.tabstrip { scrollbar-width: none; -ms-overflow-style: none; scroll-behavior: smooth; }
+.tabstrip::-webkit-scrollbar { height: 0; display: none; }
+.tabfade { position: absolute; top: 0; bottom: 0; width: 30px; padding: 0; margin: 0; border: 0; border-radius: 0;
+  display: grid; place-items: center; cursor: pointer; color: var(--text); font-size: 17px; line-height: 1; z-index: 2; }
+.tabfade-l { left: 0; background: linear-gradient(90deg, var(--panel) 45%, transparent); box-shadow: 6px 0 8px -6px #0008; }
+.tabfade-r { right: 0; background: linear-gradient(270deg, var(--panel) 45%, transparent); box-shadow: -6px 0 8px -6px #0008; }
+.tabfade:hover { color: var(--accent); }
 /* ---- first-time guided tour ---- */
 .tour-card { animation: tourPop .22s cubic-bezier(.2,.9,.3,1.15) both; }
 @keyframes tourPop { from { opacity: 0; transform: translateY(6px) scale(.98); } to { opacity: 1; transform: none; } }

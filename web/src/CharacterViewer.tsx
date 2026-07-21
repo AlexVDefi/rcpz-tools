@@ -105,7 +105,7 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
   const [tab, setTab] = useState<Tab>('character');
   const [equipTick, setEquipTick] = useState(0);
   const [, setBusy] = useState('');
-  const [panelW, setPanelW] = useState(() => Number(localStorage.getItem('pz-panel-w')) || 420);
+  const [panelW, setPanelW] = useState(() => Number(localStorage.getItem('pz-panel-w')) || 480);
   const [clothOnBody, setClothOnBody] = useState(true);
   const [favs, setFavs] = useState<Set<string>>(() => { try { return new Set(JSON.parse(localStorage.getItem('pz-favorites') || '[]') as string[]); } catch { return new Set(); } });
   useEffect(() => { localStorage.setItem('pz-favorites', JSON.stringify([...favs])); }, [favs]);
@@ -592,11 +592,7 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
       </div>
 
       <div style={{ width: panelW, flexShrink: 0, minWidth: 300, display: 'flex', flexDirection: 'column', minHeight: 0, background: 'var(--panel)', border: '1px solid var(--line)', borderRadius: 8 }}>
-        <div data-tour="tabs" style={{ display: 'flex', borderBottom: '1px solid var(--line)' }}>
-          {tabs.map(([t, label]) => (
-            <button key={t} onClick={() => setTab(t)} className="secondary" style={{ flex: 1, borderRadius: 0, background: tab === t ? 'var(--accent)' : 'transparent', color: tab === t ? '#fff' : 'var(--text)' }}>{label}</button>
-          ))}
-        </div>
+        <TabStrip tabs={tabs} active={tab} onSelect={setTab} />
 
         <div style={{ flex: 1, minHeight: 0 }}>
           {tab === 'animate' && (
@@ -752,6 +748,41 @@ function ViewerTour({ steps, step, onNext, onSkip }: { steps: TourStep[]; step: 
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+// Panel tab bar. Tabs grow to fill the panel when it's wide enough; when the panel is narrower
+// than all tabs they keep their size and the row scrolls horizontally, with a fade + chevron on
+// each overflowing edge (click to scroll) so it's obvious there are more tabs off-screen.
+function TabStrip({ tabs, active, onSelect }: { tabs: [Tab, string][]; active: Tab; onSelect: (t: Tab) => void }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [edges, setEdges] = useState({ left: false, right: false });
+  const update = useCallback(() => {
+    const el = ref.current; if (!el) return;
+    setEdges({ left: el.scrollLeft > 1, right: el.scrollLeft + el.clientWidth < el.scrollWidth - 1 });
+  }, []);
+  useEffect(() => {
+    const el = ref.current; if (!el) return;
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    el.addEventListener('scroll', update, { passive: true });
+    return () => { ro.disconnect(); el.removeEventListener('scroll', update); };
+  }, [update]);
+  // keep the selected tab in view when it changes (e.g. via the guided tour)
+  useEffect(() => { ref.current?.querySelector<HTMLButtonElement>(`[data-tab="${active}"]`)?.scrollIntoView({ inline: 'nearest', block: 'nearest' }); }, [active]);
+  const nudge = (dir: -1 | 1) => { const el = ref.current; if (el) el.scrollBy({ left: dir * el.clientWidth * 0.7, behavior: 'smooth' }); };
+  return (
+    <div data-tour="tabs" style={{ position: 'relative', borderBottom: '1px solid var(--line)' }}>
+      <div ref={ref} className="tabstrip" style={{ display: 'flex', overflowX: 'auto' }}>
+        {tabs.map(([t, label]) => (
+          <button key={t} data-tab={t} onClick={() => onSelect(t)} className="secondary"
+            style={{ flex: '1 0 auto', whiteSpace: 'nowrap', borderRadius: 0, padding: '8px 12px', fontSize: 12.5, background: active === t ? 'var(--accent)' : 'transparent', color: active === t ? '#fff' : 'var(--text)' }}>{label}</button>
+        ))}
+      </div>
+      {edges.left && <button className="tabfade tabfade-l" title="more tabs" aria-label="scroll tabs left" onClick={() => nudge(-1)}>‹</button>}
+      {edges.right && <button className="tabfade tabfade-r" title="more tabs" aria-label="scroll tabs right" onClick={() => nudge(1)}>›</button>}
     </div>
   );
 }
