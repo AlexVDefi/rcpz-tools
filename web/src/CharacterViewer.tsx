@@ -13,7 +13,7 @@ import { discoverSaves, importCharacter, type SaveEntry, type ParsedChar } from 
 import { idbHandles, hasPermission, requestPermission } from './platform/idb';
 import { type AuthState } from './cloud/auth';
 import { useCloudUploads, type UploadRow } from './cloud/uploads';
-import { uploadRender } from './cloud/api';
+import { uploadRender, playerUrl } from './cloud/api';
 import type { ShareMeta } from './cloud/share-meta';
 import { cloudConfigured, fmtBytes } from './cloud/config';
 const SAVES_KEY = 'pz-saves-folder'; // remembered Zomboid folder for the import dialog (session-scoped, like the game/mods handles)
@@ -96,6 +96,9 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
   const startedRef = useRef(false);
   const pendingImportRef = useRef<ParsedChar | null>(null);
   const applyLookRef = useRef<((p: ParsedChar) => Promise<void>) | null>(null);
+  // current character name (from an import or a saved preset), tracked so a share can record it
+  const charNameRef = useRef<string | null>(null);
+  const emitCharName = (n: string | null) => { charNameRef.current = n; onCharacterName?.(n); };
   const [importOpen, setImportOpen] = useState(false);
   const [gender, setGender] = useState<'male' | 'female'>('male');
   const [skin, setSkin] = useState<string>((SKIN_TONES as Record<string, string[]>).male[0]);
@@ -318,6 +321,7 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
   const cloudUploads = useCloudUploads(auth.session);
   const [sharing, setSharing] = useState<{ phase: 'render' | 'upload'; progress: number } | null>(null);
   const [shareUrl, setShareUrl] = useState<string | null>(null);
+  const [shareKey, setShareKey] = useState<string | null>(null);
   const [shareErr, setShareErr] = useState('');
   // Snapshot what the render depicts - the visible equipped items and which mod each comes from -
   // so the share viewer can show it. Hidden items are excluded since they aren't in the picture.
@@ -328,25 +332,26 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
     const cl = list.filter((e) => e.type === 'clothing').map((e) => ({ name: e.name, mod: modOfClothing(e.name) }));
     const hl = list.filter((e) => e.type === 'held').map((e) => ({ name: e.name, hand: e.hand ?? 'right', mod: modOfHeld(e.name) }));
     const mods = [...new Set([...cl, ...hl].map((x) => x.mod).filter((m): m is string => !!m))];
-    return { v: 1, gender, clothing: cl, held: hl, mods };
+    return { v: 1, character: charNameRef.current || undefined, gender, clothing: cl, held: hl, mods };
   };
   const shareExport = async (kind: 'png' | 'gif' | 'mp4') => {
     const eng = engineRef.current; if (!eng || sharing || exporting || !auth.session) return;
-    setShareErr(''); setShareUrl(null);
+    setShareErr(''); setShareUrl(null); setShareKey(null);
     try {
       setSharing({ phase: 'render', progress: 0 });
       const meta = buildShareMeta();
       const { blob, ext } = await renderBlob(kind, (p) => setSharing({ phase: 'render', progress: p }));
       setSharing({ phase: 'upload', progress: 0 });
       const res = await uploadRender(auth.session.access_token, blob, { kind, ext, meta, onProgress: (f) => setSharing({ phase: 'upload', progress: f }) });
-      setShareUrl(res.url);
+      setShareUrl(res.url); setShareKey(res.key);
       await cloudUploads.refresh();
     } catch (e) { setShareErr(e instanceof Error ? e.message : String(e)); }
     finally { setSharing(null); }
   };
   const cloud: CloudCtl = {
     signedIn: !!auth.user, ready: auth.ready, onSignIn: onRequestSignIn,
-    share: shareExport, sharing, shareUrl, shareErr, clearResult: () => { setShareUrl(null); setShareErr(''); },
+    share: shareExport, sharing, shareUrl, sharePlayerUrl: shareKey ? playerUrl(shareKey) : null,
+    shareErr, clearResult: () => { setShareUrl(null); setShareKey(null); setShareErr(''); },
     used: cloudUploads.used, limit: cloudUploads.limit, rows: cloudUploads.rows, removeUpload: cloudUploads.remove,
   };
 
@@ -400,8 +405,8 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
         scene: { bg, turntable, camPreset, studioAspect, facing, floor: floorSel, light, grid, shadow },
       };
       setPresets((pr) => ({ ...pr, [nm]: preset }));
-      onCharacterName?.(nm);
-    } else onCharacterName?.(null);
+      emitCharName(nm);
+    } else emitCharName(null);
     setNowPlaying(`imported${nm ? ' & saved ' + nm : ''}: ${worn}/${p.clothing?.length || 0} clothing` + (p.warnings.length ? '. ' + p.warnings.join('; ') : ''));
   };
   applyLookRef.current = applyLook;
@@ -454,7 +459,7 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
     applyScene(preset.scene);
     setEquipTick((t) => t + 1);
     setNowPlaying(`loaded ${preset.name}`);
-    onCharacterName?.(preset.name);
+    emitCharName(preset.name);
   };
   applyPresetLookRef.current = applyPresetLook;
   const applyPreset = async (preset: CharPreset) => {
@@ -847,7 +852,7 @@ interface CloudCtl {
   signedIn: boolean; ready: boolean; onSignIn: () => void;
   share: (kind: 'png' | 'gif' | 'mp4') => void;
   sharing: { phase: 'render' | 'upload'; progress: number } | null;
-  shareUrl: string | null; shareErr: string; clearResult: () => void;
+  shareUrl: string | null; sharePlayerUrl: string | null; shareErr: string; clearResult: () => void;
   used: number; limit: number; rows: UploadRow[]; removeUpload: (key: string) => void;
 }
 
@@ -1002,7 +1007,7 @@ function ShareSection({ cloud, busy, label }: { cloud: CloudCtl; busy: boolean; 
           </div>
           {over && <div style={{ color: '#ffb454', fontSize: 11.5, marginTop: 6 }}>You are at your storage limit. Delete a share below to free space.</div>}
           {cloud.shareErr && <div style={{ color: '#ff8a8a', fontSize: 12, marginTop: 6 }}>{cloud.shareErr}</div>}
-          {cloud.shareUrl && <ShareResult url={cloud.shareUrl} onClose={cloud.clearResult} />}
+          {cloud.shareUrl && <ShareResult url={cloud.shareUrl} playerUrl={cloud.sharePlayerUrl} onClose={cloud.clearResult} />}
 
           <div style={{ color: 'var(--muted)', fontSize: 11, lineHeight: 1.55, marginTop: 10 }}>
             Each account gets 100 MB of cloud storage. This is a free web app and I can't afford much storage, so the cap keeps it sustainable. You can always export locally (above) and upload it wherever you like to share it.
@@ -1031,20 +1036,32 @@ function UsageBar({ used, limit }: { used: number; limit: number }) {
   );
 }
 
-function ShareResult({ url, onClose }: { url: string; onClose: () => void }) {
-  const [copied, setCopied] = useState(false);
-  const copy = async () => { try { await navigator.clipboard.writeText(url); setCopied(true); setTimeout(() => setCopied(false), 1500); } catch { /* clipboard blocked */ } };
+function ShareResult({ url, playerUrl, onClose }: { url: string; playerUrl: string | null; onClose: () => void }) {
+  const [copied, setCopied] = useState<'' | 'file' | 'player'>('');
+  const copy = async (which: 'file' | 'player', value: string) => { try { await navigator.clipboard.writeText(value); setCopied(which); setTimeout(() => setCopied(''), 1500); } catch { /* clipboard blocked */ } };
+  const openBtn = { padding: '6px 10px', fontSize: 12, textDecoration: 'none', display: 'inline-flex', alignItems: 'center', borderRadius: 6, border: '1px solid var(--line)', background: 'var(--panel)', color: 'var(--text)' } as const;
+  const inputStyle = { flex: 1, minWidth: 0, background: '#14141a', color: 'var(--text)', border: '1px solid var(--line)', borderRadius: 6, padding: '6px 8px', fontSize: 12 } as const;
+  const linkLabel = { width: 46, flexShrink: 0, fontSize: 10.5, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em' } as const;
   return (
     <div style={{ marginTop: 10, background: '#0e1524', border: '1px solid #2a3a5a', borderRadius: 8, padding: 10 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-        <span style={{ fontSize: 12, color: '#7ea6ff', fontWeight: 600 }}>Shared. Your link is ready.</span>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+        <span style={{ fontSize: 12, color: '#7ea6ff', fontWeight: 600 }}>Shared. Two links, same render.</span>
         <span role="button" onClick={onClose} title="dismiss" style={{ cursor: 'pointer', color: 'var(--muted)' }}>✕</span>
       </div>
-      <div style={{ display: 'flex', gap: 6 }}>
-        <input readOnly value={url} onFocus={(e) => e.currentTarget.select()} style={{ flex: 1, minWidth: 0, background: '#14141a', color: 'var(--text)', border: '1px solid var(--line)', borderRadius: 6, padding: '6px 8px', fontSize: 12 }} />
-        <button className="secondary" onClick={copy} style={{ padding: '6px 10px', fontSize: 12 }}>{copied ? 'Copied' : 'Copy'}</button>
-        <a href={url} target="_blank" rel="noopener noreferrer" className="secondary" style={{ padding: '6px 10px', fontSize: 12, textDecoration: 'none', display: 'inline-flex', alignItems: 'center', borderRadius: 6, border: '1px solid var(--line)', background: 'var(--panel)', color: 'var(--text)' }}>Open</a>
+      <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+        <span style={{ ...linkLabel, color: 'var(--muted)' }} title="The raw image or video file on its own">File</span>
+        <input readOnly value={url} onFocus={(e) => e.currentTarget.select()} style={inputStyle} />
+        <button className="secondary" onClick={() => copy('file', url)} style={{ padding: '6px 10px', fontSize: 12 }}>{copied === 'file' ? 'Copied' : 'Copy'}</button>
+        <a href={url} target="_blank" rel="noopener noreferrer" className="secondary" style={openBtn}>Open</a>
       </div>
+      {playerUrl && (
+        <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginTop: 6 }}>
+          <span style={{ ...linkLabel, color: 'var(--accent)' }} title="A PZ Survivor Studio page showing the render with the character name and mods used">Player</span>
+          <input readOnly value={playerUrl} onFocus={(e) => e.currentTarget.select()} style={inputStyle} />
+          <button className="secondary" onClick={() => copy('player', playerUrl)} style={{ padding: '6px 10px', fontSize: 12 }}>{copied === 'player' ? 'Copied' : 'Copy'}</button>
+          <a href={playerUrl} target="_blank" rel="noopener noreferrer" className="secondary" style={openBtn}>Open</a>
+        </div>
+      )}
     </div>
   );
 }

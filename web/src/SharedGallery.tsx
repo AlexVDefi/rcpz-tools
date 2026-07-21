@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
+import { createPortal } from 'react-dom';
 import type { CloudUploads, UploadRow } from './cloud/uploads';
 import type { ShareMeta } from './cloud/share-meta';
+import { playerUrl } from './cloud/api';
 import { fmtBytes } from './cloud/config';
 import logoUrl from './assets/logo.png';
 
@@ -93,13 +95,14 @@ function ShareViewer({ rows, index, onIndex, onClose, onRemove }: {
   const row = rows[index];
   const [details, setDetails] = useState(false);
   const [watermark, setWatermark] = useState(true);
-  const [copied, setCopied] = useState(false);
+  const [copied, setCopied] = useState<'' | 'file' | 'player'>('');
   const [deleting, setDeleting] = useState(false);
   const [confirmDel, setConfirmDel] = useState(false);
+  const player = playerUrl(row.key);
 
   const go = useCallback((dir: -1 | 1) => {
     const n = index + dir;
-    if (n >= 0 && n < rows.length) { onIndex(n); setConfirmDel(false); setCopied(false); }
+    if (n >= 0 && n < rows.length) { onIndex(n); setConfirmDel(false); setCopied(''); }
   }, [index, rows.length, onIndex]);
 
   useEffect(() => {
@@ -112,14 +115,18 @@ function ShareViewer({ rows, index, onIndex, onClose, onRemove }: {
     return () => window.removeEventListener('keydown', onKey);
   }, [go, onClose]);
 
-  const copy = async () => { try { await navigator.clipboard.writeText(row.url); setCopied(true); setTimeout(() => setCopied(false), 1500); } catch { /* clipboard blocked */ } };
+  const copy = async (which: 'file' | 'player') => {
+    try { await navigator.clipboard.writeText(which === 'player' ? player : row.url); setCopied(which); setTimeout(() => setCopied(''), 1500); } catch { /* clipboard blocked */ }
+  };
   const del = async () => {
     if (deleting) return;
     setDeleting(true);
     try { await onRemove(row.key); } finally { setDeleting(false); setConfirmDel(false); }
   };
 
-  return (
+  // Rendered into <body> so the fixed overlay is always relative to the viewport, never to the
+  // Shared tab's animated (transformed) container - which is what pushed the toolbar off-screen.
+  return createPortal(
     <div className="viewer-overlay" onClick={onClose}>
       <div className="viewer-body" onClick={(e) => e.stopPropagation()}>
         {/* toolbar */}
@@ -131,8 +138,6 @@ function ShareViewer({ rows, index, onIndex, onClose, onRemove }: {
             style={{ padding: '6px 12px', fontSize: 12.5, background: watermark ? 'var(--accent)' : 'var(--panel)', color: watermark ? '#fff' : 'var(--text)' }}>Watermark</button>
           <button className="secondary" onClick={() => setDetails((v) => !v)} title="Show what's equipped and the mods used"
             style={{ padding: '6px 12px', fontSize: 12.5, background: details ? 'var(--accent)' : 'var(--panel)', color: details ? '#fff' : 'var(--text)' }}>Details</button>
-          <button className="secondary" onClick={copy} style={{ padding: '6px 12px', fontSize: 12.5 }}>{copied ? 'Copied' : 'Copy link'}</button>
-          <a className="secondary viewer-link" href={row.url} target="_blank" rel="noopener noreferrer">Open</a>
           <button className="secondary" onClick={onClose} title="Close (Esc)" style={{ padding: '6px 11px', fontSize: 14 }}>✕</button>
         </div>
 
@@ -154,6 +159,22 @@ function ShareViewer({ rows, index, onIndex, onClose, onRemove }: {
           {rows.length > 1 && <button className="viewer-nav viewer-next" onClick={() => go(1)} disabled={index === rows.length - 1} title="Next (→)">›</button>}
         </div>
 
+        {/* share links: raw file vs branded player page */}
+        <div className="viewer-share">
+          <div className="viewer-share-row">
+            <span className="viewer-share-label" title="The raw image or video file on its own">File</span>
+            <input readOnly value={row.url} onFocus={(e) => e.currentTarget.select()} className="viewer-share-url" />
+            <button className="secondary" onClick={() => copy('file')} style={{ padding: '5px 11px', fontSize: 12 }}>{copied === 'file' ? 'Copied' : 'Copy'}</button>
+            <a className="secondary viewer-link" href={row.url} target="_blank" rel="noopener noreferrer">Open</a>
+          </div>
+          <div className="viewer-share-row">
+            <span className="viewer-share-label player" title="A PZ Survivor Studio page that shows the render with the character name and mods used">Player</span>
+            <input readOnly value={player} onFocus={(e) => e.currentTarget.select()} className="viewer-share-url" />
+            <button className="secondary" onClick={() => copy('player')} style={{ padding: '5px 11px', fontSize: 12 }}>{copied === 'player' ? 'Copied' : 'Copy'}</button>
+            <a className="secondary viewer-link" href={player} target="_blank" rel="noopener noreferrer">Open</a>
+          </div>
+        </div>
+
         {/* footer: delete + count */}
         <div className="viewer-foot">
           {confirmDel ? (
@@ -168,7 +189,8 @@ function ShareViewer({ rows, index, onIndex, onClose, onRemove }: {
           <span style={{ marginLeft: 'auto', color: 'var(--muted)', fontSize: 12 }}>{index + 1} of {rows.length}</span>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 
@@ -190,7 +212,7 @@ function ShareDetails({ meta }: { meta: ShareMeta | null }) {
   );
   return (
     <div className="viewer-details">
-      <div className="viewer-details-title">Details</div>
+      <div className="viewer-details-title">{meta.character || 'Details'}</div>
       {meta.gender && <div className="viewer-details-sub">{meta.gender === 'female' ? 'Female' : 'Male'} survivor</div>}
 
       {meta.held.length > 0 && (
