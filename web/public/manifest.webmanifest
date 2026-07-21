@@ -1,0 +1,14 @@
+{
+  "name": "PZ Survivor Studio",
+  "short_name": "Survivor Studio",
+  "description": "Browse, dress, pose, animate and export Project Zomboid characters in your browser.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#1e1e22",
+  "theme_color": "#1e1e22",
+  "icons": [
+    { "src": "/icon-192.png", "type": "image/png", "sizes": "192x192" },
+    { "src": "/icon-512.png", "type": "image/png", "sizes": "512x512" },
+    { "src": "/apple-touch-icon.png", "type": "image/png", "sizes": "180x180" }
+  ]
+}

@@ -1,4 +1,4 @@
--- PZ Character Studio - cloud shares schema. Paste into the Supabase SQL editor and run.
+-- PZ Survivor Studio - cloud shares schema. Paste into the Supabase SQL editor and run.
 
 create table if not exists public.uploads (
   id           uuid primary key default gen_random_uuid(),

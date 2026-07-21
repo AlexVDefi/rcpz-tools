@@ -1,4 +1,4 @@
-// PZ Character Studio - upload/serve Worker for the optional online-sharing feature.
+// PZ Survivor Studio - upload/serve Worker for the optional online-sharing feature.
 //
 // Responsibilities:
 //   POST   /upload?kind=&ext=   verify the Supabase user, enforce the 100 MB per-user cap, store
