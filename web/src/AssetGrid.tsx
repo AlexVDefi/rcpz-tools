@@ -1,7 +1,10 @@
 import { useMemo, useRef, useState, useEffect, type ReactNode } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 
-export interface GridItem { key: string; label: string; facet: string; isMod: boolean; source?: string; }
+// `label` is what's shown; `search` (optional) is extra haystack text matched by the search box in
+// addition to the label - used to keep the raw item/model name searchable when the label is a
+// translated display name.
+export interface GridItem { key: string; label: string; facet: string; isMod: boolean; source?: string; search?: string; }
 
 const GAP = 8;
 const PAD = 8;
@@ -59,7 +62,7 @@ export function AssetGrid<T extends GridItem>({
   const filtered = useMemo(() => {
     const f = q.trim().toLowerCase();
     const rows = items.filter((it) =>
-      (!facet || it.facet === facet) && (!modOnly || it.isMod) && (!favOnly || !!favActive?.(it)) && (!source || it.source === source) && (!tag || !!tagsOf?.(it).includes(tag)) && (!f || it.label.toLowerCase().includes(f)));
+      (!facet || it.facet === facet) && (!modOnly || it.isMod) && (!favOnly || !!favActive?.(it)) && (!source || it.source === source) && (!tag || !!tagsOf?.(it).includes(tag)) && (!f || (it.search || it.label).toLowerCase().includes(f)));
     return rows.slice().sort((a, b) =>
       sort === 'mod' ? (Number(b.isMod) - Number(a.isMod)) || a.label.localeCompare(b.label)
       : sort === 'facet' ? a.facet.localeCompare(b.facet) || a.label.localeCompare(b.label)

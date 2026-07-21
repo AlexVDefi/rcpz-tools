@@ -57,7 +57,10 @@ export function createResolver(sources) {
   /** Resolve a model-script `mesh` value -> { src, realPath, format } | { unsupported } | null. */
   async function resolveMesh(meshName) {
     if (!meshName) return null;
+    // Some clothing XMLs prefix the model with the `x:` namespace ("x:skinned\clothes\bob_apron");
+    // it just means "under models_x", which we already prepend, so strip it (as the game does).
     const lower = String(meshName).replace(/\\/g, '/').toLowerCase()
+      .replace(/^x:/, '')
       .replace(/^media\/models_x\//, '').replace(/\.(fbx|x|glb|gltf)$/, '');
     for (const ext of MESH_EXTS) {
       const hit = await locate(`media/models_x/${lower}${ext}`);

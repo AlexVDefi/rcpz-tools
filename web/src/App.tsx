@@ -13,9 +13,11 @@ import { AuthModal } from './cloud/AuthModal';
 import { DeleteAccountModal } from './cloud/DeleteAccountModal';
 import { PasswordModal } from './cloud/PasswordModal';
 import { cloudConfigured } from './cloud/config';
+import { listLanguages, loadItemNames, languageLabel, type DisplayNames } from './item-names';
 import logoUrl from './assets/logo.png';
 import kofiUrl from './assets/kofi_symbol.svg';
 
+const NAV_H = 36; // uniform height for all header controls
 const INSTALL_KEY = 'pz-install';
 const WORKSHOP_KEY = 'pz-workshop';
 const ACTIVE_KEY = 'pz-active-mods';
@@ -52,6 +54,33 @@ export function App() {
   // the Shared tab only exists while signed in - if the session ends (sign out / account deleted)
   // while it's open, fall back to the overview.
   useEffect(() => { if (view === 'shared' && auth.ready && !auth.user) setView('overview'); }, [view, auth.ready, auth.user]);
+
+  // ---- item display-name translations (item names only, not the whole UI) ----
+  const [itemLang, setItemLang] = useState('EN');
+  const [langs, setLangs] = useState<string[]>([]);
+  const [displayNames, setDisplayNames] = useState<DisplayNames | null>(null);
+  const [langLoading, setLangLoading] = useState(false);
+  // discover which languages the current sources offer (cheap: dir listings only). Runs on rescan.
+  useEffect(() => {
+    if (!index) { setLangs([]); setDisplayNames(null); return; }
+    let live = true;
+    listLanguages(index)
+      .then((ls) => { if (!live) return; setLangs(ls); if (!ls.includes(itemLang)) setItemLang('EN'); })
+      .catch(() => { if (live) setLangs([]); });
+    return () => { live = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [index]);
+  // load the chosen language's ItemName files (English by default; other languages only when picked).
+  useEffect(() => {
+    if (!index) return;
+    let live = true;
+    setLangLoading(true);
+    loadItemNames(index, itemLang)
+      .then((dn) => { if (live) setDisplayNames(dn); })
+      .catch(() => { if (live) setDisplayNames(null); })
+      .finally(() => { if (live) setLangLoading(false); });
+    return () => { live = false; };
+  }, [index, itemLang]);
 
   const ctx = useMemo(() => (index ? { resolver: (index as { resolver: unknown }).resolver, converter } : null), [index]);
   const activeMods = useMemo(() => activeKeys.map((k) => mods.find((m) => m.key === k)).filter(Boolean) as DiscoveredMod[], [activeKeys, mods]);
@@ -163,16 +192,18 @@ export function App() {
         {charName && <div title="Loaded character" style={{ position: 'absolute', left: '50%', top: '50%', transform: 'translate(-50%, -50%)', fontSize: 23, fontWeight: 600, color: 'var(--text)', pointerEvents: 'none', whiteSpace: 'nowrap', maxWidth: '40%', overflow: 'hidden', textOverflow: 'ellipsis' }}>{charName}</div>}
         {(index != null || auth.configured) && (
           <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-            {(index != null || auth.user) && (
-              <button className="secondary" onClick={() => setView('overview')} style={{ borderColor: view === 'overview' ? 'var(--accent)' : 'var(--line)', color: view === 'overview' ? '#fff' : 'var(--text)' }}>Overview</button>
+            {(index != null || auth.user) && view !== 'overview' && (
+              <button className="secondary" onClick={() => setView('overview')} style={{ height: NAV_H, padding: '0 14px' }}>Overview</button>
             )}
-            {index != null && (
-              <button onClick={() => setView('character')} style={{ padding: '9px 18px', fontWeight: 600, boxShadow: view === 'character' ? 'none' : '0 2px 10px #5b8cff55' }}>Character viewer →</button>
+            {index != null && view !== 'character' && (
+              <button onClick={() => setView('character')} style={{ height: NAV_H, padding: '0 18px', fontWeight: 600, boxShadow: '0 2px 10px #5b8cff55' }}>Character viewer →</button>
             )}
             {auth.user && (
-              <button className="secondary" onClick={() => setView('shared')} style={{ borderColor: view === 'shared' ? 'var(--accent)' : 'var(--line)', color: view === 'shared' ? '#fff' : 'var(--text)' }}>Shared</button>
+              <button className="secondary" onClick={() => setView('shared')} style={{ height: NAV_H, padding: '0 14px', borderColor: view === 'shared' ? 'var(--accent)' : 'var(--line)', color: view === 'shared' ? '#fff' : 'var(--text)' }}>Shared</button>
             )}
             {auth.configured && <AccountChip auth={auth} onSignIn={() => setAuthOpen(true)} onChangePassword={() => setChangePwOpen(true)} onDeleteAccount={() => setDeleteOpen(true)} />}
+            {index != null && langs.length > 1 && <LanguageSelect langs={langs} value={itemLang} onChange={setItemLang} loading={langLoading} />}
+            <HelpButton />
           </div>
         )}
       </header>
@@ -298,7 +329,7 @@ export function App() {
       )}
 
       {index != null && view === 'character' && ctx && (
-        <div style={{ marginTop: 12 }}><CharacterViewer ctx={ctx} index={index} onCharacterName={setCharName} auth={auth} onRequestSignIn={() => setAuthOpen(true)} uploads={uploads} /></div>
+        <div style={{ marginTop: 12 }}><CharacterViewer ctx={ctx} index={index} onCharacterName={setCharName} auth={auth} onRequestSignIn={() => setAuthOpen(true)} uploads={uploads} displayNames={displayNames} /></div>
       )}
 
       {view === 'shared' && auth.user && <SharedGallery uploads={uploads} />}
@@ -317,6 +348,69 @@ export function App() {
   );
 }
 
+// Help / support popover: a question-mark button that reveals how to get in touch (email + Discord).
+function HelpButton() {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false); };
+    window.addEventListener('mousedown', onDoc);
+    return () => window.removeEventListener('mousedown', onDoc);
+  }, [open]);
+  return (
+    <div ref={ref} style={{ position: 'relative' }}>
+      <button className="secondary" title="Help & support" aria-label="Help and support" onClick={() => setOpen((v) => !v)}
+        style={{ display: 'grid', placeItems: 'center', width: NAV_H, height: NAV_H, padding: 0, background: open ? 'var(--accent)' : 'var(--panel)', color: open ? '#fff' : 'var(--text)' }}>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.9} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <circle cx="12" cy="12" r="9" /><path d="M9.6 9.4a2.4 2.4 0 0 1 4.4 1.3c0 1.6-2 1.7-2.4 3.1" /><path d="M12 17.1h.01" />
+        </svg>
+      </button>
+      {open && (
+        <div style={{ position: 'absolute', right: 0, top: 'calc(100% + 6px)', width: 288, background: 'var(--panel)', border: '1px solid var(--line)', borderRadius: 10, padding: 14, zIndex: 130, boxShadow: '0 14px 40px #000000aa' }}>
+          <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 6 }}>Help &amp; feedback</div>
+          <div style={{ fontSize: 12.5, color: 'var(--muted)', lineHeight: 1.6 }}>
+            Having issues or want to give some feedback? Email me at <a href="mailto:alexredchili@gmail.com">alexredchili@gmail.com</a> or join my Discord.
+          </div>
+          <a href="https://discord.gg/EEd2QdyYX" target="_blank" rel="noopener noreferrer"
+            style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, marginTop: 12, padding: '9px 12px', borderRadius: 8, background: '#5865F2', color: '#fff', fontWeight: 600, fontSize: 13, textDecoration: 'none' }}>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M19.27 5.33A16.7 16.7 0 0 0 15 4l-.2.4c1.9.46 2.78 1.13 3.7 1.96A15.6 15.6 0 0 0 12 5c-2.28 0-4.4.5-6.5 1.36.92-.83 1.96-1.55 3.7-1.96L9 4a16.7 16.7 0 0 0-4.27 1.33C2.36 8.82 1.6 12.75 2 16.63a16.9 16.9 0 0 0 5.06 2.56l.6-.83c-.55-.2-1.06-.45-1.55-.75l.38-.28a11.6 11.6 0 0 0 11.02 0l.38.28c-.49.3-1 .55-1.55.75l.6.83A16.7 16.7 0 0 0 22 16.63c.46-4.5-.73-8.4-2.73-11.3ZM8.9 14.66c-.98 0-1.79-.9-1.79-2s.79-2.02 1.79-2.02 1.8.91 1.79 2.02c0 1.1-.8 2-1.79 2Zm6.2 0c-.98 0-1.79-.9-1.79-2s.79-2.02 1.79-2.02 1.8.91 1.79 2.02c0 1.1-.79 2-1.79 2Z" /></svg>
+            Join the Discord
+          </a>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Picks the language used for item/clothing NAMES only (not the whole UI). English by default;
+// other languages' translation files are read on demand when picked. Lives to the right of the
+// account control.
+function LanguageSelect({ langs, value, onChange, loading }: { langs: string[]; value: string; onChange: (l: string) => void; loading: boolean }) {
+  const label = languageLabel(value);
+  const selFont = { fontSize: 12.5, fontFamily: 'inherit', fontWeight: 400 } as const;
+  // A native <select> sizes to its WIDEST option. Measure the SELECTED label instead so the control
+  // shrinks to fit the current language (+ room for the dropdown arrow).
+  const sizerRef = useRef<HTMLSpanElement>(null);
+  const [selW, setSelW] = useState<number>();
+  useEffect(() => { if (sizerRef.current) setSelW(sizerRef.current.offsetWidth); }, [label]);
+  return (
+    <div title="Language for item and clothing names only. It does not change the app's language." style={{ position: 'relative', display: 'flex', alignItems: 'center', gap: 6, background: 'var(--panel)', border: '1px solid var(--line)', borderRadius: 8, height: NAV_H, padding: '0 8px' }}>
+      {loading
+        ? <span className="spinner" />
+        : <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--muted)" strokeWidth={1.8} aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M3 12h18M12 3c2.5 2.5 3.8 5.7 3.8 9s-1.3 6.5-3.8 9c-2.5-2.5-3.8-5.7-3.8-9S9.5 5.5 12 3z" /></svg>}
+      {/* the always-visible "Item names" label makes the scope obvious - this is NOT the app language */}
+      <span style={{ fontSize: 11.5, color: 'var(--muted)', whiteSpace: 'nowrap' }}>Item names</span>
+      <select value={value} onChange={(e) => onChange(e.target.value)} title="Language for item and clothing names only. It does not change the app's language."
+        style={{ background: 'transparent', color: 'var(--text)', border: 0, cursor: 'pointer', ...selFont, width: selW != null ? selW + 22 : 'auto' }}>
+        {langs.map((l) => <option key={l} value={l} style={{ background: 'var(--panel)' }}>{languageLabel(l)}</option>)}
+      </select>
+      {/* hidden sizer: same font as the select, measured to width the control to the selected label */}
+      <span ref={sizerRef} aria-hidden style={{ position: 'absolute', left: -9999, top: 0, visibility: 'hidden', whiteSpace: 'nowrap', ...selFont }}>{label}</span>
+    </div>
+  );
+}
+
 // Header account control for the optional online feature: a Sign in button when logged out, or
 // the signed-in email as a small menu (Sign out / Delete account) when logged in.
 function AccountChip({ auth, onSignIn, onChangePassword, onDeleteAccount }: { auth: AuthState; onSignIn: () => void; onChangePassword: () => void; onDeleteAccount: () => void }) {
@@ -329,12 +423,12 @@ function AccountChip({ auth, onSignIn, onChangePassword, onDeleteAccount }: { au
     return () => window.removeEventListener('mousedown', onDoc);
   }, [open]);
   if (!auth.ready) return null;
-  if (!auth.user) return <button className="secondary" onClick={onSignIn} style={{ padding: '7px 12px', fontSize: 13 }}>Sign in (Optional)</button>;
+  if (!auth.user) return <button className="secondary" onClick={onSignIn} style={{ height: NAV_H, padding: '0 12px', fontSize: 13 }}>Sign in (Optional)</button>;
   const email = auth.user.email || 'account';
   return (
     <div ref={ref} style={{ position: 'relative' }}>
       <button className="secondary" onClick={() => setOpen((v) => !v)} title="Account"
-        style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '6px 10px', maxWidth: 190 }}>
+        style={{ display: 'flex', alignItems: 'center', gap: 7, height: NAV_H, padding: '0 10px', maxWidth: 190 }}>
         <span title={email} style={{ fontSize: 12.5, color: 'var(--text)', maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{email}</span>
         <span style={{ color: 'var(--muted)', fontSize: 10 }}>▾</span>
       </button>

@@ -111,6 +111,7 @@ function resolveMesh(vfs, meshName) {
   // but some clothing XMLs give a full media path with an extension
   // ("media/models_X/Skinned/Clothes/Foo.X"). Normalise both to the bare name.
   const lower = String(meshName).replace(/\\/g, '/').toLowerCase()
+    .replace(/^x:/, '') // some clothing XMLs prefix the model with the models_x namespace ("x:skinned\...")
     .replace(/^media\/models_x\//, '')
     .replace(/\.(fbx|x|glb|gltf)$/, '');
   for (const ext of MESH_EXTS) {

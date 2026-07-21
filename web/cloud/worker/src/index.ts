@@ -145,8 +145,8 @@ async function serve(url: URL, env: Env): Promise<Response> {
 interface PlayerMeta {
   character?: string;
   gender?: 'male' | 'female';
-  clothing?: { name?: string; mod?: string | null }[];
-  held?: { name?: string; hand?: string; mod?: string | null }[];
+  clothing?: { name?: string; display?: string; mod?: string | null }[];
+  held?: { name?: string; display?: string; hand?: string; mod?: string | null }[];
   mods?: string[];
 }
 
@@ -201,8 +201,8 @@ function playerHtml(origin: string, key: string, row: { kind?: string | null; co
     `<div class="item"><span class="iname">${esc(nm)}</span>${extra}${modChip(mod)}</div>`;
 
   const section = (title: string, rows: string) => rows ? `<div class="sec"><div class="sechd">${esc(title)}</div>${rows}</div>` : '';
-  const heldRows = held.map((h) => itemRow(h.name!, `<span class="hand">${h.hand === 'left' ? 'L' : 'R'}</span>`, h.mod)).join('');
-  const clothingRows = clothing.map((c) => itemRow(c.name!, '', c.mod)).join('');
+  const heldRows = held.map((h) => itemRow(h.display || h.name!, `<span class="hand">${h.hand === 'left' ? 'L' : 'R'}</span>`, h.mod)).join('');
+  const clothingRows = clothing.map((c) => itemRow(c.display || c.name!, '', c.mod)).join('');
   const modsBlock = mods.length ? `<div class="sec"><div class="sechd">Mods used (${mods.length})</div><div class="tags">${mods.map((m) => `<span class="tag">${esc(m)}</span>`).join('')}</div></div>` : '';
   const genderLine = meta.gender ? `<div class="sub">${meta.gender === 'female' ? 'Female' : 'Male'} survivor</div>` : '';
 

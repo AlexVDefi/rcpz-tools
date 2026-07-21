@@ -4,8 +4,9 @@
 // the server never trusts it for anything.
 
 export interface ShareItem {
-  name: string;
-  mod: string | null; // the mod it comes from, or null for vanilla Project Zomboid
+  name: string;               // raw item/model name
+  display?: string;           // translated display name at share time, if one was available
+  mod: string | null;         // the mod it comes from, or null for vanilla Project Zomboid
 }
 export interface ShareHeldItem extends ShareItem {
   hand: 'left' | 'right';

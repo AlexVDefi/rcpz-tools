@@ -15,6 +15,7 @@ import { type AuthState } from './cloud/auth';
 import { type UploadRow, type CloudUploads } from './cloud/uploads';
 import { uploadRender, playerUrl } from './cloud/api';
 import type { ShareMeta } from './cloud/share-meta';
+import type { DisplayNames } from './item-names';
 import { cloudConfigured, fmtBytes } from './cloud/config';
 const SAVES_KEY = 'pz-saves-folder'; // remembered Zomboid folder for the import dialog (session-scoped, like the game/mods handles)
 const TOUR_KEY = 'pz-viewer-tour-done'; // set once the first-time guided tour has been seen
@@ -36,7 +37,7 @@ const bgStyle = (b: BgConfig): React.CSSProperties =>
   : b.mode === 'solid' ? { background: b.color1 }
   : { background: `linear-gradient(${b.angle}deg, ${b.color1}, ${b.color2})` };
 
-type Tab = 'animate' | 'clothing' | 'held' | 'character' | 'scene' | 'floor';
+type Tab = 'animate' | 'clothing' | 'held' | 'character' | 'export';
 type FavKind = 'clothing' | 'held' | 'hair' | 'beard';
 type Light = { ambient: number; keyBright: number; kx: number; ky: number; kz: number };
 type ScenePreset = { bg: BgConfig; turntable: boolean; camPreset: CamPreset; studioAspect: number | null; facing: number | null; floor: string | null; light: Light; grid: boolean; shadow: boolean };
@@ -48,7 +49,6 @@ type CharPreset = {
   scene: ScenePreset;
 };
 const favKey = (kind: FavKind, name: string) => `${kind}:${name}`;
-const floorCategory = (name: string) => name.replace(/(_\d+)+$/, '').replace(/^(floors_|blends_)/, '');
 // Curated material presets: each scatters random variants into a baked, non-repetitive floor.
 // blends_natural_01 is grouped in 16-index material blocks; the SOLID tiles are at offsets
 // {0,5,6,7} per block (the others are transparent edge blends). Blocks: 0=sand, 16&32=grass,
@@ -89,7 +89,7 @@ function clipCategory(name: string): string {
   return 'Other';
 }
 
-export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSignIn, uploads }: { ctx: Ctx; index: unknown; onCharacterName?: (name: string | null) => void; auth: AuthState; onRequestSignIn: () => void; uploads: CloudUploads }) {
+export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSignIn, uploads, displayNames }: { ctx: Ctx; index: unknown; onCharacterName?: (name: string | null) => void; auth: AuthState; onRequestSignIn: () => void; uploads: CloudUploads; displayNames: DisplayNames | null }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const engineRef = useRef<CharacterEngine | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -120,6 +120,7 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
   const [hairColor, setHairColor] = useState('#5a3a20');
   const [beardColor, setBeardColor] = useState('#5a3a20');
   const [equipOpen, setEquipOpen] = useState(false);
+  const [sceneOpen, setSceneOpen] = useState(false); // the scene/lighting menu over the display view
   const [attachOpen, setAttachOpen] = useState<string | null>(null); // held item whose attachment picker is expanded
   // studio / export
   const [camPreset, setCamPreset] = useState<CamPreset>('orbit');
@@ -149,10 +150,17 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
   const clips: Clip[] = useMemo(() => listClips(index), [index]);
   const clipItems = useMemo(() => clips.map((c) => ({ ...c, key: c.id, label: c.name, facet: clipCategory(c.name), source: c.modName || 'Vanilla' })), [clips]);
   const [currentClipId, setCurrentClipId] = useState<string | null>(null);
+  // Each item's shown label is its translated display name when one is available (else the raw
+  // item/model name). `search` keeps the raw name (and mod) matchable so people can still search by
+  // the internal name. `display` is the translated name (or undefined) for capturing into a share.
   const clothing = useMemo(() => (listClothing(index) as Array<{ name: string; kind: string; location: string; isMod: boolean; modName?: string | null }>)
-    .map((c) => ({ ...c, key: c.name, label: c.name, facet: clothingGroup(c), source: c.modName || 'Vanilla' })), [index]);
+    .map((c) => { const display = displayNames?.get(c.name, c.modName) || undefined; const label = display || c.name;
+      return { ...c, key: c.name, label, display, search: `${label} ${c.name} ${c.modName || ''}`.toLowerCase(), facet: clothingGroup(c), source: c.modName || 'Vanilla' }; }), [index, displayNames]);
   const held = useMemo(() => (listHeldItems(index) as Array<{ name: string; isMod?: boolean; modName?: string | null; group: string; tags: string[]; attachSlots?: AttachSlot[] }>)
-    .map((h) => ({ ...h, key: h.name, label: h.name, facet: h.group, isMod: !!h.isMod, source: h.modName || 'Vanilla' })), [index]);
+    .map((h) => { const display = displayNames?.get(h.name, h.modName) || undefined; const label = display || h.name;
+      return { ...h, key: h.name, label, display, search: `${label} ${h.name} ${h.modName || ''} ${(h.tags || []).join(' ')}`.toLowerCase(), facet: h.group, isMod: !!h.isMod, source: h.modName || 'Vanilla' }; }), [index, displayNames]);
+  // raw item/model name -> shown label, so the Equipped panel and shares can display translated names too
+  const nameToLabel = useMemo(() => { const m = new Map<string, string>(); for (const c of clothing) m.set(c.name, c.label); for (const h of held) m.set(h.name, h.label); return m; }, [clothing, held]);
   const heldSlots = useMemo(() => { const m = new Map<string, AttachSlot[]>(); for (const h of held) if (h.attachSlots?.length) m.set(h.name, h.attachSlots); return m; }, [held]);
   const hairData = useMemo(() => listHair(index) as HairData, [index]);
 
@@ -164,9 +172,8 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
   const preview = useMemo(() => new ClipPreview(ctx), [ctx]);
   useEffect(() => () => preview.dispose(), [preview]);
   const floorLib = useMemo(() => new FloorLibrary(ctx.resolver as ConstructorParameters<typeof FloorLibrary>[0]), [ctx]);
-  const [floorTiles, setFloorTiles] = useState<{ name: string }[]>([]);
   const [floorSel, setFloorSel] = useState<string | null>(null);
-  const floorItems = useMemo(() => floorTiles.map((t) => ({ ...t, key: t.name, label: t.name.replace(/^(floors_|blends_)/, ''), facet: floorCategory(t.name), isMod: false, source: 'Vanilla' })), [floorTiles]);
+  // single-tile floor, used when loading a saved character whose floor was a specific tile
   const pickFloor = async (name: string) => { setFloorSel(name); try { engineRef.current?.setFloor(await floorLib.texture(name), 1); } catch { /* ignore */ } };
   const pickPreset = async (name: string, tiles: string[]) => {
     setFloorSel('preset:' + name);
@@ -177,7 +184,6 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
     } catch { /* ignore */ }
   };
   const clearFloor = () => { setFloorSel(null); engineRef.current?.setFloor(null); };
-  useEffect(() => { if (tab === 'floor' && !floorTiles.length) floorLib.list().then((ts) => setFloorTiles(ts as { name: string }[])).catch(() => {}); }, [tab, floorLib, floorTiles.length]);
   // scrolling detaches the fixed-position hover preview from its cell - hide it
   useEffect(() => { const off = () => preview.stop(); window.addEventListener('wheel', off, { passive: true }); return () => window.removeEventListener('wheel', off); }, [preview]);
   useEffect(() => { localStorage.setItem('pz-panel-w', String(panelW)); }, [panelW]);
@@ -259,13 +265,15 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
     : null, [held]);
   const tourSteps = useMemo<TourStep[]>(() => [
     { target: '[data-tour="tabs"]', title: 'Build your character here',
-      body: 'Every tool lives in these tabs: set the body and skin under Character, then browse Clothing, Held items, Animations, the Floor, and Scene and export options.' },
+      body: 'Every tool lives in these tabs: set the body and skin under Character, then browse Clothing, Held items and Animations. Camera, framing and export options are under Export.' },
     { target: '[data-tour="camera"]', title: 'Orbit or PZ isometric', interactive: true,
       body: 'Switch between free orbit - drag to rotate, scroll to zoom - and the fixed Project Zomboid isometric camera, which adds a facing compass. Try both buttons now; it will not end the tour.' },
     { target: '[data-tour="idle"]', title: 'Back to idle',
       body: 'Once you play an animation, this button snaps the character back to the neutral idle pose at any time.' },
     { target: '[data-tour="equipmenu"]', title: tourItem ? `Equipped ${tourItem.label}` : 'The Equipped panel',
       body: 'We just equipped an item for you. The Equipped panel lists everything worn or held, and lets you switch hands, add attachments, hide, or unequip each one.' },
+    { target: '[data-tour="scenemenu"]', title: 'Scene, lighting & floor',
+      body: 'The Scene menu sets the lighting, drops a floor under your character, toggles the grid and shadow, and resets everything - all live in the view.' },
   ], [tourItem]);
 
   // start the tour once, for first-time visitors, after the scene is ready. The started latch is
@@ -288,6 +296,12 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
     setEquipOpen(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tourStep, tourSteps, tourItem]);
+
+  // when the scene step is reached, open the Scene menu (and close the Equipped panel) so it's shown
+  useEffect(() => {
+    if (tourStep === null || tourSteps[tourStep]?.target !== '[data-tour="scenemenu"]') return;
+    setSceneOpen(true); setEquipOpen(false);
+  }, [tourStep, tourSteps]);
 
   // remember the tour was seen once it closes (finished or skipped)
   useEffect(() => { if (tourStep === null && tourStartedRef.current) localStorage.setItem(TOUR_KEY, '1'); }, [tourStep]);
@@ -331,8 +345,9 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
     const list = (engineRef.current?.equippedList() ?? []).filter((e) => !e.hidden);
     const modOfClothing = (name: string) => clothing.find((c) => c.name === name)?.modName ?? null;
     const modOfHeld = (name: string) => held.find((h) => h.name === name)?.modName ?? null;
-    const cl = list.filter((e) => e.type === 'clothing').map((e) => ({ name: e.name, mod: modOfClothing(e.name) }));
-    const hl = list.filter((e) => e.type === 'held').map((e) => ({ name: e.name, hand: e.hand ?? 'right', mod: modOfHeld(e.name) }));
+    const disp = (name: string) => { const d = nameToLabel.get(name); return d && d !== name ? d : undefined; };
+    const cl = list.filter((e) => e.type === 'clothing').map((e) => ({ name: e.name, display: disp(e.name), mod: modOfClothing(e.name) }));
+    const hl = list.filter((e) => e.type === 'held').map((e) => ({ name: e.name, display: disp(e.name), hand: e.hand ?? 'right', mod: modOfHeld(e.name) }));
     const mods = [...new Set([...cl, ...hl].map((x) => x.mod).filter((m): m is string => !!m))];
     return { v: 1, character: charNameRef.current || undefined, gender, clothing: cl, held: hl, mods };
   };
@@ -488,7 +503,7 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
     window.addEventListener('mouseup', onUp);
   }
 
-  const tabs: [Tab, string][] = [['character', 'Character'], ['clothing', 'Clothing'], ['held', 'Held'], ['animate', 'Animate'], ['floor', 'Floor'], ['scene', 'Scene']];
+  const tabs: [Tab, string][] = [['character', 'Character'], ['clothing', 'Clothing'], ['held', 'Held'], ['animate', 'Animate'], ['export', 'Export']];
   const segBtn = (on: boolean) => ({ borderRadius: 0, padding: '6px 9px', background: on ? 'var(--accent)' : 'var(--panel)', color: on ? '#fff' : 'var(--muted)' }) as const;
   void equipTick; // re-read equipped state on every equip change
   const equipList = engineRef.current?.equippedList() ?? [];
@@ -520,8 +535,10 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
         </div>
         <div style={{ position: 'absolute', right: 12, top: 12, display: 'flex', flexDirection: 'column', gap: 8, alignItems: 'flex-end' }}>
           <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
-            <button className="secondary" title="Equipped items" onClick={() => setEquipOpen((v) => !v)}
+            <button className="secondary" title="Equipped items" onClick={() => { setEquipOpen((v) => !v); setSceneOpen(false); }}
               style={{ borderRadius: 6, padding: '7px 12px', fontSize: 13, lineHeight: 1, border: '1px solid var(--line)', background: equipOpen ? 'var(--accent)' : 'var(--panel)', color: equipOpen ? '#fff' : 'var(--text)' }}>Equipped{equipList.length ? ` (${equipList.length})` : ''}</button>
+            <button data-tour="scenebtn" className="secondary" title="Scene, lighting & floor" onClick={() => { setSceneOpen((v) => !v); setEquipOpen(false); }}
+              style={{ borderRadius: 6, padding: '7px 12px', fontSize: 13, lineHeight: 1, border: '1px solid var(--line)', background: sceneOpen ? 'var(--accent)' : 'var(--panel)', color: sceneOpen ? '#fff' : 'var(--text)' }}>Scene</button>
             <div data-tour="camera" style={{ display: 'flex', border: '1px solid var(--line)', borderRadius: 6, overflow: 'hidden' }}>
               <button className="secondary" title="Free orbit" onClick={() => setCamPreset('orbit')}
                 style={{ borderRadius: 0, padding: '5px 11px', fontSize: 24, lineHeight: 1, background: camMode === 'orbit' ? 'var(--accent)' : 'var(--panel)', color: camMode === 'orbit' ? '#fff' : 'var(--text)' }}>⟳</button>
@@ -554,7 +571,7 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
               return (
                 <div key={e.type + ':' + e.name}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 2px' }}>
-                    <span style={{ flex: 1, fontSize: 12, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', opacity: e.hidden ? 0.45 : 1 }} title={e.name}>{e.name}</span>
+                    <span style={{ flex: 1, fontSize: 12, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', opacity: e.hidden ? 0.45 : 1 }} title={e.name}>{nameToLabel.get(e.name) ?? e.name}</span>
                     <span style={{ fontSize: 9, color: 'var(--muted)', border: '1px solid var(--line)', borderRadius: 3, padding: '0 3px' }}>{e.type === 'held' ? 'held' : 'worn'}</span>
                     {e.type === 'held' && (
                       <button className="secondary" title={`held in ${e.hand === 'left' ? 'left' : 'right'} hand (click to switch)`}
@@ -590,6 +607,16 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
                 </div>
               );
             })}
+          </div>
+        )}
+        {sceneOpen && (
+          <div data-tour="scenemenu" style={{ position: 'absolute', right: 12, top: 54, width: 280, maxHeight: '74%', overflow: 'auto', background: '#0e0e13f2', border: '1px solid var(--line)', borderRadius: 8, padding: 10 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+              <span style={{ fontSize: 12, color: 'var(--muted)' }}>Scene &amp; lighting</span>
+              <span role="button" onClick={() => setSceneOpen(false)} title="close" style={{ cursor: 'pointer', color: 'var(--muted)', padding: '0 4px' }}>✕</span>
+            </div>
+            <SceneControls floorSel={floorSel} onPreset={pickPreset} onClear={clearFloor}
+              scene={{ light, setL, grid, setGrid: (v) => { setGrid(v); engineRef.current?.setGridVisible(v); }, shadow, setShadow: (v) => { setShadow(v); engineRef.current?.setShadowVisible(v); }, onReset: resetScene }} />
           </div>
         )}
         <div style={{ position: 'absolute', left: 12, bottom: 12, right: 12, display: 'flex', gap: 8, alignItems: 'center', background: '#000000aa', borderRadius: 8, padding: '6px 10px' }}>
@@ -670,29 +697,12 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
           {tab === 'character' && <CharacterTab hairData={hairData} gender={gender} setGender={setGender} skin={skin} tones={tones} onSkin={(t) => { setSkin(t); engineRef.current?.setSkin(t); }} thumbs={thumbs} hairSel={hairSel} beardSel={beardSel} hairColor={hairColor} beardColor={beardColor} onPickPart={applyHairPart} onRecolour={recolourPart} favs={favs} onToggleFav={toggleFav} onImport={() => setImportOpen(true)}
             savedCount={Object.keys(presets).length} onOpenSaved={() => setPresetsOpen(true)} />}
 
-          {tab === 'floor' && (
-            <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-              <div style={{ padding: 8, borderBottom: '1px solid var(--line)', display: 'flex', gap: 6, alignItems: 'center' }}>
-                <button className="secondary" onClick={clearFloor} style={{ background: !floorSel ? 'var(--accent)' : 'var(--panel)', color: !floorSel ? '#fff' : 'var(--text)' }}>None</button>
-                <span style={{ color: 'var(--muted)', fontSize: 12 }}>Browse any single floor tile (material presets are in the Scene tab)</span>
-              </div>
-              <div style={{ flex: 1, minHeight: 0 }}>
-                {floorItems.length ? (
-                  <AssetGrid<typeof floorItems[number] & GridItem>
-                    items={floorItems as (typeof floorItems[number] & GridItem)[]}
-                    facetLabel="categories"
-                    active={(it) => it.name === floorSel}
-                    onPick={(it) => pickFloor(it.name)}
-                    renderThumb={(it) => <Thumb depKey={`floor:${it.name}`} getUrl={() => floorLib.thumbUrl(it.name)} />} />
-                ) : <div style={{ padding: 20, color: 'var(--muted)' }}>Loading floor tiles…</div>}
-              </div>
+          {tab === 'export' && (
+            <div style={{ padding: 12, overflow: 'auto', height: '100%' }}>
+              <ExportSection cloud={cloud}
+                studio={{ camPreset, setCamPreset, studioAspect, setStudioAspect, bg, setBg, turntable, setTurntable, gifMode, setGifMode, mp4Seconds, setMp4Seconds, exporting, runExport }} />
             </div>
           )}
-
-          {tab === 'scene' && <SceneTab floorSel={floorSel} onPreset={pickPreset} onClear={clearFloor}
-            scene={{ light, setL, grid, setGrid: (v) => { setGrid(v); engineRef.current?.setGridVisible(v); }, shadow, setShadow: (v) => { setShadow(v); engineRef.current?.setShadowVisible(v); }, onReset: resetScene }}
-            studio={{ camPreset, setCamPreset, studioAspect, setStudioAspect, bg, setBg, turntable, setTurntable, gifMode, setGifMode, mp4Seconds, setMp4Seconds, exporting, runExport }}
-            cloud={cloud} />}
         </div>
       </div>
 
@@ -858,26 +868,24 @@ interface CloudCtl {
   used: number; limit: number; rows: UploadRow[]; removeUpload: (key: string) => void;
 }
 
-function SceneTab({ floorSel, onPreset, onClear, scene, studio, cloud }: {
-  floorSel: string | null; onPreset: (name: string, tiles: string[]) => void; onClear: () => void;
-  scene: SceneCtl; studio: StudioCtl; cloud: CloudCtl;
+// Scene / lighting / floor controls, shown in the pop-over menu over the display view. Compact and
+// self-contained (the pop-over supplies its own padding + heading).
+function SceneControls({ floorSel, onPreset, onClear, scene }: {
+  floorSel: string | null; onPreset: (name: string, tiles: string[]) => void; onClear: () => void; scene: SceneCtl;
 }) {
   const { light, setL, grid, setGrid, shadow, setShadow } = scene;
-  const label = { color: 'var(--muted)', fontSize: 12, display: 'block', margin: '14px 0 6px' } as const;
+  const label = { color: 'var(--muted)', fontSize: 11, textTransform: 'uppercase', letterSpacing: '.05em', display: 'block', margin: '12px 0 6px' } as const;
   const slider = (k: keyof Light, name: string, min: number, max: number) => (
-    <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 6 }}>
-      <span style={{ width: 66, fontSize: 12, color: 'var(--muted)' }}>{name}</span>
+    <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 5 }}>
+      <span style={{ width: 62, fontSize: 12, color: 'var(--muted)' }}>{name}</span>
       <input type="range" min={min} max={max} step={0.01} value={light[k]} onChange={(e) => setL(k, Number(e.target.value))} style={{ flex: 1, accentColor: '#5b8cff' }} />
-      <span style={{ width: 38, fontSize: 12, textAlign: 'right', fontFamily: 'monospace' }}>{light[k].toFixed(2)}</span>
+      <span style={{ width: 34, fontSize: 11, textAlign: 'right', fontFamily: 'monospace', color: 'var(--muted)' }}>{light[k].toFixed(2)}</span>
     </div>
   );
-
+  const toggle = (on: boolean) => ({ padding: '6px 12px', fontSize: 12, background: on ? 'var(--accent)' : 'var(--panel)', color: on ? '#fff' : 'var(--text)' }) as const;
   return (
-    <div style={{ padding: 12, overflow: 'auto', height: '100%' }}>
-      <button className="secondary" onClick={scene.onReset} title="reset every scene setting to its default"
-        style={{ width: '100%', padding: '8px', marginBottom: 4, fontSize: 12 }}>↺ Reset all scene settings</button>
-
-      <label style={label}>Lighting</label>
+    <div>
+      <label style={{ ...label, marginTop: 0 }}>Lighting</label>
       {slider('ambient', 'ambient', 0, 1)}
       {slider('keyBright', 'key light', 0, 1)}
       {slider('kx', 'key X', -2, 2)}
@@ -886,22 +894,20 @@ function SceneTab({ floorSel, onPreset, onClear, scene, studio, cloud }: {
 
       <label style={label}>Floor</label>
       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-        <button className="secondary" onClick={onClear} style={{ padding: '6px 12px', background: !floorSel ? 'var(--accent)' : 'var(--panel)', color: !floorSel ? '#fff' : 'var(--text)' }}>None</button>
+        <button className="secondary" onClick={onClear} style={toggle(!floorSel)}>None</button>
         {FLOOR_PRESETS.map(([name, tiles]) => (
-          <button key={name} className="secondary" onClick={() => onPreset(name, tiles)}
-            style={{ padding: '6px 12px', background: floorSel === 'preset:' + name ? 'var(--accent)' : 'var(--panel)', color: floorSel === 'preset:' + name ? '#fff' : 'var(--text)' }}>{name}</button>
+          <button key={name} className="secondary" onClick={() => onPreset(name, tiles)} style={toggle(floorSel === 'preset:' + name)}>{name}</button>
         ))}
       </div>
 
-      <label style={label}>Scene</label>
+      <label style={label}>Display</label>
       <div style={{ display: 'flex', gap: 8 }}>
-        <button className="secondary" onClick={() => setGrid(!grid)}
-          style={{ padding: '6px 12px', background: grid ? 'var(--accent)' : 'var(--panel)', color: grid ? '#fff' : 'var(--text)' }}>Floor grid</button>
-        <button className="secondary" onClick={() => setShadow(!shadow)}
-          style={{ padding: '6px 12px', background: shadow ? 'var(--accent)' : 'var(--panel)', color: shadow ? '#fff' : 'var(--text)' }}>Shadow</button>
+        <button className="secondary" onClick={() => setGrid(!grid)} style={toggle(grid)} title="Show the floor grid">Floor grid</button>
+        <button className="secondary" onClick={() => setShadow(!shadow)} style={toggle(shadow)} title="Cast a shadow under the character">Shadow</button>
       </div>
 
-      <ExportSection studio={studio} cloud={cloud} />
+      <button className="secondary" onClick={scene.onReset} title="Reset lighting, floor and camera to defaults"
+        style={{ width: '100%', padding: '8px', marginTop: 14, fontSize: 12 }}>↺ Reset scene</button>
     </div>
   );
 }
@@ -917,8 +923,8 @@ function ExportSection({ studio, cloud }: { studio: StudioCtl; cloud: CloudCtl }
   const CAMS: [CamPreset, string][] = [['orbit', 'Free'], ['iso', 'PZ iso'], ['front', 'Front 35mm'], ['portrait', 'Portrait 60mm']];
 
   return (
-    <div style={{ marginTop: 20, paddingTop: 6, borderTop: '1px solid var(--line)' }}>
-      <div style={{ color: 'var(--text)', fontSize: 13, fontWeight: 600, margin: '10px 0 2px' }}>Export studio</div>
+    <div>
+      <div style={{ color: 'var(--muted)', fontSize: 12, lineHeight: 1.5, marginBottom: 2 }}>Camera, framing and background for your render. Scene, lighting and floor live in the <b style={{ color: 'var(--text)' }}>Scene</b> menu over the view.</div>
 
       <label style={label}>Camera</label>
       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>

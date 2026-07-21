@@ -215,7 +215,7 @@ function ShareDetails({ meta }: { meta: ShareMeta | null }) {
           <div className="viewer-details-head">Held ({meta.held.length})</div>
           {meta.held.map((h, i) => (
             <div key={'h' + i} className="viewer-item">
-              <span className="viewer-item-name" title={h.name}>{h.name}</span>
+              <span className="viewer-item-name" title={h.name}>{h.display || h.name}</span>
               <span className="viewer-hand" title={`held in ${h.hand} hand`}>{h.hand === 'left' ? 'L' : 'R'}</span>
               {modTag(h.mod)}
             </div>
@@ -228,7 +228,7 @@ function ShareDetails({ meta }: { meta: ShareMeta | null }) {
           <div className="viewer-details-head">Clothing ({meta.clothing.length})</div>
           {meta.clothing.map((c, i) => (
             <div key={'c' + i} className="viewer-item">
-              <span className="viewer-item-name" title={c.name}>{c.name}</span>
+              <span className="viewer-item-name" title={c.name}>{c.display || c.name}</span>
               {modTag(c.mod)}
             </div>
           ))}
