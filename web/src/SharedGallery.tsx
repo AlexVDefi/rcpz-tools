@@ -93,8 +93,7 @@ function ShareViewer({ rows, index, onIndex, onClose, onRemove }: {
   onRemove: (key: string) => Promise<void>;
 }) {
   const row = rows[index];
-  const [details, setDetails] = useState(false);
-  const [watermark, setWatermark] = useState(true);
+  const [details, setDetails] = useState(true);
   const [copied, setCopied] = useState<'' | 'file' | 'player'>('');
   const [deleting, setDeleting] = useState(false);
   const [confirmDel, setConfirmDel] = useState(false);
@@ -134,8 +133,6 @@ function ShareViewer({ rows, index, onIndex, onClose, onRemove }: {
           <span className="viewer-kind">{(row.kind || 'file').toUpperCase()}</span>
           <span className="viewer-meta">{new Date(row.created_at).toLocaleDateString()} · {fmtBytes(row.size)}</span>
           <span style={{ flex: 1 }} />
-          <button className="secondary" onClick={() => setWatermark((v) => !v)} title="Toggle the watermark"
-            style={{ padding: '6px 12px', fontSize: 12.5, background: watermark ? 'var(--accent)' : 'var(--panel)', color: watermark ? '#fff' : 'var(--text)' }}>Watermark</button>
           <button className="secondary" onClick={() => setDetails((v) => !v)} title="Show what's equipped and the mods used"
             style={{ padding: '6px 12px', fontSize: 12.5, background: details ? 'var(--accent)' : 'var(--panel)', color: details ? '#fff' : 'var(--text)' }}>Details</button>
           <button className="secondary" onClick={onClose} title="Close (Esc)" style={{ padding: '6px 11px', fontSize: 14 }}>✕</button>
@@ -148,12 +145,10 @@ function ShareViewer({ rows, index, onIndex, onClose, onRemove }: {
             {isVideo(row)
               ? <video key={row.id} src={row.url} controls autoPlay loop playsInline />
               : <img key={row.id} src={row.url} alt="" />}
-            {watermark && (
-              <div className="viewer-watermark">
-                <img src={logoUrl} alt="" width={16} height={16} />
-                <span>PZ Survivor Studio</span>
-              </div>
-            )}
+            <div className="viewer-watermark">
+              <img src={logoUrl} alt="" width={16} height={16} />
+              <span>PZ Survivor Studio</span>
+            </div>
           </div>
           {details && <ShareDetails meta={row.meta} />}
           {rows.length > 1 && <button className="viewer-nav viewer-next" onClick={() => go(1)} disabled={index === rows.length - 1} title="Next (→)">›</button>}
@@ -168,7 +163,7 @@ function ShareViewer({ rows, index, onIndex, onClose, onRemove }: {
             <a className="secondary viewer-link" href={row.url} target="_blank" rel="noopener noreferrer">Open</a>
           </div>
           <div className="viewer-share-row">
-            <span className="viewer-share-label player" title="A PZ Survivor Studio page that shows the render with the character name and mods used">Player</span>
+            <span className="viewer-share-label player" title="A PZ Survivor Studio page that shows the render with the character name and the equipped gear">Detailed view</span>
             <input readOnly value={player} onFocus={(e) => e.currentTarget.select()} className="viewer-share-url" />
             <button className="secondary" onClick={() => copy('player')} style={{ padding: '5px 11px', fontSize: 12 }}>{copied === 'player' ? 'Copied' : 'Copy'}</button>
             <a className="secondary viewer-link" href={player} target="_blank" rel="noopener noreferrer">Open</a>

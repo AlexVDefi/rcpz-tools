@@ -12,7 +12,7 @@ import { exportPng, exportGif, exportVideo, download, type BgConfig, type Conten
 import { discoverSaves, importCharacter, type SaveEntry, type ParsedChar } from './save/save-import';
 import { idbHandles, hasPermission, requestPermission } from './platform/idb';
 import { type AuthState } from './cloud/auth';
-import { useCloudUploads, type UploadRow } from './cloud/uploads';
+import { type UploadRow, type CloudUploads } from './cloud/uploads';
 import { uploadRender, playerUrl } from './cloud/api';
 import type { ShareMeta } from './cloud/share-meta';
 import { cloudConfigured, fmtBytes } from './cloud/config';
@@ -89,7 +89,7 @@ function clipCategory(name: string): string {
   return 'Other';
 }
 
-export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSignIn }: { ctx: Ctx; index: unknown; onCharacterName?: (name: string | null) => void; auth: AuthState; onRequestSignIn: () => void }) {
+export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSignIn, uploads }: { ctx: Ctx; index: unknown; onCharacterName?: (name: string | null) => void; auth: AuthState; onRequestSignIn: () => void; uploads: CloudUploads }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const engineRef = useRef<CharacterEngine | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -318,7 +318,9 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
   };
 
   // ---- online sharing (optional; only when signed in) ----
-  const cloudUploads = useCloudUploads(auth.session);
+  // The uploads store is owned by App and shared with the Shared tab, so a render shared here shows
+  // up there immediately (no page refresh).
+  const cloudUploads = uploads;
   const [sharing, setSharing] = useState<{ phase: 'render' | 'upload'; progress: number } | null>(null);
   const [shareUrl, setShareUrl] = useState<string | null>(null);
   const [shareKey, setShareKey] = useState<string | null>(null);
@@ -441,7 +443,7 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
   const capturePreview = (): string | undefined => {
     try { return engineRef.current?.snapshotFront(260, 340, '#1b1d24'); } catch { return undefined; }
   };
-  const savePreset = async (name: string) => { const n = name.trim(); if (!n) return; const thumb = capturePreview(); setPresets((p) => ({ ...p, [n]: { ...buildPreset(n), thumb } })); };
+  const savePreset = async (name: string) => { const n = name.trim(); if (!n) return; const thumb = capturePreview(); setPresets((p) => ({ ...p, [n]: { ...buildPreset(n), thumb } })); emitCharName(n); };
   const deletePreset = (name: string) => setPresets((p) => { const n = { ...p }; delete n[name]; return n; });
   const applyPresetLook = async (preset: CharPreset) => {
     const eng = engineRef.current; if (!eng) return;
@@ -1041,12 +1043,12 @@ function ShareResult({ url, playerUrl, onClose }: { url: string; playerUrl: stri
   const copy = async (which: 'file' | 'player', value: string) => { try { await navigator.clipboard.writeText(value); setCopied(which); setTimeout(() => setCopied(''), 1500); } catch { /* clipboard blocked */ } };
   const openBtn = { padding: '6px 10px', fontSize: 12, textDecoration: 'none', display: 'inline-flex', alignItems: 'center', borderRadius: 6, border: '1px solid var(--line)', background: 'var(--panel)', color: 'var(--text)' } as const;
   const inputStyle = { flex: 1, minWidth: 0, background: '#14141a', color: 'var(--text)', border: '1px solid var(--line)', borderRadius: 6, padding: '6px 8px', fontSize: 12 } as const;
-  const linkLabel = { width: 46, flexShrink: 0, fontSize: 10.5, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em' } as const;
+  const linkLabel = { width: 92, flexShrink: 0, whiteSpace: 'nowrap', fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.02em' } as const;
   return (
     <div style={{ marginTop: 10, background: '#0e1524', border: '1px solid #2a3a5a', borderRadius: 8, padding: 10 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-        <span style={{ fontSize: 12, color: '#7ea6ff', fontWeight: 600 }}>Shared. Two links, same render.</span>
-        <span role="button" onClick={onClose} title="dismiss" style={{ cursor: 'pointer', color: 'var(--muted)' }}>✕</span>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8, marginBottom: 8 }}>
+        <span style={{ fontSize: 12, color: '#7ea6ff', fontWeight: 600, lineHeight: 1.45 }}>Share just the raw media file, or a detailed view that shows the equipped gear.</span>
+        <span role="button" onClick={onClose} title="dismiss" style={{ cursor: 'pointer', color: 'var(--muted)', flexShrink: 0 }}>✕</span>
       </div>
       <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
         <span style={{ ...linkLabel, color: 'var(--muted)' }} title="The raw image or video file on its own">File</span>
@@ -1056,7 +1058,7 @@ function ShareResult({ url, playerUrl, onClose }: { url: string; playerUrl: stri
       </div>
       {playerUrl && (
         <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginTop: 6 }}>
-          <span style={{ ...linkLabel, color: 'var(--accent)' }} title="A PZ Survivor Studio page showing the render with the character name and mods used">Player</span>
+          <span style={{ ...linkLabel, color: 'var(--accent)' }} title="A PZ Survivor Studio page showing the render with the character name and equipped gear">Detailed view</span>
           <input readOnly value={playerUrl} onFocus={(e) => e.currentTarget.select()} style={inputStyle} />
           <button className="secondary" onClick={() => copy('player', playerUrl)} style={{ padding: '6px 10px', fontSize: 12 }}>{copied === 'player' ? 'Copied' : 'Copy'}</button>
           <a href={playerUrl} target="_blank" rel="noopener noreferrer" className="secondary" style={openBtn}>Open</a>

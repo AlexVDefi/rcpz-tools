@@ -162,7 +162,7 @@ details[open] .chev { transform: rotate(180deg); }
 .viewer-modtag { font-size: 10.5px; color: var(--accent); background: #0e1524; border: 1px solid #2a3a5a; border-radius: 999px; padding: 1px 8px; max-width: 130px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex-shrink: 0; }
 .viewer-share { display: flex; flex-direction: column; gap: 6px; padding: 9px 12px; border-top: 1px solid var(--line); flex-shrink: 0; }
 .viewer-share-row { display: flex; align-items: center; gap: 7px; }
-.viewer-share-label { width: 52px; flex-shrink: 0; font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+.viewer-share-label { width: 96px; flex-shrink: 0; white-space: nowrap; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .02em; color: var(--muted); }
 .viewer-share-label.player { color: var(--accent); }
 .viewer-share-url { flex: 1; min-width: 0; background: #14141a; color: var(--muted); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; font-size: 11.5px; }
 .viewer-foot { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-top: 1px solid var(--line); flex-shrink: 0; }
