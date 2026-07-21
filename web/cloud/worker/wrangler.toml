@@ -14,7 +14,7 @@ bucket_name = "pz-studio-shares"
 SUPABASE_URL = "https://dkivmjidqzcgmarazcth.supabase.co"
 SUPABASE_ANON_KEY = "sb_publishable_OajY7dEbz1DZmrGffL2K1Q_UTuYLWsz"
 # App origins allowed to call /upload and /object (comma-separated). Include localhost for dev.
-ALLOWED_ORIGINS = "https://survivors.rcpz.tools,http://localhost:5173"
+ALLOWED_ORIGINS = "https://survivor.rcpz.tools,http://localhost:5173"
 # 100 MB per user. Change here + in web/src/cloud/config.ts if you ever raise it.
 QUOTA_BYTES = "104857600"
 

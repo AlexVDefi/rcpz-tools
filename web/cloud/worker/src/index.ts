@@ -3,7 +3,11 @@
 // Responsibilities:
 //   POST   /upload?kind=&ext=   verify the Supabase user, enforce the 100 MB per-user cap, store
 //                               the render in R2, record a row in Supabase, return its share URL.
+//                               An optional X-Share-Meta header (base64 JSON) records what the
+//                               render depicts (equipped items + mod sources) for the viewer.
 //   DELETE /object?key=         verify + ownership-check, delete the object and its row.
+//   DELETE /account             verify, then PERMANENTLY delete the user: every R2 object under
+//                               their prefix, their upload rows, and their auth account.
 //   GET    /f/<key>             public: stream the object from R2 (this is the shareable link).
 //
 // The browser never holds any storage secret. The quota and ownership are enforced here; the
@@ -32,6 +36,7 @@ export default {
     if (request.method === 'GET' && url.pathname.startsWith('/f/')) return serve(url, env);
     if (request.method === 'POST' && url.pathname === '/upload') return withCors(await upload(request, url, env), corsHeaders);
     if (request.method === 'DELETE' && url.pathname === '/object') return withCors(await remove(request, url, env), corsHeaders);
+    if (request.method === 'DELETE' && url.pathname === '/account') return withCors(await deleteAccount(request, env), corsHeaders);
     return withCors(json({ error: 'Not found' }, 404), corsHeaders);
   },
 };
@@ -54,6 +59,7 @@ async function upload(request: Request, url: URL, env: Env): Promise<Response> {
 
   const key = `u/${uid}/${crypto.randomUUID()}.${ext}`;
   const contentType = request.headers.get('Content-Type') || 'application/octet-stream';
+  const meta = decodeMeta(request.headers.get('X-Share-Meta'));
   const obj = await env.BUCKET.put(key, request.body, { httpMetadata: { contentType } });
   const size = obj?.size ?? len;
 
@@ -61,7 +67,7 @@ async function upload(request: Request, url: URL, env: Env): Promise<Response> {
   const ins = await fetch(`${env.SUPABASE_URL}/rest/v1/uploads`, {
     method: 'POST',
     headers: { ...svc(env), 'Content-Type': 'application/json', Prefer: 'return=minimal' },
-    body: JSON.stringify({ user_id: uid, key, size, content_type: contentType, kind }),
+    body: JSON.stringify({ user_id: uid, key, size, content_type: contentType, kind, meta }),
   });
   if (!ins.ok) { await env.BUCKET.delete(key); return json({ error: 'Could not record the upload' }, 500); }
 
@@ -78,6 +84,46 @@ async function remove(request: Request, url: URL, env: Env): Promise<Response> {
     method: 'DELETE', headers: svc(env),
   });
   return json({ ok: true });
+}
+
+// Permanently delete the caller's account and everything tied to it. Runs in this order so a
+// failure never leaves data reachable: (1) every R2 object under u/<uid>/, (2) their upload rows,
+// (3) the auth account itself. Deleting the auth user also cascades the rows (belt and braces).
+async function deleteAccount(request: Request, env: Env): Promise<Response> {
+  const uid = await verifyUser(request, env);
+  if (!uid) return json({ error: 'Unauthorized' }, 401);
+
+  // 1. wipe all of the user's stored renders from R2 (list is paginated; delete up to 1000/call)
+  const prefix = `u/${uid}/`;
+  let cursor: string | undefined;
+  do {
+    const listed = await env.BUCKET.list({ prefix, cursor, limit: 1000 });
+    if (listed.objects.length) await env.BUCKET.delete(listed.objects.map((o) => o.key));
+    cursor = listed.truncated ? listed.cursor : undefined;
+  } while (cursor);
+
+  // 2. drop their upload rows
+  await fetch(`${env.SUPABASE_URL}/rest/v1/uploads?user_id=eq.${uid}`, { method: 'DELETE', headers: svc(env) });
+
+  // 3. hard-delete the auth user (service_role only). 404 = already gone, treat as success.
+  const del = await fetch(`${env.SUPABASE_URL}/auth/v1/admin/users/${uid}`, { method: 'DELETE', headers: svc(env) });
+  if (!del.ok && del.status !== 404) {
+    return json({ error: 'Your shared items were removed, but deleting the account failed. Please try again.' }, 502);
+  }
+  return json({ ok: true });
+}
+
+// Decode the optional X-Share-Meta header: base64(JSON) describing the render. Never trusted for
+// anything but display, so on any problem (missing, too big, bad base64/JSON) we store null.
+function decodeMeta(header: string | null): unknown {
+  if (!header || header.length > 16384) return null;
+  try {
+    const bin = atob(header);
+    const bytes = Uint8Array.from(bin, (c) => c.charCodeAt(0));
+    const jsonStr = new TextDecoder().decode(bytes);
+    if (jsonStr.length > 12000) return null;
+    return JSON.parse(jsonStr);
+  } catch { return null; }
 }
 
 async function serve(url: URL, env: Env): Promise<Response> {
@@ -128,7 +174,7 @@ function cors(env: Env, origin: string | null): Record<string, string> {
   return {
     'access-control-allow-origin': allow,
     'access-control-allow-methods': 'POST, DELETE, OPTIONS',
-    'access-control-allow-headers': 'authorization, content-type',
+    'access-control-allow-headers': 'authorization, content-type, x-share-meta',
     'access-control-max-age': '86400',
     vary: 'Origin',
   };

@@ -6,8 +6,12 @@ import { discoverWorkshopMods, modSources, type DiscoveredMod } from './platform
 import { idbHandles, idbCache, hasPermission, requestPermission, storageUsage } from './platform/idb';
 import { converter } from './render/converter';
 import { CharacterViewer } from './CharacterViewer';
+import { SharedGallery } from './SharedGallery';
 import { useAuth, type AuthState } from './cloud/auth';
+import { useCloudUploads } from './cloud/uploads';
 import { AuthModal } from './cloud/AuthModal';
+import { DeleteAccountModal } from './cloud/DeleteAccountModal';
+import { PasswordModal } from './cloud/PasswordModal';
 import { cloudConfigured } from './cloud/config';
 import logoUrl from './assets/logo.png';
 import kofiUrl from './assets/kofi_symbol.svg';
@@ -18,7 +22,7 @@ const ACTIVE_KEY = 'pz-active-mods';
 const fsaSupported = typeof (window as unknown as { showDirectoryPicker?: unknown }).showDirectoryPicker === 'function';
 
 type Phase = 'unsupported' | 'idle' | 'need-permission' | 'scanning' | 'ready' | 'error';
-type View = 'overview' | 'character';
+type View = 'overview' | 'character' | 'shared';
 type ScanStep = 'scripts' | 'clothing' | 'anims';
 type Scan = { source: number; total: number; step: ScanStep; count: number; name: string };
 const SCAN_STEPS: ScanStep[] = ['scripts', 'clothing', 'anims'];
@@ -42,6 +46,12 @@ export function App() {
   const [activeKeys, setActiveKeys] = useState<string[]>(() => { try { return JSON.parse(localStorage.getItem(ACTIVE_KEY) || '[]'); } catch { return []; } });
   const auth = useAuth();
   const [authOpen, setAuthOpen] = useState(false);
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [changePwOpen, setChangePwOpen] = useState(false);
+  const uploads = useCloudUploads(auth.session);
+  // the Shared tab only exists while signed in - if the session ends (sign out / account deleted)
+  // while it's open, fall back to the overview.
+  useEffect(() => { if (view === 'shared' && auth.ready && !auth.user) setView('overview'); }, [view, auth.ready, auth.user]);
 
   const ctx = useMemo(() => (index ? { resolver: (index as { resolver: unknown }).resolver, converter } : null), [index]);
   const activeMods = useMemo(() => activeKeys.map((k) => mods.find((m) => m.key === k)).filter(Boolean) as DiscoveredMod[], [activeKeys, mods]);
@@ -153,16 +163,27 @@ export function App() {
         {charName && <div title="Loaded character" style={{ position: 'absolute', left: '50%', top: '50%', transform: 'translate(-50%, -50%)', fontSize: 23, fontWeight: 600, color: 'var(--text)', pointerEvents: 'none', whiteSpace: 'nowrap', maxWidth: '40%', overflow: 'hidden', textOverflow: 'ellipsis' }}>{charName}</div>}
         {(index != null || auth.configured) && (
           <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-            {index != null && <>
+            {(index != null || auth.user) && (
               <button className="secondary" onClick={() => setView('overview')} style={{ borderColor: view === 'overview' ? 'var(--accent)' : 'var(--line)', color: view === 'overview' ? '#fff' : 'var(--text)' }}>Overview</button>
+            )}
+            {index != null && (
               <button onClick={() => setView('character')} style={{ padding: '9px 18px', fontWeight: 600, boxShadow: view === 'character' ? 'none' : '0 2px 10px #5b8cff55' }}>Character viewer →</button>
-            </>}
-            {auth.configured && <AccountChip auth={auth} onSignIn={() => setAuthOpen(true)} />}
+            )}
+            {auth.user && (
+              <button className="secondary" onClick={() => setView('shared')} style={{ borderColor: view === 'shared' ? 'var(--accent)' : 'var(--line)', color: view === 'shared' ? '#fff' : 'var(--text)' }}>Shared</button>
+            )}
+            {auth.configured && <AccountChip auth={auth} onSignIn={() => setAuthOpen(true)} onChangePassword={() => setChangePwOpen(true)} onDeleteAccount={() => setDeleteOpen(true)} />}
           </div>
         )}
       </header>
 
       {authOpen && <AuthModal auth={auth} onClose={() => setAuthOpen(false)} />}
+      {deleteOpen && auth.user && (
+        <DeleteAccountModal auth={auth} uploads={uploads} onClose={() => setDeleteOpen(false)}
+          onDeleted={() => { setDeleteOpen(false); setView('overview'); }} />
+      )}
+      {changePwOpen && auth.user && <PasswordModal auth={auth} mode="change" onClose={() => setChangePwOpen(false)} />}
+      {auth.recovery && <PasswordModal auth={auth} mode="recovery" onClose={() => { /* clearRecovery handled inside */ }} />}
 
       {phase === 'unsupported' && (
         <div className="card" style={{ marginTop: 40, maxWidth: 560, marginInline: 'auto', textAlign: 'center', background: '#2c2226', borderColor: '#5a3a3a' }}>
@@ -280,6 +301,8 @@ export function App() {
         <div style={{ marginTop: 12 }}><CharacterViewer ctx={ctx} index={index} onCharacterName={setCharName} auth={auth} onRequestSignIn={() => setAuthOpen(true)} /></div>
       )}
 
+      {view === 'shared' && auth.user && <SharedGallery uploads={uploads} />}
+
       <div className="credit">
         <a className="watermark" href="https://steamcommunity.com/id/mreastman/myworkshopfiles/?appid=108600"
           target="_blank" rel="noopener noreferrer" title="RedChili on the Steam Workshop">Made by RedChili</a>
@@ -295,15 +318,35 @@ export function App() {
 }
 
 // Header account control for the optional online feature: a Sign in button when logged out, or
-// the signed-in email with a Sign out button.
-function AccountChip({ auth, onSignIn }: { auth: AuthState; onSignIn: () => void }) {
+// the signed-in email as a small menu (Sign out / Delete account) when logged in.
+function AccountChip({ auth, onSignIn, onChangePassword, onDeleteAccount }: { auth: AuthState; onSignIn: () => void; onChangePassword: () => void; onDeleteAccount: () => void }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false); };
+    window.addEventListener('mousedown', onDoc);
+    return () => window.removeEventListener('mousedown', onDoc);
+  }, [open]);
   if (!auth.ready) return null;
   if (!auth.user) return <button className="secondary" onClick={onSignIn} style={{ padding: '7px 12px', fontSize: 13 }}>Sign in (Optional)</button>;
   const email = auth.user.email || 'account';
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 8, background: 'var(--panel)', border: '1px solid var(--line)', borderRadius: 8, padding: '4px 5px 4px 10px' }}>
-      <span title={email} style={{ fontSize: 12.5, color: 'var(--text)', maxWidth: 150, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{email}</span>
-      <button className="secondary" onClick={() => auth.signOut()} title="Sign out" style={{ padding: '3px 9px', fontSize: 11 }}>Sign out</button>
+    <div ref={ref} style={{ position: 'relative' }}>
+      <button className="secondary" onClick={() => setOpen((v) => !v)} title="Account"
+        style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '6px 10px', maxWidth: 190 }}>
+        <span title={email} style={{ fontSize: 12.5, color: 'var(--text)', maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{email}</span>
+        <span style={{ color: 'var(--muted)', fontSize: 10 }}>▾</span>
+      </button>
+      {open && (
+        <div style={{ position: 'absolute', right: 0, top: 'calc(100% + 6px)', width: 210, background: 'var(--panel)', border: '1px solid var(--line)', borderRadius: 9, padding: 6, zIndex: 120, boxShadow: '0 14px 40px #000000aa' }}>
+          <button className="secondary" onClick={() => { setOpen(false); onChangePassword(); }} style={{ width: '100%', textAlign: 'left', padding: '8px 10px', border: 0, background: 'transparent' }}>Change password…</button>
+          <button className="secondary" onClick={() => { setOpen(false); auth.signOut(); }} style={{ width: '100%', textAlign: 'left', padding: '8px 10px', border: 0, background: 'transparent' }}>Sign out</button>
+          <div style={{ height: 1, background: 'var(--line)', margin: '4px 0' }} />
+          <button className="secondary" onClick={() => { setOpen(false); onDeleteAccount(); }} title="Permanently delete your account and shared items"
+            style={{ width: '100%', textAlign: 'left', padding: '8px 10px', border: 0, background: 'transparent', color: '#ff8a8a' }}>Delete account…</button>
+        </div>
+      )}
     </div>
   );
 }

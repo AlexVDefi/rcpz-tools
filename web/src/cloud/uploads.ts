@@ -3,6 +3,7 @@ import type { Session } from '@supabase/supabase-js';
 import { getSupabase } from './supabase';
 import { deleteUpload, fileUrl } from './api';
 import { QUOTA_BYTES } from './config';
+import { normalizeShareMeta, type ShareMeta } from './share-meta';
 
 export interface UploadRow {
   id: string;
@@ -12,6 +13,7 @@ export interface UploadRow {
   kind: string | null;
   created_at: string;
   url: string;
+  meta: ShareMeta | null; // what the render depicts (equipped items + mods); null for older shares
 }
 
 // The signed-in user's shares, read straight from Supabase under row-level security (each user
@@ -27,9 +29,11 @@ export function useCloudUploads(session: Session | null) {
     setLoading(true);
     try {
       const { data } = await sb.from('uploads')
-        .select('id,key,size,content_type,kind,created_at')
+        .select('id,key,size,content_type,kind,created_at,meta')
         .order('created_at', { ascending: false });
-      setRows((data ?? []).map((r) => ({ ...r, size: Number(r.size), url: fileUrl(r.key) })) as UploadRow[]);
+      setRows((data ?? []).map((r) => ({
+        ...r, size: Number(r.size), url: fileUrl(r.key), meta: normalizeShareMeta((r as { meta?: unknown }).meta),
+      })) as UploadRow[]);
     } finally { setLoading(false); }
   }, [sb, session]);
 
@@ -44,3 +48,5 @@ export function useCloudUploads(session: Session | null) {
   const used = rows.reduce((n, r) => n + r.size, 0);
   return { rows, used, limit: QUOTA_BYTES, loading, refresh, remove };
 }
+
+export type CloudUploads = ReturnType<typeof useCloudUploads>;
