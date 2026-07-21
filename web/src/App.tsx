@@ -144,9 +144,9 @@ export function App() {
     <div style={{ maxWidth: wide ? 'none' : 1000, margin: wide ? 0 : '0 auto', padding: wide ? '14px 20px' : '26px 24px 48px' }}>
       <header style={{ position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <img src={logoUrl} alt="PZ Character Studio" width={38} height={38} style={{ width: 38, height: 38, borderRadius: 9, objectFit: 'cover', display: 'block', border: '1px solid var(--line)' }} />
+          <img src={logoUrl} alt="PZ Survivor Studio" width={38} height={38} style={{ width: 38, height: 38, borderRadius: 9, objectFit: 'cover', display: 'block', border: '1px solid var(--line)' }} />
           <div>
-            <div style={{ fontSize: 19, fontWeight: 700, lineHeight: 1.1 }}>PZ Character Studio</div>
+            <div style={{ fontSize: 19, fontWeight: 700, lineHeight: 1.1 }}>PZ Survivor Studio</div>
             <div style={{ color: 'var(--muted)', fontSize: 12.5 }}>Dress, pose and export your survivors</div>
           </div>
         </div>

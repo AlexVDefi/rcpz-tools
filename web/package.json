@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.0.0",
   "type": "module",
-  "description": "PZ Character Studio: a Chromium web app that reads your local Project Zomboid install + workshop mods via the File System Access API to browse, dress, pose, animate and export characters, and import a look from a save. Fully client-side.",
+  "description": "PZ Survivor Studio: a Chromium web app that reads your local Project Zomboid install + workshop mods via the File System Access API to browse, dress, pose, animate and export characters, and import a look from a save. Fully client-side.",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
