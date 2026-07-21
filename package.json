@@ -1,19 +1,23 @@
 {
   "name": "pz-icon-maker",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "description": "Render Project Zomboid 3D item models to inventory icons that match the in-game look.",
   "author": "AlexVDefi",
   "license": "GPL-3.0-or-later",
-  "homepage": "https://github.com/AlexVDefi/pz-icon-maker",
+  "homepage": "https://github.com/AlexVDefi/rcpz-tools",
   "repository": {
     "type": "git",
-    "url": "https://github.com/AlexVDefi/pz-icon-maker.git"
+    "url": "https://github.com/AlexVDefi/rcpz-tools.git"
   },
   "main": "src/app.js",
   "scripts": {
     "start": "electron .",
+    "build:ui": "cd web && npm run build:desktop",
+    "start:desktop": "npm run build:ui && electron .",
     "cli": "node src/cli.js",
-    "dist": "electron-builder --win zip",
+    "dist:studio": "npm run build:ui && electron-builder --config electron-builder-studio.json",
+    "dist:iconmaker": "electron-builder --config electron-builder-iconmaker.json",
+    "dist": "npm run dist:studio && npm run dist:iconmaker",
     "postinstall": "node scripts/vendor-three.js"
   },
   "dependencies": {
@@ -26,47 +30,5 @@
   "devDependencies": {
     "electron": "^32.2.0",
     "electron-builder": "^25.1.8"
-  },
-  "build": {
-    "appId": "dev.alexvdefi.pziconmaker",
-    "productName": "pz-icon-maker",
-    "files": [
-      "src/**/*",
-      "node_modules/**/*",
-      "package.json",
-      "LICENSE",
-      "THIRD-PARTY-NOTICES.md"
-    ],
-    "extraResources": [
-      {
-        "from": "vendor",
-        "to": "vendor"
-      }
-    ],
-    "asarUnpack": [
-      "**/node_modules/sharp/**",
-      "**/node_modules/@img/**",
-      "**/node_modules/koffi/**"
-    ],
-    "win": {
-      "target": [
-        {
-          "target": "zip",
-          "arch": [
-            "x64"
-          ]
-        }
-      ],
-      "artifactName": "pz-icon-maker-${version}-win-x64.${ext}"
-    },
-    "directories": {
-      "output": "dist"
-    },
-    "extraFiles": [
-      {
-        "from": "build/pz-icon-maker-cli.cmd",
-        "to": "pz-icon-maker-cli.cmd"
-      }
-    ]
   }
 }

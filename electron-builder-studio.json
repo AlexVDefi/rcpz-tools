@@ -1,0 +1,20 @@
+{
+  "appId": "dev.alexvdefi.pzsurvivorstudio",
+  "productName": "PZ Survivor Studio",
+  "extraMetadata": { "main": "src/studio.js", "name": "pz-survivor-studio" },
+  "directories": { "output": "dist/studio" },
+  "files": [
+    "src/studio.js",
+    "src/studioApp/**/*",
+    "src/preload.js",
+    "web/dist-desktop/**/*",
+    "package.json",
+    "LICENSE",
+    "THIRD-PARTY-NOTICES.md",
+    "!node_modules/**/*"
+  ],
+  "win": {
+    "target": [{ "target": "zip", "arch": ["x64"] }],
+    "artifactName": "PZ-Survivor-Studio-${version}-win-x64.${ext}"
+  }
+}

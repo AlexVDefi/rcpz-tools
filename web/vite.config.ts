@@ -50,8 +50,13 @@ function cspPlugin(csp: string): Plugin {
 export default defineConfig(({ mode }) => {
   // read VITE_ vars from .env files AND the real environment (Vercel injects build env there)
   const env = { ...loadEnv(mode, process.cwd(), 'VITE_'), ...process.env } as Record<string, string>;
+  // `--mode desktop` builds for the Electron app: relative asset paths (loaded over file://), its
+  // own output dir, and NO injected CSP (the desktop shell is trusted local content and turns off
+  // webSecurity to reach the cloud, so the meta-tag CSP would only get in the way).
+  const desktop = mode === 'desktop';
   return {
-    plugins: [react(), cspPlugin(buildCsp(env))],
+    base: desktop ? './' : '/',
+    plugins: [react(), ...(desktop ? [] : [cspPlugin(buildCsp(env))])],
     resolve: {
       alias: {
         '@shared': fileURLToPath(new URL('../shared', import.meta.url)),
@@ -67,6 +72,6 @@ export default defineConfig(({ mode }) => {
     },
     // assimpjs ships a prebuilt .wasm loaded at runtime; keep it an emitted asset.
     assetsInclude: ['**/*.wasm'],
-    build: { target: 'es2022' },
+    build: { target: 'es2022', outDir: desktop ? 'dist-desktop' : 'dist' },
   };
 });

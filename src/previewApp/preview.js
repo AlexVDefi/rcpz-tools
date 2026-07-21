@@ -391,7 +391,6 @@ function wire() {
   $('outBg').addEventListener('input', applyOutBg); // viewing aid; no re-render needed
   $('openMod').addEventListener('click', openMod);
   $('gameDirBtn').addEventListener('click', chooseGameDir);
-  $('charBtn').addEventListener('click', () => window.ipc.invoke('open-character'));
 
   $('attachTab').addEventListener('click', () => {
     const open = $('attachTab').classList.contains('active');

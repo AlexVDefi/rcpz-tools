@@ -27,12 +27,11 @@ function dataDir() {
 const ROLE_SCRIPT = {
   worker: ['renderWorker', 'main.js'],
   preview: ['previewApp', 'main.js'],
-  character: ['characterApp', 'main.js'],
 };
 
 /**
  * Build [command, args] to run one of our roles.
- * @param {'worker'|'preview'|'character'} role
+ * @param {'worker'|'preview'} role
  * @param {string[]} extra role arguments
  */
 function roleCommand(role, extra) {

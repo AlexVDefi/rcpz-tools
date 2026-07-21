@@ -10,7 +10,8 @@ import { AssetGrid, type GridItem } from './AssetGrid';
 import { Thumb } from './Thumb';
 import { exportPng, exportGif, exportVideo, download, type BgConfig, type Content } from './render/export-media';
 import { discoverSaves, importCharacter, type SaveEntry, type ParsedChar } from './save/save-import';
-import { idbHandles, hasPermission, requestPermission } from './platform/idb';
+import { hasPermission, requestPermission } from './platform/idb';
+import { pickDirectory, saveDir, loadDir } from './platform/platform';
 import { type AuthState } from './cloud/auth';
 import { type UploadRow, type CloudUploads } from './cloud/uploads';
 import { uploadRender, playerUrl } from './cloud/api';
@@ -1261,7 +1262,7 @@ function ImportModal({ onClose, onImport }: { onClose: () => void; onImport: (p:
   // remember the Zomboid folder for the session: auto-scan if we still have permission, else offer a one-click reconnect
   useEffect(() => {
     (async () => {
-      const h = await idbHandles.load(SAVES_KEY);
+      const h = await loadDir(SAVES_KEY);
       if (!h) return;
       if (await hasPermission(h)) scan(h); else setNeedReconnect(h);
     })();
@@ -1274,10 +1275,11 @@ function ImportModal({ onClose, onImport }: { onClose: () => void; onImport: (p:
   const pick = async () => {
     setBusy('Opening folder…');
     try {
-      const dir = await window.showDirectoryPicker({ id: 'pz-saves', mode: 'read' });
-      await idbHandles.save(SAVES_KEY, dir); setNeedReconnect(null);
+      const dir = await pickDirectory('pz-saves');
+      if (!dir) { setBusy(''); return; } // cancelled
+      await saveDir(SAVES_KEY, dir); setNeedReconnect(null);
       await scan(dir);
-    } catch (e) { setBusy((e as Error)?.name === 'AbortError' ? '' : 'error: ' + (e as Error).message); }
+    } catch (e) { setBusy('error: ' + (e as Error).message); }
   };
   const doImport = async (entry: SaveEntry) => {
     setBusy('Reading ' + entry.name + '…');

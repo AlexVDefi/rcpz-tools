@@ -1,8 +1,10 @@
-// Discover Project Zomboid workshop mods under a picked folder, over the File System
-// Access API. Steam layout: <picked>/…/content/108600/<workshopId>/mods/<modId>/…, where
-// each mod is either B42 (common/ + version dirs like 42, 42.13 with media/) or B41 (flat
-// media/). Returns each mod's ordered media roots (highest priority first) as AssetSources
-// the shared resolver/index consume directly. Case-insensitive throughout (FSA is not).
+// Discover Project Zomboid mods under a picked folder, whatever the layout:
+//   - Steam workshop:   <picked>/…/content/108600/<workshopId>/mods/<modId>/…
+//   - Zomboid/mods:     <picked>/<modId>/…                  (installed / local mods, children ARE mods)
+//   - Zomboid/Workshop: <picked>/<project>/Contents/mods/<modId>/…  (staging; also <project>/mods/<modId>)
+// A "mod" is a folder whose media lives directly (B41 flat), in versioned dirs (B42: 42, 42.13),
+// and/or in common/. We return each mod's ordered media roots (highest priority first) as
+// AssetSources the shared resolver/index consume directly. Case-insensitive throughout (FSA is not).
 import { createFsaAssetSource, type AssetSource } from './fsa-source';
 
 export interface DiscoveredMod {
@@ -93,32 +95,51 @@ async function looksLikeContent(dir: FileSystemDirectoryHandle): Promise<boolean
 }
 
 /**
- * Enumerate all mods under the picked workshop folder.
+ * Enumerate all mods under the picked folder - Steam `108600`, `Zomboid/mods`, `Zomboid/Workshop`,
+ * or a parent of any of those.
  * @param onProgress optional per-mod progress callback
  */
 export async function discoverWorkshopMods(picked: FileSystemDirectoryHandle, onProgress?: (n: number) => void): Promise<DiscoveredMod[]> {
-  const content = await findContentRoot(picked);
-  if (!content) return [];
   const mods: DiscoveredMod[] = [];
   const seen = new Set<string>();
-  for (const ws of await dirsOf(content)) {
-    // <wsId>/mods/<modId> and the occasional <wsId>/Contents/mods/<modId>
-    const modsParents = [await childDirCI(ws.handle, 'mods')];
-    const contents = await childDirCI(ws.handle, 'Contents');
-    if (contents) modsParents.push(await childDirCI(contents, 'mods'));
-    for (const modsDir of modsParents) {
-      if (!modsDir) continue;
-      for (const mod of await dirsOf(modsDir)) {
-        if (seen.has(mod.name)) continue;
-        const roots = await modRoots(mod.handle);
-        if (!roots.length) continue;
-        seen.add(mod.name);
-        const info = await readModInfo(roots, mod.name);
-        mods.push({ key: mod.name, name: info.name, author: info.author, workshopId: ws.name, modId: mod.name, roots });
-        onProgress?.(mods.length);
+  const add = async (modDir: FileSystemDirectoryHandle, wsId: string, roots: FileSystemDirectoryHandle[]) => {
+    if (seen.has(modDir.name) || !roots.length) return;
+    seen.add(modDir.name);
+    const info = await readModInfo([...roots, modDir], modDir.name); // mod.info sits in a root OR at the mod's top level
+    mods.push({ key: modDir.name, name: info.name, author: info.author, workshopId: wsId, modId: modDir.name, roots });
+    onProgress?.(mods.length);
+  };
+
+  // Pull mods out of one container: children that are themselves mods (Zomboid/mods), or wrap them in
+  // `mods/` (Steam <wsId>, Workshop <project>) or `Contents/mods/` (Workshop <project>).
+  const scanContainer = async (container: FileSystemDirectoryHandle) => {
+    for (const child of await dirsOf(container)) {
+      const direct = await modRoots(child.handle);
+      if (direct.length) { await add(child.handle, container.name, direct); continue; }
+      const nested = [await childDirCI(child.handle, 'mods')];
+      const contents = await childDirCI(child.handle, 'Contents');
+      if (contents) nested.push(await childDirCI(contents, 'mods'));
+      for (const modsDir of nested) {
+        if (!modsDir) continue;
+        for (const mod of await dirsOf(modsDir)) await add(mod.handle, child.name, await modRoots(mod.handle));
       }
     }
-  }
+  };
+
+  // The containers to scan: the pick itself, a Steam content/108600 it points at (or into), and a
+  // `mods` / `workshop` child (so pointing at the Zomboid folder picks up both).
+  const containers: FileSystemDirectoryHandle[] = [];
+  const push = (h: FileSystemDirectoryHandle | null) => { if (h && !containers.includes(h)) containers.push(h); };
+  push(picked);
+  push(await findContentRoot(picked));
+  push(await childDirCI(picked, 'mods'));
+  push(await childDirCI(picked, 'workshop'));
+
+  // The pick (or a mod child) might BE a single mod folder.
+  const self = await modRoots(picked);
+  if (self.length) await add(picked, picked.name, self);
+  for (const c of containers) await scanContainer(c);
+
   mods.sort((a, b) => a.name.localeCompare(b.name));
   return mods;
 }

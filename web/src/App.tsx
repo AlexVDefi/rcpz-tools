@@ -3,7 +3,8 @@ import { buildAssetIndex } from '@shared/asset-index.js';
 import { listClothing, listClips, listHair, listHeldItems } from '@shared/character-core.js';
 import { createFsaAssetSource } from './platform/fsa-source';
 import { discoverWorkshopMods, modSources, type DiscoveredMod } from './platform/mod-discovery';
-import { idbHandles, idbCache, hasPermission, requestPermission, storageUsage } from './platform/idb';
+import { idbCache, hasPermission, requestPermission, storageUsage } from './platform/idb';
+import { pickDirectory, saveDir, loadDir, fileAccessSupported, isDesktop } from './platform/platform';
 import { converter } from './render/converter';
 import { CharacterViewer } from './CharacterViewer';
 import { SharedGallery } from './SharedGallery';
@@ -18,10 +19,11 @@ import logoUrl from './assets/logo.png';
 import kofiUrl from './assets/kofi_symbol.svg';
 
 const NAV_H = 36; // uniform height for all header controls
+const DESKTOP_APP_URL = 'https://github.com/AlexVDefi/rcpz-tools/releases'; // desktop app download
 const INSTALL_KEY = 'pz-install';
 const WORKSHOP_KEY = 'pz-workshop';
 const ACTIVE_KEY = 'pz-active-mods';
-const fsaSupported = typeof (window as unknown as { showDirectoryPicker?: unknown }).showDirectoryPicker === 'function';
+const fsaSupported = fileAccessSupported; // true in the desktop app (native fs) or an FSA-capable browser
 
 type Phase = 'unsupported' | 'idle' | 'need-permission' | 'scanning' | 'ready' | 'error';
 type View = 'overview' | 'character' | 'shared';
@@ -31,6 +33,23 @@ const SCAN_STEPS: ScanStep[] = ['scripts', 'clothing', 'anims'];
 const STEP_NAME: Record<ScanStep, string> = { scripts: 'Scripts', clothing: 'Clothing', anims: 'Animations' };
 const STEP_VERB: Record<ScanStep, string> = { scripts: 'Reading scripts', clothing: 'Reading clothing', anims: 'Indexing animations' };
 interface Counts { clothing: number; clips: number; held: number; hairM: number; hairF: number; beards: number; modClothing: number; }
+
+// Sanity-check a picked folder before scanning it: a real PZ install has a `media` folder that
+// itself contains scripts/lua/clothing. Rejects wrong folders (and the `media` folder itself) with
+// a clear message instead of silently scanning nothing. Works for both FSA and native handles.
+async function looksLikePzInstall(dir: FileSystemDirectoryHandle): Promise<boolean> {
+  try {
+    let media: FileSystemDirectoryHandle | null = null;
+    for await (const e of dir.values()) {
+      if (e.kind === 'directory' && e.name.toLowerCase() === 'media') { media = e as FileSystemDirectoryHandle; break; }
+    }
+    if (!media) return false;
+    for await (const e of media.values()) {
+      if (e.kind === 'directory' && ['scripts', 'lua', 'clothing'].includes(e.name.toLowerCase())) return true;
+    }
+    return false;
+  } catch { return false; }
+}
 
 export function App() {
   const [phase, setPhase] = useState<Phase>(fsaSupported ? 'idle' : 'unsupported');
@@ -118,7 +137,7 @@ export function App() {
   useEffect(() => {
     if (!fsaSupported) return;
     (async () => {
-      const inst = await idbHandles.load(INSTALL_KEY);
+      const inst = await loadDir(INSTALL_KEY);
       if (!inst) return;
       if (!(await hasPermission(inst))) { setInstallHandle(inst); setNeedPerm(true); return; }
       // Committed to a scan: set the handle AND raise the modal in one batched render, so the
@@ -127,7 +146,7 @@ export function App() {
       setInstallHandle(inst); setPhase('scanning'); setOverlay('in');
       let discovered: DiscoveredMod[] = [];
       try {
-        const ws = await idbHandles.load(WORKSHOP_KEY);
+        const ws = await loadDir(WORKSHOP_KEY);
         if (ws && await hasPermission(ws)) { discovered = await discoverWorkshopMods(ws); setMods(discovered); }
       } catch { /* discovery is best-effort; fall through to a vanilla rebuild so the modal never sticks */ }
       const active = JSON.parse(localStorage.getItem(ACTIVE_KEY) || '[]').map((k: string) => discovered.find((m) => m.key === k)).filter(Boolean) as DiscoveredMod[];
@@ -137,10 +156,16 @@ export function App() {
 
   const pickInstall = useCallback(async () => {
     try {
-      const h = await window.showDirectoryPicker({ id: 'pz-install', mode: 'read' });
-      await idbHandles.save(INSTALL_KEY, h); setInstallHandle(h); setNeedPerm(false);
+      const h = await pickDirectory('pz-install');
+      if (!h) return; // cancelled
+      if (!(await looksLikePzInstall(h))) {
+        setError(`"${h.name}" is not a Project Zomboid install. Pick the folder that contains the "media" folder - e.g. …\\steamapps\\common\\ProjectZomboid.`);
+        return;
+      }
+      setError('');
+      await saveDir(INSTALL_KEY, h); setInstallHandle(h); setNeedPerm(false);
       rebuild(h, activeMods);
-    } catch (e) { if ((e as Error).name !== 'AbortError') setError((e as Error).message); }
+    } catch (e) { setError((e as Error).message); }
   }, [rebuild, activeMods]);
 
   const reconnect = useCallback(async () => {
@@ -151,8 +176,9 @@ export function App() {
 
   const pickWorkshop = useCallback(async () => {
     try {
-      const h = await window.showDirectoryPicker({ id: 'pz-workshop', mode: 'read' });
-      await idbHandles.save(WORKSHOP_KEY, h);
+      const h = await pickDirectory('pz-workshop');
+      if (!h) return; // cancelled
+      await saveDir(WORKSHOP_KEY, h);
       setProgress('discovering mods…');
       // enumeration only (reads each mod.info) - no media scan yet, so it's fast. The user
       // then picks which mods to load and hits Apply, so they never wait on mods they don't want.
@@ -231,7 +257,9 @@ export function App() {
             Point the tool at your local Project Zomboid folder to browse every outfit, weapon and animation, dress and pose a character, import a look straight from a save, and export stills, GIFs or MP4s. It all runs on your machine, and your game files never leave it{cloudConfigured ? ' - only renders you choose to share online get uploaded.' : '.'}
           </p>
           <button onClick={pickInstall} style={{ padding: '11px 22px', fontSize: 15 }}>Choose your PZ install folder…</button>
-          <div style={{ color: 'var(--muted)', fontSize: 12, marginTop: 10 }}>The folder that contains <code>media/</code>. Chromium browsers only.</div>
+          <div style={{ color: 'var(--muted)', fontSize: 12, marginTop: 10 }}>The folder that contains <code>media/</code>.{isDesktop ? '' : ' Chromium browsers only.'}</div>
+          {/* the desktop app reads any folder natively, so the browser-only C:\Program Files help is web-only */}
+          {!isDesktop && <div style={{ textAlign: 'left', maxWidth: 560, margin: '14px auto 0' }}><ProgramFilesHelp /></div>}
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'center', marginTop: 28 }}>
             {['Grids & thumbnails', 'Dress, pose & animate', 'Import from a save', 'Export PNG / GIF / MP4'].map((f) => (
               <span key={f} style={{ background: 'var(--panel)', border: '1px solid var(--line)', borderRadius: 999, padding: '6px 13px', fontSize: 12.5, color: 'var(--muted)' }}>{f}</span>
@@ -254,9 +282,9 @@ export function App() {
               <FolderChip label="Game install" name={installHandle?.name} connected={!!installHandle && !needPerm}
                 warn={needPerm ? 'reconnect needed' : undefined} action={needPerm ? 'Reconnect' : 'Change'} onAction={needPerm ? reconnect : pickInstall} disabled={phase === 'scanning'}
                 hint={<>The Project Zomboid install folder, which contains a <b>media</b> folder. On Steam: right-click <b>Project Zomboid</b> → <b>Manage</b> → <b>Browse local files</b>. Typical path: <code>Steam\steamapps\common\ProjectZomboid</code>.</>} />
-              <FolderChip label="Workshop mods" name={mods.length ? `${mods.length} mods found` : undefined} connected={mods.length > 0}
+              <FolderChip label="Mods" name={mods.length ? `${mods.length} mods found` : undefined} connected={mods.length > 0}
                 action={mods.length ? 'Change' : 'Add'} onAction={pickWorkshop} disabled={phase === 'scanning'}
-                hint={<>Your subscribed Steam Workshop mods. In the same Steam library as the game, open <code>steamapps\workshop\content\108600</code> and pick that folder (or its parent). Optional, only needed for modded content.</>} />
+                hint={<>Point at any mods folder and it works out the layout: your Steam Workshop content (<code>steamapps\workshop\content\108600</code>), your <code>Zomboid\mods</code>, or <code>Zomboid\Workshop</code> - or the <code>Zomboid</code> folder to get both. Optional, only needed for modded content.</>} />
             </div>
             {error && <p style={{ color: '#ff8a8a', margin: '10px 0 0' }}>Error: {error}</p>}
             <SafetyInfo />
@@ -472,6 +500,29 @@ function ScanOverlay({ scan, closing }: { scan: Scan | null; closing: boolean })
   );
 }
 
+// Guidance for the common "can't open this folder because it contains system files" error: the
+// browser refuses to read C:\Program Files, so we point people at the desktop app, which doesn't
+// have that restriction. Web-only (the desktop app hides this).
+function ProgramFilesHelp() {
+  const code = { background: '#00000066', padding: '1px 5px', borderRadius: 4, fontSize: 12 } as const;
+  return (
+    <details className="safety" style={{ background: '#14141a', border: '1px solid var(--line)', borderRadius: 9 }}>
+      <summary style={{ padding: '11px 13px', fontWeight: 600, fontSize: 13, display: 'flex', alignItems: 'center', gap: 10 }}>
+        <span style={{ width: 22, height: 22, borderRadius: 6, background: '#3a3320', color: '#e0c060', display: 'grid', placeItems: 'center', flexShrink: 0, fontWeight: 700 }}>!</span>
+        Game on your C: drive? Getting a "contains system files" error?
+        <span className="chev" style={{ marginLeft: 'auto', color: 'var(--muted)' }}>▾</span>
+      </summary>
+      <div style={{ padding: '2px 14px 14px', color: 'var(--muted)', fontSize: 13, lineHeight: 1.6 }}>
+        <p>That message comes from your browser, not this tool: for security, browsers won't let web pages read <code style={code}>C:\Program Files</code> (Steam's default location), and they can't override it.</p>
+        <p style={{ margin: '10px 0 0' }}>The easy fix is the free <b style={{ color: 'var(--text)' }}>desktop app</b> - the exact same PZ Survivor Studio, installed on your PC. It uses Windows' normal file access instead of the browser's, so it opens your game <b>anywhere, including <code style={code}>C:\Program Files</code></b>, with nothing else to set up.</p>
+        <a href={DESKTOP_APP_URL} target="_blank" rel="noopener noreferrer"
+          style={{ display: 'inline-block', marginTop: 12, padding: '9px 16px', borderRadius: 8, background: 'var(--accent)', color: '#fff', fontWeight: 600, fontSize: 13, textDecoration: 'none' }}>Download the desktop app →</a>
+        <p style={{ margin: '12px 0 0', fontSize: 12.5 }}>It's just as safe: the same tool, it only <b>reads</b> your game files to display them, everything runs on your own machine, and nothing is uploaded unless you choose to share a render. On first launch Windows may say the publisher is unknown (the app isn't code-signed, which is normal for small free tools) - click <b>More info → Run anyway</b>.</p>
+      </div>
+    </details>
+  );
+}
+
 // Plain-language explanation of why the tool reads local files and why that is safe.
 function SafetyInfo() {
   return (
@@ -484,19 +535,39 @@ function SafetyInfo() {
         <span className="chev" style={{ marginLeft: 'auto', color: 'var(--muted)' }}>▾</span>
       </summary>
       <div style={{ padding: '2px 14px 14px', color: 'var(--muted)', fontSize: 13, lineHeight: 1.6 }}>
-        <h4>Why it needs your files</h4>
-        <p>Project Zomboid stores its characters as 3D models, textures and scripts inside the game's folder (and inside workshop mods). To show and dress a character exactly like the game does, the tool has to read those files. To import a character's look, it reads that save's <code>players.db</code>.</p>
-        <h4>What it does with them</h4>
-        <p>It only <b>reads</b> them, into your browser's memory, to build the thumbnails and render the 3D character. Every step (reading files, converting models, drawing the character, exporting images) happens on your own computer.</p>
-        <h4>Why it can't harm your files or your game</h4>
-        <p><b>Read-only.</b> The browser only ever grants this page permission to <i>read</i>. It cannot create, write, move, rename or delete anything, and there is no code here that modifies files, so it cannot change or break your game or your saves.</p>
-        <p><b>Only the folder you choose.</b> The File System Access API is sandboxed by the browser: the page can see only the exact folder you pick, nothing else on your PC, and only for this tab. The permission isn't remembered, so you grant it again each session.</p>
-        {cloudConfigured ? (
-          <p><b>Your game files never leave your machine.</b> This is a static page with no server of its own. A strict Content-Security-Policy tells your browser to block every network request except to this app and, only if you choose to sign in, its optional sign-in and sharing service. Your game files, saves and mods are read-only and are never uploaded - the only thing that can ever leave your machine is a render you explicitly click to share, and only that render.</p>
+        {isDesktop ? (
+          <>
+            <h4>Why it needs your files</h4>
+            <p>Project Zomboid stores its characters as 3D models, textures and scripts inside the game's folder (and inside mods). To show and dress a character exactly like the game does, the app has to read those files. To import a character's look, it reads that save's <code>players.db</code>.</p>
+            <h4>What it does with them</h4>
+            <p>It only <b>reads</b> them, into memory, to build the thumbnails and render the 3D character. Every step - reading files, converting models, drawing the character, exporting images - happens on your own computer.</p>
+            <h4>Why it can't harm your files or your game</h4>
+            <p><b>Read-only.</b> The app only ever reads your game files to display them. It never creates, writes, moves, renames or deletes anything, so it cannot change or break your game or your saves.</p>
+            <p><b>Only what you point it at.</b> It reads only the folders you choose - your game install, your mods, or a save. As a desktop app it uses your operating system's own file access rather than the browser's sandbox, so it can open your game anywhere (including under <code>C:\Program Files</code>) and it remembers your folder so you don't pick it again each time.</p>
+            {cloudConfigured ? (
+              <p><b>Your game files never leave your machine.</b> Everything runs locally on your PC. Your game files, saves and mods are only ever read and are never uploaded - the only thing that can leave your machine is a render you explicitly choose to share online (which needs you to sign in), and only that render.</p>
+            ) : (
+              <p><b>Nothing is uploaded.</b> Everything runs locally on your PC; no game file, save or mod is ever sent anywhere.</p>
+            )}
+            <p><b>You stay in control.</b> Close the app and it stops reading your files. The only things kept are small local caches (thumbnails and converted meshes) on your PC, which you can wipe anytime with the <b>Clear</b> button. They are never sent anywhere.</p>
+          </>
         ) : (
-          <p><b>Nothing is uploaded, and the browser enforces it.</b> There is no server behind this; it's a static page. A strict Content-Security-Policy instructs your browser to block <i>any</i> network request except loading the page's own code, so no game file, save or mod can leave your machine even if there were a bug.</p>
+          <>
+            <h4>Why it needs your files</h4>
+            <p>Project Zomboid stores its characters as 3D models, textures and scripts inside the game's folder (and inside workshop mods). To show and dress a character exactly like the game does, the tool has to read those files. To import a character's look, it reads that save's <code>players.db</code>.</p>
+            <h4>What it does with them</h4>
+            <p>It only <b>reads</b> them, into your browser's memory, to build the thumbnails and render the 3D character. Every step (reading files, converting models, drawing the character, exporting images) happens on your own computer.</p>
+            <h4>Why it can't harm your files or your game</h4>
+            <p><b>Read-only.</b> The browser only ever grants this page permission to <i>read</i>. It cannot create, write, move, rename or delete anything, and there is no code here that modifies files, so it cannot change or break your game or your saves.</p>
+            <p><b>Only the folder you choose.</b> The File System Access API is sandboxed by the browser: the page can see only the exact folder you pick, nothing else on your PC, and only for this tab. The permission isn't remembered, so you grant it again each session.</p>
+            {cloudConfigured ? (
+              <p><b>Your game files never leave your machine.</b> This is a static page with no server of its own. A strict Content-Security-Policy tells your browser to block every network request except to this app and, only if you choose to sign in, its optional sign-in and sharing service. Your game files, saves and mods are read-only and are never uploaded - the only thing that can ever leave your machine is a render you explicitly click to share, and only that render.</p>
+            ) : (
+              <p><b>Nothing is uploaded, and the browser enforces it.</b> There is no server behind this; it's a static page. A strict Content-Security-Policy instructs your browser to block <i>any</i> network request except loading the page's own code, so no game file, save or mod can leave your machine even if there were a bug.</p>
+            )}
+            <p><b>You stay in control.</b> Close the tab and all access ends. The only things kept are small local caches (thumbnails and converted meshes) in your browser's own storage, which you can wipe anytime with the <b>Clear</b> button. They are never sent anywhere.</p>
+          </>
         )}
-        <p><b>You stay in control.</b> Close the tab and all access ends. The only things kept are small local caches (thumbnails and converted meshes) in your browser's own storage, which you can wipe anytime with the <b>Clear</b> button. They are never sent anywhere.</p>
       </div>
     </details>
   );

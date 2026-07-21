@@ -243,17 +243,6 @@ function cmdPreview(args) {
   child.on('error', (e) => die(e.message));
 }
 
-function cmdCharacter(args) {
-  const modPath = args._[1];
-  if (!modPath) die('usage: pz-icon-maker character <modPath> [--game-dir dir]');
-  const extra = ['--mod', path.resolve(modPath)];
-  const gd = gameRoots(args)[0];
-  if (gd) extra.push('--game-dir', gd);
-  const child = spawnRole('character', extra);
-  child.on('exit', (code) => process.exit(code || 0));
-  child.on('error', (e) => die(e.message));
-}
-
 function runWorker(jobPath) {
   return new Promise((resolve, reject) => {
     const child = spawnRole('worker', ['--job', jobPath]);
@@ -272,7 +261,6 @@ async function main() {
   if (cmd === 'slots') return cmdSlots(args);
   if (cmd === 'build') return cmdBuild(args);
   if (cmd === 'preview') return cmdPreview(args);
-  if (cmd === 'character') return cmdCharacter(args);
   if (cmd === 'set-game-dir') return cmdSetGameDir(args);
   console.log('pz-icon-maker <command>');
   console.log('  set-game-dir <path>            save your Project Zomboid install (for vanilla assets)');
@@ -280,7 +268,6 @@ async function main() {
   console.log('  list    <modPath>               resolve items -> icons, show mapping');
   console.log('  slots   <modPath> [--item N]    list weapon attachment slots + parts');
   console.log('  preview <modPath>               open the interactive preview/adjust UI');
-  console.log('  character <modPath>             open the character + animation viewer');
   console.log('  build   <modPath> [options]     render icons');
   console.log('    --game-dir dir    PZ install for this run (overrides the saved one)');
   console.log(`\n  settings: ${SETTINGS_FILE}`);

@@ -1,0 +1,25 @@
+{
+  "appId": "dev.alexvdefi.pziconmaker",
+  "productName": "PZ Icon Maker",
+  "extraMetadata": { "main": "src/iconmaker.js", "name": "pz-icon-maker" },
+  "directories": { "output": "dist/iconmaker" },
+  "files": [
+    "src/**/*",
+    "node_modules/**/*",
+    "package.json",
+    "LICENSE",
+    "THIRD-PARTY-NOTICES.md",
+    "!web/dist-desktop/**/*"
+  ],
+  "asarUnpack": [
+    "**/node_modules/sharp/**",
+    "**/node_modules/@img/**",
+    "**/node_modules/koffi/**"
+  ],
+  "extraResources": [{ "from": "vendor", "to": "vendor" }],
+  "extraFiles": [{ "from": "build/pz-icon-maker-cli.cmd", "to": "pz-icon-maker-cli.cmd" }],
+  "win": {
+    "target": [{ "target": "zip", "arch": ["x64"] }],
+    "artifactName": "PZ-Icon-Maker-${version}-win-x64.${ext}"
+  }
+}
