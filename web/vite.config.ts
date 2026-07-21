@@ -52,6 +52,10 @@ export default defineConfig(({ mode }) => {
     resolve: {
       alias: {
         '@shared': fileURLToPath(new URL('../shared', import.meta.url)),
+        // shared/ (imported via @shared) lives outside web/, so its bare `assimpjs` import would
+        // resolve from the repo-root node_modules - present locally but NOT on Vercel, where only
+        // web/ is installed. Pin it to web/node_modules so it resolves regardless of importer path.
+        assimpjs: fileURLToPath(new URL('./node_modules/assimpjs', import.meta.url)),
       },
     },
     server: {
