@@ -13,6 +13,7 @@ export interface ShareHeldItem extends ShareItem {
 
 export interface ShareMeta {
   v: 1;
+  character?: string; // the character's name, if it has one (imported/saved), for the share viewer + player page
   gender?: 'male' | 'female';
   clothing: ShareItem[];
   held: ShareHeldItem[];
@@ -27,6 +28,7 @@ export function normalizeShareMeta(raw: unknown): ShareMeta | null {
   if (!Array.isArray(m.clothing) && !Array.isArray(m.held)) return null;
   return {
     v: 1,
+    character: typeof m.character === 'string' ? m.character : undefined,
     gender: m.gender === 'female' ? 'female' : m.gender === 'male' ? 'male' : undefined,
     clothing: Array.isArray(m.clothing) ? m.clothing : [],
     held: Array.isArray(m.held) ? m.held : [],

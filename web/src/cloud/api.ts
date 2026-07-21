@@ -53,6 +53,9 @@ export async function deleteAccount(token: string): Promise<void> {
 }
 
 export const fileUrl = (key: string) => `${CLOUD_API}/f/${key}`;
+// The branded "custom player" page for a share: shows the render with the character name, the mods
+// used, and the PZ Survivor Studio brand. Served by the Worker at /p/<key>.
+export const playerUrl = (key: string) => `${CLOUD_API}/p/${key}`;
 
 function errorFrom(body: string, status: number): string {
   try { const j = JSON.parse(body); if (j?.error) return String(j.error); } catch { /* not json */ }

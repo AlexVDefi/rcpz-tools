@@ -8,7 +8,9 @@
 //   DELETE /object?key=         verify + ownership-check, delete the object and its row.
 //   DELETE /account             verify, then PERMANENTLY delete the user: every R2 object under
 //                               their prefix, their upload rows, and their auth account.
-//   GET    /f/<key>             public: stream the object from R2 (this is the shareable link).
+//   GET    /f/<key>             public: stream the object from R2 (this is the raw shareable link).
+//   GET    /p/<key>             public: a branded "custom player" HTML page wrapping the render with
+//                               the character name + mods used + the PZ Survivor Studio brand.
 //
 // The browser never holds any storage secret. The quota and ownership are enforced here; the
 // Supabase `uploads` table is the record the app reads (under RLS) to show a user their shares.
@@ -34,6 +36,7 @@ export default {
     if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: corsHeaders });
     // public reads need no CORS wrapper (loaded as media / opened directly)
     if (request.method === 'GET' && url.pathname.startsWith('/f/')) return serve(url, env);
+    if (request.method === 'GET' && url.pathname.startsWith('/p/')) return playerPage(url, env);
     if (request.method === 'POST' && url.pathname === '/upload') return withCors(await upload(request, url, env), corsHeaders);
     if (request.method === 'DELETE' && url.pathname === '/object') return withCors(await remove(request, url, env), corsHeaders);
     if (request.method === 'DELETE' && url.pathname === '/account') return withCors(await deleteAccount(request, env), corsHeaders);
@@ -137,6 +140,125 @@ async function serve(url: URL, env: Env): Promise<Response> {
   headers.set('cache-control', 'public, max-age=31536000, immutable');
   headers.set('access-control-allow-origin', '*'); // let the render embed on any site
   return new Response(obj.body, { headers });
+}
+
+interface PlayerMeta {
+  character?: string;
+  gender?: 'male' | 'female';
+  clothing?: { name?: string; mod?: string | null }[];
+  held?: { name?: string; hand?: string; mod?: string | null }[];
+  mods?: string[];
+}
+
+// The branded "custom player" page for a share. Looks up the row's meta (service_role, since this
+// page is public by design), then returns a self-contained HTML page that embeds the raw render
+// from /f/<key> and shows the character name, the mods used, and the PZ Survivor Studio brand.
+async function playerPage(url: URL, env: Env): Promise<Response> {
+  const key = decodeURIComponent(url.pathname.slice('/p/'.length));
+  if (!key || !key.startsWith('u/')) return notFoundPage();
+  let row: { kind?: string | null; content_type?: string | null; meta?: PlayerMeta | null } | null = null;
+  try {
+    const res = await fetch(`${env.SUPABASE_URL}/rest/v1/uploads?key=eq.${encodeURIComponent(key)}&select=kind,content_type,meta`, { headers: svc(env) });
+    if (res.ok) { const arr = (await res.json()) as unknown; row = Array.isArray(arr) ? (arr[0] ?? null) : null; }
+  } catch { /* fall through to 404 */ }
+  if (!row) return notFoundPage();
+  const html = playerHtml(url.origin, key, row);
+  return new Response(html, { headers: {
+    'content-type': 'text/html; charset=utf-8',
+    'cache-control': 'public, max-age=300',
+    'x-content-type-options': 'nosniff',
+    'referrer-policy': 'no-referrer',
+    // strict CSP: no scripts at all, media/images only from this origin. Belt-and-braces on top of
+    // HTML-escaping every user-derived value (character name, item/mod names).
+    'content-security-policy': "default-src 'none'; img-src 'self'; media-src 'self'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'",
+  } });
+}
+
+function notFoundPage(): Response {
+  const html = '<!doctype html><meta charset="utf-8"><title>Not found - PZ Survivor Studio</title>' +
+    '<body style="margin:0;background:#141418;color:#e7e7ea;font:15px system-ui,sans-serif;display:grid;place-items:center;height:100vh;text-align:center">' +
+    '<div><div style="font-size:30px;color:#3a3a44">&#9672;</div><p>This share does not exist or was deleted.</p>' +
+    '<p><a style="color:#5b8cff" href="https://survivor.rcpz.tools">Go to PZ Survivor Studio</a></p></div>';
+  return new Response(html, { status: 404, headers: { 'content-type': 'text/html; charset=utf-8' } });
+}
+
+const esc = (s: string) => String(s).replace(/[&<>"']/g, (c) => (
+  { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] as string));
+
+function playerHtml(origin: string, key: string, row: { kind?: string | null; content_type?: string | null; meta?: PlayerMeta | null }): string {
+  const media = `${origin}/f/${key.split('/').map(encodeURIComponent).join('/')}`;
+  const isVideo = row.kind === 'mp4' || (row.content_type || '').startsWith('video/');
+  const meta = row.meta || {};
+  const name = (meta.character || '').trim() || 'A PZ Survivor Studio render';
+  const held = Array.isArray(meta.held) ? meta.held.filter((h) => h && h.name) : [];
+  const clothing = Array.isArray(meta.clothing) ? meta.clothing.filter((c) => c && c.name) : [];
+  const mods = Array.isArray(meta.mods) ? meta.mods.filter(Boolean) : [];
+  const desc = mods.length ? `Made with PZ Survivor Studio. Mods used: ${mods.join(', ')}.` : 'Made with PZ Survivor Studio.';
+
+  const modChip = (m: string | null | undefined) =>
+    m ? `<span class="tag">${esc(m)}</span>` : '<span class="tag vanilla">Vanilla</span>';
+  const itemRow = (nm: string, extra: string, mod: string | null | undefined) =>
+    `<div class="item"><span class="iname">${esc(nm)}</span>${extra}${modChip(mod)}</div>`;
+
+  const section = (title: string, rows: string) => rows ? `<div class="sec"><div class="sechd">${esc(title)}</div>${rows}</div>` : '';
+  const heldRows = held.map((h) => itemRow(h.name!, `<span class="hand">${h.hand === 'left' ? 'L' : 'R'}</span>`, h.mod)).join('');
+  const clothingRows = clothing.map((c) => itemRow(c.name!, '', c.mod)).join('');
+  const modsBlock = mods.length ? `<div class="sec"><div class="sechd">Mods used (${mods.length})</div><div class="tags">${mods.map((m) => `<span class="tag">${esc(m)}</span>`).join('')}</div></div>` : '';
+  const genderLine = meta.gender ? `<div class="sub">${meta.gender === 'female' ? 'Female' : 'Male'} survivor</div>` : '';
+
+  const mediaEl = isVideo
+    ? `<video src="${esc(media)}" controls autoplay muted loop playsinline></video>`
+    : `<img src="${esc(media)}" alt="${esc(name)}">`;
+
+  const ogMedia = isVideo
+    ? `<meta property="og:type" content="video.other"><meta property="og:video" content="${esc(media)}"><meta property="og:video:type" content="${esc(row.content_type || 'video/mp4')}">`
+    : `<meta property="og:type" content="website"><meta property="og:image" content="${esc(media)}"><meta name="twitter:card" content="summary_large_image"><meta name="twitter:image" content="${esc(media)}">`;
+
+  return `<!doctype html><html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${esc(name)} - PZ Survivor Studio</title>
+<meta name="description" content="${esc(desc)}">
+<meta property="og:site_name" content="PZ Survivor Studio">
+<meta property="og:title" content="${esc(name)}">
+<meta property="og:description" content="${esc(desc)}">
+${ogMedia}
+<style>
+:root{color-scheme:dark}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%}
+body{background:#141418;color:#e7e7ea;font:15px/1.55 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+main{min-height:100vh;display:flex}
+.stage{position:relative;flex:1;min-width:0;display:grid;place-items:center;padding:24px;background:repeating-conic-gradient(#26262c 0% 25%,#1d1d22 0% 50%) 50%/24px 24px}
+.stage img,.stage video{max-width:100%;max-height:calc(100vh - 48px);object-fit:contain;border-radius:8px;box-shadow:0 10px 40px #0009}
+.wm{position:absolute;right:20px;bottom:20px;display:flex;align-items:center;gap:6px;background:#000000ad;border:1px solid #ffffff26;border-radius:8px;padding:5px 11px;font-weight:600;font-size:13px}
+.info{width:330px;flex-shrink:0;padding:22px 20px;background:#1b1b21;border-left:1px solid #34343c;overflow:auto}
+.brand{display:flex;align-items:center;gap:8px;font-weight:700;font-size:13px;letter-spacing:.01em;color:#9a9aa6}
+.brand .dot{width:10px;height:10px;border-radius:3px;background:#5b8cff}
+h1{font-size:22px;margin:12px 0 2px;line-height:1.2;word-break:break-word}
+.sub{color:#9a9aa6;font-size:13px}
+.sec{margin-top:18px}
+.sechd{text-transform:uppercase;letter-spacing:.05em;font-size:11px;color:#9a9aa6;margin-bottom:7px}
+.item{display:flex;align-items:center;gap:7px;padding:6px 0;border-bottom:1px solid #ffffff10}
+.iname{flex:1;min-width:0;font-size:13.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.hand{width:19px;text-align:center;font-size:10px;font-weight:700;color:#fff;background:#5b8cff;border-radius:4px;padding:1px 0}
+.tags{display:flex;flex-wrap:wrap;gap:6px}
+.tag{font-size:11px;color:#8fb0ff;background:#0e1524;border:1px solid #2a3a5a;border-radius:999px;padding:2px 9px;max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tag.vanilla{color:#9a9aa6;background:#181820;border-color:#34343c}
+.cta{display:inline-block;margin-top:22px;padding:10px 15px;border-radius:8px;background:#5b8cff;color:#fff;text-decoration:none;font-weight:600;font-size:13.5px}
+.cta:hover{filter:brightness(1.08)}
+@media(max-width:800px){main{flex-direction:column}.info{width:auto;border-left:0;border-top:1px solid #34343c}.stage{padding:16px}.stage img,.stage video{max-height:70vh}}
+</style></head><body><main>
+<div class="stage">${mediaEl}<div class="wm"><span class="dot" style="background:#5b8cff;width:12px;height:12px;border-radius:3px;display:inline-block"></span>PZ Survivor Studio</div></div>
+<aside class="info">
+<div class="brand"><span class="dot"></span>PZ Survivor Studio</div>
+<h1>${esc(name)}</h1>
+${genderLine}
+${section(`Held (${held.length})`, heldRows)}
+${section(`Clothing (${clothing.length})`, clothingRows)}
+${modsBlock}
+<a class="cta" href="https://survivor.rcpz.tools">Create your own &rarr;</a>
+</aside>
+</main></body></html>`;
 }
 
 // Verify a Supabase access token by asking Supabase who it belongs to. Returns the user id or null.
