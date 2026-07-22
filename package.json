@@ -15,6 +15,7 @@
     "build:ui": "cd web && npm run build:desktop",
     "start:desktop": "npm run build:ui && electron .",
     "cli": "node src/cli.js",
+    "bake": "node tools/bake-assets.mjs",
     "dist:studio": "npm run build:ui && electron-builder --config electron-builder-studio.json",
     "dist:iconmaker": "electron-builder --config electron-builder-iconmaker.json",
     "dist": "npm run dist:studio && npm run dist:iconmaker",

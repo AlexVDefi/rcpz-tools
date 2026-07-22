@@ -1,5 +1,9 @@
 node_modules/
 dist/
+dist-desktop/
 work/
 out/
 *.log
+
+# Baked Project Zomboid assets (game files, not ours to commit). Hosted from R2, never git.
+asset-bake/
