@@ -439,15 +439,15 @@ export function App() {
             <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexShrink: 0 }}>
               {mobileCharView ? (
                 <>
+                  <MobileMenu auth={auth} steam={steam} view={view} setView={setView} onSignIn={() => setAuthOpen(true)} onChangePassword={() => setChangePwOpen(true)} onDeleteAccount={() => setDeleteOpen(true)} />
                   {index != null && langs.length > 1 && <LanguageGlobe langs={langs} value={itemLang} onChange={setItemLang} loading={langLoading} />}
-                  {homeButton}
                 </>
               ) : (
                 <>
                   {index != null && view !== 'character' && (
                     <button onClick={() => setView('character')} title="Open the character studio"
-                      style={{ height: NAV_H, padding: '0 12px', fontWeight: 600, boxShadow: '0 2px 10px #5b8cff55', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-                      <PersonStandingIcon /> Studio
+                      style={{ height: NAV_H, width: NAV_H, padding: 0, boxShadow: '0 2px 10px #5b8cff55', display: 'grid', placeItems: 'center' }}>
+                      <PersonStandingIcon />
                     </button>
                   )}
                   <MobileMenu auth={auth} steam={steam} view={view} setView={setView} onSignIn={() => setAuthOpen(true)} onChangePassword={() => setChangePwOpen(true)} onDeleteAccount={() => setDeleteOpen(true)} />
