@@ -1185,6 +1185,7 @@ function CharacterTab({ hairData, gender, setGender, skin, tones, onSkin, thumbs
   onOpenSaved: () => void;
 }) {
   const [kind, setKind] = useState<'hair' | 'beard'>('hair');
+  const isMobile = useIsMobile(); // phones can't reach local PZ saves, so hide the save-import action
 
   const hairItems = useMemo(() => [NONE_HAIR, ...(gender === 'female' ? hairData.hair.female : hairData.hair.male).map(toHairItem)], [hairData, gender]);
   const beardItems = useMemo(() => [NONE_HAIR, ...hairData.beards.map(toHairItem)], [hairData]);
@@ -1204,7 +1205,7 @@ function CharacterTab({ hairData, gender, setGender, skin, tones, onSkin, thumbs
           <button className="secondary" onClick={onOpenSaved} style={{ flex: 1, padding: '8px 12px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}>
             <span style={{ fontSize: 14 }}>★</span> Saved characters{savedCount ? ` (${savedCount})` : ''}
           </button>
-          <button className="secondary" onClick={onImport} style={{ flex: 1, padding: '8px 12px', background: 'var(--accent)', color: '#fff' }}>Import from a PZ save file…</button>
+          {!isMobile && <button className="secondary" onClick={onImport} style={{ flex: 1, padding: '8px 12px', background: 'var(--accent)', color: '#fff' }}>Import from a PZ save file…</button>}
         </div>
         <label style={{ color: 'var(--muted)', fontSize: 12 }}>Gender</label>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', margin: '4px 0 12px' }}>
