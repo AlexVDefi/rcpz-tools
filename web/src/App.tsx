@@ -429,12 +429,12 @@ export function App() {
       <a className="kofi-link" href="https://ko-fi.com/redchili" target="_blank" rel="noopener noreferrer" title="Support RedChili on Ko-fi" aria-label="Support RedChili on Ko-fi"><img src={kofiUrl} alt="" /></a>
     </>
   );
-  const mobileAccountHelp = (
-    <>
-      {auth.configured && <AccountChip auth={auth} onSignIn={() => setAuthOpen(true)} onChangePassword={() => setChangePwOpen(true)} onDeleteAccount={() => setDeleteOpen(true)} />}
-      <HelpButton extra={creditLinks} />
-    </>
+  // reused in the header nav (desktop / mobile row 2) and, in the mobile character view, pulled up next
+  // to Help in the top row (where Sign in + Modders are hidden to keep the 3D view clean).
+  const homeButton = (
+    <button className="secondary" title="Overview" aria-label="Overview" onClick={() => setView('overview')} style={{ height: NAV_H, width: isMobile ? NAV_H : undefined, padding: isMobile ? 0 : '0 14px', display: isMobile ? 'grid' : undefined, placeItems: isMobile ? 'center' : undefined, lineHeight: isMobile ? 1 : undefined }}>{isMobile ? <HomeIcon /> : 'Overview'}</button>
   );
+  const mobileCharView = isMobile && view === 'character';
 
   return (
     <div style={{ maxWidth: wide ? 'none' : 1000, margin: wide ? 0 : '0 auto', padding: wide ? (isMobile ? '10px 10px' : '14px 20px') : (isMobile ? '14px 12px 30px' : '26px 24px 48px') }}>
@@ -449,22 +449,23 @@ export function App() {
             </div>
           </div>
           {isMobile && (auth.configured || steam.configured || index != null) && (
-            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>{mobileAccountHelp}</div>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+              {mobileCharView ? homeButton : (auth.configured && <AccountChip auth={auth} onSignIn={() => setAuthOpen(true)} onChangePassword={() => setChangePwOpen(true)} onDeleteAccount={() => setDeleteOpen(true)} />)}
+              <HelpButton extra={creditLinks} />
+            </div>
           )}
         </div>
         {charName && !isMobile && <div title="Loaded character" style={{ position: 'absolute', left: '50%', top: '50%', transform: 'translate(-50%, -50%)', fontSize: 23, fontWeight: 600, color: 'var(--text)', pointerEvents: 'none', whiteSpace: 'nowrap', maxWidth: '40%', overflow: 'hidden', textOverflow: 'ellipsis' }}>{charName}</div>}
         {(index != null || auth.configured || steam.configured) && (
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: isMobile ? 'wrap' : undefined, justifyContent: isMobile ? 'flex-end' : undefined }}>
-            {(index != null || auth.user || steam.token) && view !== 'overview' && (
-              <button className="secondary" title="Overview" aria-label="Overview" onClick={() => setView('overview')} style={{ height: NAV_H, width: isMobile ? NAV_H : undefined, padding: isMobile ? 0 : '0 14px', display: isMobile ? 'grid' : undefined, placeItems: isMobile ? 'center' : undefined, lineHeight: isMobile ? 1 : undefined }}>{isMobile ? <HomeIcon /> : 'Overview'}</button>
-            )}
+            {(index != null || auth.user || steam.token) && view !== 'overview' && !mobileCharView && homeButton}
             {index != null && view !== 'character' && (
               <button onClick={() => setView('character')} style={{ height: NAV_H, padding: '0 18px', fontWeight: 600, boxShadow: '0 2px 10px #5b8cff55' }}>Character viewer →</button>
             )}
             {auth.user && (
               <button className="secondary" onClick={() => setView('shared')} style={{ height: NAV_H, padding: '0 14px', borderColor: view === 'shared' ? 'var(--accent)' : 'var(--line)', color: view === 'shared' ? '#fff' : 'var(--text)' }}>Shared</button>
             )}
-            {steam.configured && view !== 'mods' && (
+            {steam.configured && view !== 'mods' && !mobileCharView && (
               <button className="secondary" onClick={() => setView('mods')} title="Host your Workshop mods" style={{ height: NAV_H, padding: '0 14px' }}>Modders</button>
             )}
             {!isMobile && auth.configured && <AccountChip auth={auth} onSignIn={() => setAuthOpen(true)} onChangePassword={() => setChangePwOpen(true)} onDeleteAccount={() => setDeleteOpen(true)} />}
