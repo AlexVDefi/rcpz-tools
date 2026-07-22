@@ -929,7 +929,7 @@ function ModsPanel({ tabs, busy }: { tabs: ModTab[]; busy: boolean }) {
             <div style={{ display: 'grid', gap: 10, gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', alignItems: 'start' }}>
               {shown.map((m) => (
                 <div key={m.id} className="card" style={{ padding: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column', borderColor: m.enabled ? 'var(--accent)' : 'var(--line)' }}>
-                  <div style={{ position: 'relative', aspectRatio: '16 / 9', background: '#0e0e12', flexShrink: 0, overflow: 'hidden' }}><ModThumb preview={m.preview} poster={m.poster} /></div>
+                  <div style={{ position: 'relative', aspectRatio: '4 / 3', background: '#0e0e12', flexShrink: 0, overflow: 'hidden' }}><ModThumb preview={m.preview} poster={m.poster} /></div>
                   <div style={{ padding: '8px 10px 10px', display: 'flex', flexDirection: 'column', gap: 7 }}>
                     <div style={{ fontSize: 12.5, fontWeight: 600, lineHeight: 1.3, height: '2.6em', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>{m.title}</div>
                     <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: busy ? 'wait' : 'pointer' }}>
