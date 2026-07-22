@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useMemo, useRef } from 'react';
+import { useEffect, useState, useCallback, useMemo, useRef, type ReactNode } from 'react';
 import { buildAssetIndex } from '@shared/asset-index.js';
 import { listClothing, listClips, listHair, listHeldItems } from '@shared/character-core.js';
 import { createFsaAssetSource } from './platform/fsa-source';
@@ -69,6 +69,7 @@ export function App() {
   const [assetSource, setAssetSource] = useState<'local' | 'hosted' | null>(null); // which path built the current index
   const [hostedMods, setHostedMods] = useState<HostedMod[]>([]); // community mods available to layer over hosted vanilla
   const [enabledMods, setEnabledMods] = useState<string[]>(() => { try { return JSON.parse(localStorage.getItem('pz-enabled-mods') || '[]'); } catch { return []; } });
+  const [pendingLocal, setPendingLocal] = useState(false); // user chose "use my game files" from hosted but hasn't picked an install yet
   const [progress, setProgress] = useState('');
   const [scan, setScan] = useState<Scan | null>(null);
   const [overlay, setOverlay] = useState<'in' | 'out' | null>(null); // scan modal: fading in, fading out, or gone
@@ -130,7 +131,7 @@ export function App() {
     // show the scan overlay in the SAME render as phase='scanning' (batched), so it's the first
     // thing on screen - no flash of the empty Sources card before the modal appears.
     if (fadeTimer.current) { clearTimeout(fadeTimer.current); fadeTimer.current = null; }
-    setPhase('scanning'); setOverlay('in'); setError(''); setScanHosted(false);
+    setPhase('scanning'); setOverlay('in'); setError(''); setScanHosted(false); setPendingLocal(false);
     const t0 = performance.now();
     try {
       const sources = [...modSources(active), createFsaAssetSource(installH, { id: 'install', isMod: false })];
@@ -157,19 +158,21 @@ export function App() {
   // Load a hosted asset bundle (tools/bake-assets.mjs) instead of a local install. Produces
   // the same index the FSA path does, so the rest of the app is unchanged. Reached via
   // ?assets=<baseUrl> for now; becomes the no-install default once R2-hosted.
-  const rebuildHosted = useCallback(async (baseUrl: string, mods: HostedMod[] = []) => {
+  const rebuildHosted = useCallback(async (baseUrl: string, communityMods: HostedMod[] = [], localModList: DiscoveredMod[] = []) => {
     if (fadeTimer.current) { clearTimeout(fadeTimer.current); fadeTimer.current = null; }
-    setPhase('scanning'); setOverlay('in'); setError(''); setScanHosted(true);
+    setPhase('scanning'); setOverlay('in'); setError(''); setScanHosted(true); setPendingLocal(false);
     const t0 = performance.now();
     try {
       const { source: vanilla, manifest } = await loadHostedSource(baseUrl, { id: 'hosted' });
-      // Each enabled community mod is a higher-priority source layered over vanilla (mods override).
-      const modSources = [];
-      for (const m of mods) {
-        try { const { source } = await loadHostedSource(m.url, { id: `hostedmod:${m.modId}` }); modSources.push(source); }
+      // Higher-priority sources layered over vanilla: the user's own installed mods first, then the
+      // enabled community mods, then vanilla (so anything local overrides community overrides vanilla).
+      const communitySources = [];
+      for (const m of communityMods) {
+        try { const { source } = await loadHostedSource(m.url, { id: `hostedmod:${m.modId}` }); communitySources.push(source); }
         catch { /* a mod bundle that fails to load is skipped, not fatal */ }
       }
-      const idx = await buildAssetIndex([...modSources, vanilla], { onProgress: (p: Scan) => setScan(p) });
+      const localSources = modSources(localModList); // FSA sources over the user's installed mods
+      const idx = await buildAssetIndex([...localSources, ...communitySources, vanilla], { onProgress: (p: Scan) => setScan(p) });
       const clothing = listClothing(idx);
       const { hair, beards } = listHair(idx);
       setCounts({
@@ -179,8 +182,9 @@ export function App() {
       });
       setIndex(idx);
       setAssetSource('hosted'); localStorage.setItem(SOURCE_KEY, 'hosted');
-      setInstallHandle(null); setMods([]);
-      setProgress(`built-in assets${modSources.length ? ` + ${modSources.length} mod${modSources.length === 1 ? '' : 's'}` : ''} (${manifest.version}) in ${((performance.now() - t0) / 1000).toFixed(1)}s`);
+      setInstallHandle(null);
+      const extras = [communitySources.length && `${communitySources.length} community`, localModList.length && `${localModList.length} local mod${localModList.length === 1 ? '' : 's'}`].filter(Boolean).join(' + ');
+      setProgress(`built-in assets${extras ? ` + ${extras}` : ''} (${manifest.version}) in ${((performance.now() - t0) / 1000).toFixed(1)}s`);
       setPhase('ready');
     } catch (e) { setError(e instanceof Error ? e.message : String(e)); setPhase('error'); }
     finally {
@@ -191,14 +195,39 @@ export function App() {
 
   // Load the configured hosted bundle (the "Start now" / "built-in assets" path).
   const useHosted = useCallback(() => {
-    if (HOSTED_ASSETS_URL) rebuildHosted(HOSTED_ASSETS_URL, hostedMods.filter((m) => enabledMods.includes(m.modId)));
-  }, [rebuildHosted, hostedMods, enabledMods]);
+    if (HOSTED_ASSETS_URL) rebuildHosted(HOSTED_ASSETS_URL, hostedMods.filter((m) => enabledMods.includes(m.modId)), mods);
+  }, [rebuildHosted, hostedMods, enabledMods, mods]);
   // Enable/disable a community mod: persist the choice and, if we're on hosted assets, re-layer now.
   const toggleHostedMod = useCallback((modId: string) => {
     const next = enabledMods.includes(modId) ? enabledMods.filter((x) => x !== modId) : [...enabledMods, modId];
     setEnabledMods(next); localStorage.setItem('pz-enabled-mods', JSON.stringify(next));
-    if (assetSource === 'hosted' && HOSTED_ASSETS_URL) rebuildHosted(HOSTED_ASSETS_URL, hostedMods.filter((m) => next.includes(m.modId)));
-  }, [enabledMods, hostedMods, assetSource, rebuildHosted]);
+    if (assetSource === 'hosted' && HOSTED_ASSETS_URL) rebuildHosted(HOSTED_ASSETS_URL, hostedMods.filter((m) => next.includes(m.modId)), mods);
+  }, [enabledMods, hostedMods, assetSource, rebuildHosted, mods]);
+  // "Load locally installed mods" while on hosted assets: pick a mods folder, discover, layer over vanilla.
+  const loadLocalMods = useCallback(async () => {
+    let h: FileSystemDirectoryHandle | null = null;
+    try { h = await pickDirectory('pz-workshop'); } catch (e) { setError((e as Error).message); return; }
+    if (!h) return;
+    setError(''); setScanHosted(true); setScan(null); setPhase('scanning'); setOverlay('in');
+    try {
+      await saveDir(WORKSHOP_KEY, h);
+      const discovered = await discoverWorkshopMods(h);
+      if (!discovered.length) {
+        setError('No mods found there. Point at your Zomboid/mods, Zomboid/Workshop, or the Steam 108600 folder.');
+        setOverlay('out'); setPhase('ready'); window.setTimeout(() => setOverlay(null), 480); return;
+      }
+      setMods(discovered);
+      rebuildHosted(HOSTED_ASSETS_URL, hostedMods.filter((m) => enabledMods.includes(m.modId)), discovered);
+    } catch (e) { setError((e as Error).message); setOverlay('out'); setPhase('ready'); window.setTimeout(() => setOverlay(null), 480); }
+  }, [rebuildHosted, hostedMods, enabledMods]);
+  const clearLocalMods = useCallback(() => {
+    setMods([]);
+    if (HOSTED_ASSETS_URL) rebuildHosted(HOSTED_ASSETS_URL, hostedMods.filter((m) => enabledMods.includes(m.modId)), []);
+  }, [rebuildHosted, hostedMods, enabledMods]);
+  // "Use my game files instead": leave hosted and show the full local onboarding (Sources + disclaimers).
+  const useLocalFiles = useCallback(() => {
+    setIndex(null); setCounts(null); setAssetSource(null); setMods([]); setScanHosted(false); setError(''); setPendingLocal(true);
+  }, []);
   // Fetch the community mods available to layer, once, when a hosted bundle is configured.
   useEffect(() => { if (hostedAvailable) fetchHostedMods().then(setHostedMods).catch(() => {}); }, []);
 
@@ -334,7 +363,7 @@ export function App() {
         </div>
       )}
 
-      {phase !== 'unsupported' && view === 'overview' && firstRun && (
+      {phase !== 'unsupported' && view === 'overview' && firstRun && !pendingLocal && (
         <section style={{ marginTop: 40, maxWidth: 760, marginInline: 'auto' }}>
           <div style={{ textAlign: 'center', marginBottom: 26 }}>
             <h2 style={{ fontSize: 26, margin: '0 0 12px', lineHeight: 1.2 }}>Bring your survivors to life in the browser</h2>
@@ -395,7 +424,7 @@ export function App() {
         </section>
       )}
 
-      {phase !== 'unsupported' && view === 'overview' && !firstRun && (
+      {phase !== 'unsupported' && view === 'overview' && (!firstRun || pendingLocal) && (
         <div className="overview-enter" style={{ marginTop: 18, display: 'grid', gap: 14 }}>
           <div className="card">
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
@@ -411,35 +440,54 @@ export function App() {
                       <span style={{ width: 8, height: 8, borderRadius: 999, background: '#4ac07a', display: 'inline-block' }} />
                       Built-in vanilla assets
                     </div>
-                    <div style={{ color: 'var(--muted)', fontSize: 12.5, marginTop: 4 }}>
-                      Loaded from the hosted library, no game install needed.{fsaSupported ? ' Use your own game files for any mod not listed below.' : ''}
-                    </div>
+                    <div style={{ color: 'var(--muted)', fontSize: 12.5, marginTop: 4 }}>Loaded from the hosted library, no game install needed.</div>
                   </div>
-                  {fsaSupported && <button className="secondary" onClick={pickInstall} disabled={phase === 'scanning'} style={{ padding: '7px 13px', fontSize: 12.5 }}>Use my game files instead</button>}
+                  {fsaSupported && <button className="secondary" onClick={useLocalFiles} disabled={phase === 'scanning'} style={{ padding: '7px 13px', fontSize: 12.5 }}>Use my game files instead</button>}
                 </div>
+
                 {hostedMods.length > 0 && (
                   <div style={{ marginTop: 14, borderTop: '1px solid var(--line)', paddingTop: 12 }}>
-                    <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 10 }}>Community mods <span style={{ color: 'var(--muted)', fontWeight: 400 }}>· hosted by their creators, no install needed</span></div>
-                    <div style={{ display: 'grid', gap: 10, gridTemplateColumns: 'repeat(auto-fill, minmax(168px, 1fr))' }}>
+                    <div style={{ fontSize: 12.5, fontWeight: 600 }}>Community mods <span style={{ color: 'var(--muted)', fontWeight: 400 }}>· hosted by their creators</span></div>
+                    <div style={{ color: 'var(--muted)', fontSize: 12, margin: '3px 0 10px' }}>Optional - enable any to use its assets in the studio. No install needed.</div>
+                    <div style={{ display: 'grid', gap: 10, gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))' }}>
                       {hostedMods.map((m) => {
                         const on = enabledMods.includes(m.modId);
                         return (
-                          <label key={m.modId} className="card" style={{ padding: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column', cursor: phase === 'scanning' ? 'wait' : 'pointer', borderColor: on ? 'var(--accent)' : 'var(--line)' }}>
-                            <div style={{ position: 'relative', aspectRatio: '16 / 9', background: '#0e0e12' }}>
+                          <div key={m.modId} className="card" style={{ padding: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column', borderColor: on ? 'var(--accent)' : 'var(--line)' }}>
+                            <div style={{ aspectRatio: '16 / 9', background: '#0e0e12' }}>
                               {m.preview
                                 ? <img src={m.preview} alt="" loading="lazy" style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
                                 : <div style={{ width: '100%', height: '100%', display: 'grid', placeItems: 'center', color: '#3a3a44' }}>◈</div>}
-                              <input type="checkbox" checked={on} disabled={phase === 'scanning'} onChange={() => toggleHostedMod(m.modId)}
-                                style={{ position: 'absolute', top: 8, left: 8, width: 17, height: 17, accentColor: 'var(--accent)' }} />
                             </div>
-                            <div style={{ padding: '8px 10px 10px' }}>
+                            <div style={{ padding: '8px 10px 10px', display: 'flex', flexDirection: 'column', gap: 8, flex: 1 }}>
                               <div style={{ fontSize: 12.5, fontWeight: 600, lineHeight: 1.3, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>{m.title}</div>
-                              {m.author && <div style={{ color: 'var(--muted)', fontSize: 11.5, marginTop: 3 }}>by {m.author}</div>}
+                              <label style={{ marginTop: 'auto', display: 'flex', alignItems: 'center', gap: 8, cursor: phase === 'scanning' ? 'wait' : 'pointer' }}>
+                                <span style={{ flex: 1, minWidth: 0, color: 'var(--muted)', fontSize: 11.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{m.author ? `by ${m.author}` : ''}</span>
+                                <input type="checkbox" checked={on} disabled={phase === 'scanning'} onChange={() => toggleHostedMod(m.modId)} style={{ width: 17, height: 17, accentColor: 'var(--accent)', flexShrink: 0 }} />
+                              </label>
                             </div>
-                          </label>
+                          </div>
                         );
                       })}
                     </div>
+                  </div>
+                )}
+
+                {fsaSupported && (
+                  <div style={{ marginTop: 14, borderTop: '1px solid var(--line)', paddingTop: 12 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 7, flexWrap: 'wrap' }}>
+                      <b style={{ fontSize: 12.5 }}>Your installed mods</b>
+                      <InfoDot text={<>Load mods already installed on your PC to use alongside the built-in assets. Point at your <code>Zomboid/mods</code>, your <code>Zomboid/Workshop</code>, or the Steam <code>...workshop/content/108600</code> folder - as long as it is <b>not</b> under <code>C:\Program Files</code> (browsers cannot read there).</>} />
+                      {mods.length > 0 && (
+                        <span style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
+                          <button className="secondary" onClick={loadLocalMods} disabled={phase === 'scanning'} style={{ padding: '5px 11px', fontSize: 12 }}>Change</button>
+                          <button className="secondary" onClick={clearLocalMods} disabled={phase === 'scanning'} style={{ padding: '5px 11px', fontSize: 12 }}>Remove</button>
+                        </span>
+                      )}
+                    </div>
+                    {mods.length > 0
+                      ? <div style={{ color: 'var(--muted)', fontSize: 12.5, marginTop: 7 }}><b style={{ color: 'var(--text)' }}>{mods.length}</b> mod{mods.length === 1 ? '' : 's'} loaded from your PC, layered over the built-in assets.</div>
+                      : <button className="secondary" onClick={loadLocalMods} disabled={phase === 'scanning'} style={{ marginTop: 9, padding: '6px 12px', fontSize: 12.5 }}>Load locally installed mods</button>}
                   </div>
                 )}
               </>
@@ -447,20 +495,22 @@ export function App() {
               <>
                 <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
                   <FolderChip label="Game install" name={installHandle?.name} connected={!!installHandle && !needPerm}
-                    warn={needPerm ? 'reconnect needed' : undefined} action={needPerm ? 'Reconnect' : 'Change'} onAction={needPerm ? reconnect : pickInstall} disabled={phase === 'scanning'}
+                    warn={needPerm ? 'reconnect needed' : undefined} action={needPerm ? 'Reconnect' : (installHandle ? 'Change' : 'Choose')} onAction={needPerm ? reconnect : pickInstall} disabled={phase === 'scanning'}
                     hint={<>The Project Zomboid install folder, which contains a <b>media</b> folder. On Steam: right-click <b>Project Zomboid</b> → <b>Manage</b> → <b>Browse local files</b>. Typical path: <code>Steam\steamapps\common\ProjectZomboid</code>.</>} />
                   <FolderChip label="Mods" name={mods.length ? `${mods.length} mods found` : undefined} connected={mods.length > 0}
                     action={mods.length ? 'Change' : 'Add'} onAction={pickWorkshop} disabled={phase === 'scanning'}
                     hint={<>Point at any mods folder and it works out the layout: your Steam Workshop content (<code>steamapps\workshop\content\108600</code>), your <code>Zomboid\mods</code>, or <code>Zomboid\Workshop</code> - or the <code>Zomboid</code> folder to get both. Optional, only needed for modded content.</>} />
                 </div>
+                {!isDesktop && <div style={{ marginTop: 12 }}><ProgramFilesHelp /></div>}
                 {hostedAvailable && <button className="secondary" onClick={useHosted} disabled={phase === 'scanning'} style={{ marginTop: 10, padding: '6px 12px', fontSize: 12.5 }}>Switch to built-in assets (no install needed)</button>}
               </>
             )}
             {error && <p style={{ color: '#ff8a8a', margin: '10px 0 0' }}>Error: {error}</p>}
-            <SafetyInfo />
+            {/* the safety/why-it-needs-files disclaimer only when local files are actually in use */}
+            {(assetSource !== 'hosted' || mods.length > 0) && <SafetyInfo />}
           </div>
 
-          {mods.length > 0 && (
+          {mods.length > 0 && assetSource !== 'hosted' && (
             <div className="card">
               <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginBottom: 12, flexWrap: 'wrap' }}>
                 <b style={{ fontSize: 13 }}>Mods</b>
@@ -769,6 +819,20 @@ function ModName({ mod }: { mod: DiscoveredMod }) {
 }
 
 // A connected/unconnected folder tile for the Sources card.
+// Small "i" info button that reveals a popover on click - inline field help.
+function InfoDot({ text }: { text: ReactNode }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <span style={{ position: 'relative', display: 'inline-flex' }}>
+      <button type="button" onClick={() => setOpen((o) => !o)} onBlur={() => window.setTimeout(() => setOpen(false), 150)} aria-label="More info"
+        style={{ width: 17, height: 17, borderRadius: 999, border: '1px solid var(--line)', background: 'var(--panel)', color: 'var(--muted)', fontSize: 11, fontWeight: 700, cursor: 'pointer', padding: 0, lineHeight: '15px' }}>i</button>
+      {open && (
+        <span style={{ position: 'absolute', top: 22, left: 0, zIndex: 30, width: 290, maxWidth: '80vw', background: '#14141a', border: '1px solid var(--line)', borderRadius: 8, padding: '9px 11px', fontSize: 12, lineHeight: 1.55, color: 'var(--muted)', boxShadow: '0 6px 24px #0009' }}>{text}</span>
+      )}
+    </span>
+  );
+}
+
 function FolderChip({ label, name, connected, warn, action, onAction, disabled, hint }: {
   label: string; name?: string; connected: boolean; warn?: string; action: string; onAction: () => void; disabled?: boolean; hint?: React.ReactNode;
 }) {
