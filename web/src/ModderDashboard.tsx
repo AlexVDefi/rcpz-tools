@@ -7,6 +7,7 @@ import { type SteamState, fetchSteamMods, fetchModPermissions, setModPermission,
 import { ModsPanel, type ModTab } from './ModsBrowser';
 
 const CONTACT_EMAIL = 'alexredchili@gmail.com';
+const kb = (n: number) => (n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`);
 
 export function ModderDashboard({ steam }: { steam: SteamState }) {
   const token = steam.token;
@@ -93,6 +94,7 @@ export function ModderDashboard({ steam }: { steam: SteamState }) {
       enabled: perm[m.id] === 'allowed',
       preview: m.preview,
       busy: !!busy[m.id],
+      subtitle: <>{kb(m.size)} · <a href={`https://steamcommunity.com/sharedfiles/filedetails/?id=${m.id}`} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()} style={{ color: 'var(--muted)' }}>Workshop ↗</a></>,
     })),
     note: 'Allow a mod and its assets are downloaded from the Workshop and hosted, so anyone can use it in the studio with no install. Turn it off any time to revoke and have them removed.',
   };

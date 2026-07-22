@@ -17,6 +17,7 @@ export type ModItem = {
   id: string;
   title: string;
   author?: string | null;
+  subtitle?: ReactNode;             // overrides the "by <author>" line (e.g. size + Workshop link)
   enabled: boolean;
   preview?: string | null;          // hosted preview URL (community / Workshop)
   poster?: FileSystemFileHandle;    // local mod poster/icon file
@@ -57,7 +58,7 @@ export function ModThumb({ preview, poster }: { preview?: string | null; poster?
   return <div style={FILL_PLACEHOLDER}>◈</div>;
 }
 
-export function ModsPanel({ tabs, busy }: { tabs: ModTab[]; busy: boolean }) {
+export function ModsPanel({ tabs, busy, onTab }: { tabs: ModTab[]; busy: boolean; onTab?: (key: string) => void }) {
   const [active, setActive] = useState(0);
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState<'all' | 'on' | 'off'>('all');
@@ -68,6 +69,7 @@ export function ModsPanel({ tabs, busy }: { tabs: ModTab[]; busy: boolean }) {
   const items = tab.items;
   const perPage = view === 'grid' ? GRID_PER_PAGE : LIST_PER_PAGE;
   useEffect(() => { setPage(0); }, [idx, query, filter, items.length, perPage]); // any of these invalidates the current page
+  useEffect(() => { onTab?.(tab.key); }, [tab.key, onTab]); // let the host react to the active tab
   const chooseView = (v: 'grid' | 'list') => { setView(v); localStorage.setItem('pz-mods-view', v); };
 
   const q = query.trim().toLowerCase();
@@ -87,18 +89,22 @@ export function ModsPanel({ tabs, busy }: { tabs: ModTab[]; busy: boolean }) {
 
   return (
     <div style={{ marginTop: 14, borderTop: '1px solid var(--line)', paddingTop: 12 }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-        <div style={{ display: 'flex', gap: 4 }}>
-          {tabs.map((t, i) => (
-            <button key={t.key} onClick={() => setActive(i)} style={{
-              padding: '6px 12px', fontSize: 12.5, fontWeight: 600, cursor: 'pointer', borderRadius: 7,
-              background: i === idx ? 'var(--accent)' : 'transparent', color: i === idx ? '#fff' : 'var(--muted)',
-              border: `1px solid ${i === idx ? 'var(--accent)' : 'var(--line)'}`,
-            }}>{t.label} <span style={{ opacity: 0.7, fontWeight: 400 }}>{t.items.length}</span></button>
-          ))}
+      {(tabs.length > 1 || tab.controls) && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+          {tabs.length > 1 && (
+            <div style={{ display: 'flex', gap: 4 }}>
+              {tabs.map((t, i) => (
+                <button key={t.key} onClick={() => setActive(i)} style={{
+                  padding: '6px 12px', fontSize: 12.5, fontWeight: 600, cursor: 'pointer', borderRadius: 7,
+                  background: i === idx ? 'var(--accent)' : 'transparent', color: i === idx ? '#fff' : 'var(--muted)',
+                  border: `1px solid ${i === idx ? 'var(--accent)' : 'var(--line)'}`,
+                }}>{t.label} <span style={{ opacity: 0.7, fontWeight: 400 }}>{t.items.length}</span></button>
+              ))}
+            </div>
+          )}
+          {tab.controls && <span style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>{tab.controls}</span>}
         </div>
-        {tab.controls && <span style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>{tab.controls}</span>}
-      </div>
+      )}
       {tab.note && <div style={{ color: 'var(--muted)', fontSize: 12, margin: '9px 0 0', display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>{tab.note}</div>}
 
       {items.length === 0 ? (
@@ -138,7 +144,7 @@ export function ModsPanel({ tabs, busy }: { tabs: ModTab[]; busy: boolean }) {
                   <div style={{ padding: '8px 10px 10px', display: 'flex', flexDirection: 'column', gap: 7 }}>
                     <div style={{ fontSize: 12.5, fontWeight: 600, lineHeight: 1.3, height: '2.6em', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>{m.title}</div>
                     <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: cardBusy(m) ? 'wait' : 'pointer' }}>
-                      <span style={{ flex: 1, minWidth: 0, color: 'var(--muted)', fontSize: 11.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{m.author ? `by ${m.author}` : ''}</span>
+                      <span style={{ flex: 1, minWidth: 0, color: 'var(--muted)', fontSize: 11.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{m.subtitle ?? (m.author ? `by ${m.author}` : '')}</span>
                       <input type="checkbox" checked={m.enabled} disabled={cardBusy(m)} onChange={() => tab.onToggle(m.id)} style={{ width: 17, height: 17, accentColor: 'var(--accent)', flexShrink: 0 }} />
                     </label>
                   </div>
@@ -152,7 +158,7 @@ export function ModsPanel({ tabs, busy }: { tabs: ModTab[]; busy: boolean }) {
                   <div style={{ position: 'relative', width: 54, height: 32, flexShrink: 0, borderRadius: 4, overflow: 'hidden', background: '#0e0e12' }}><ModThumb preview={m.preview} poster={m.poster} /></div>
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontSize: 12.5, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{m.title}</div>
-                    {m.author && <div style={{ color: 'var(--muted)', fontSize: 11.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>by {m.author}</div>}
+                    {(m.subtitle ?? (m.author ? `by ${m.author}` : null)) && <div style={{ color: 'var(--muted)', fontSize: 11.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{m.subtitle ?? `by ${m.author}`}</div>}
                   </div>
                   <input type="checkbox" checked={m.enabled} disabled={cardBusy(m)} onChange={() => tab.onToggle(m.id)} style={{ width: 17, height: 17, accentColor: 'var(--accent)', flexShrink: 0 }} />
                 </label>

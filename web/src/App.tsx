@@ -71,6 +71,7 @@ export function App() {
   const [hostedMods, setHostedMods] = useState<HostedMod[]>([]); // community mods available to layer over hosted vanilla
   const [enabledMods, setEnabledMods] = useState<string[]>(() => { try { return JSON.parse(localStorage.getItem('pz-enabled-mods') || '[]'); } catch { return []; } });
   const [disabledLocal, setDisabledLocal] = useState<string[]>([]); // locally-loaded mods the user toggled off (session only; default all on)
+  const [activeModTab, setActiveModTab] = useState(''); // which ModsPanel tab is showing (hosted path), for the safety disclaimer
   const [pendingLocal, setPendingLocal] = useState(false); // user chose "use my game files" from hosted but hasn't picked an install yet
   const [progress, setProgress] = useState('');
   const [scan, setScan] = useState<Scan | null>(null);
@@ -489,7 +490,7 @@ export function App() {
                   if (fsaSupported) tabs.push({
                     key: 'local', label: 'Your installed mods', onToggle: toggleLocalMod, onSetMany: setManyLocalMods,
                     items: mods.map((m) => ({ id: m.modId, title: m.name, author: m.author, enabled: !disabledLocal.includes(m.modId), poster: m.poster })),
-                    note: <>Loaded from your PC, layered over the built-in assets. <InfoDot text={<>Point at your <code>Zomboid/mods</code>, your <code>Zomboid/Workshop</code>, or the Steam <code>...workshop/content/108600</code> folder - as long as it is <b>not</b> under <code>C:\Program Files</code> (browsers cannot read there).</>} /></>,
+                    note: <>Loaded from your PC. <InfoDot text={<>Point at your <code>Zomboid/mods</code>, your <code>Zomboid/Workshop</code>, or the Steam <code>...workshop/content/108600</code> folder - as long as it is <b>not</b> under <code>C:\Program Files</code> (browsers cannot read there).</>} /></>,
                     controls: mods.length > 0 ? (
                       <>
                         <button className="secondary" onClick={loadLocalMods} disabled={busy} style={{ padding: '5px 11px', fontSize: 12 }}>Change</button>
@@ -498,7 +499,7 @@ export function App() {
                     ) : undefined,
                     empty: <button className="secondary" onClick={loadLocalMods} disabled={busy} style={{ padding: '6px 12px', fontSize: 12.5 }}>Load locally installed mods</button>,
                   });
-                  return tabs.length > 0 ? <ModsPanel tabs={tabs} busy={busy} /> : null;
+                  return tabs.length > 0 ? <ModsPanel tabs={tabs} busy={busy} onTab={setActiveModTab} /> : null;
                 })()}
               </>
             ) : (
@@ -515,8 +516,8 @@ export function App() {
               </>
             )}
             {error && <p style={{ color: '#ff8a8a', margin: '10px 0 0' }}>Error: {error}</p>}
-            {/* the safety/why-it-needs-files disclaimer only when local files are actually in use */}
-            {(assetSource !== 'hosted' || mods.length > 0) && <SafetyInfo />}
+            {/* the safety/why-it-needs-files disclaimer: on the local-files path, or the installed-mods tab */}
+            {(assetSource !== 'hosted' || activeModTab === 'local') && <SafetyInfo />}
           </div>
 
           {mods.length > 0 && assetSource !== 'hosted' && (
