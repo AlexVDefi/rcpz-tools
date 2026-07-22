@@ -13,15 +13,17 @@ bucket_name = "pz-studio-shares"
 # verify user tokens against /auth/v1/user.
 SUPABASE_URL = "https://dkivmjidqzcgmarazcth.supabase.co"
 SUPABASE_ANON_KEY = "sb_publishable_OajY7dEbz1DZmrGffL2K1Q_UTuYLWsz"
-# App origins allowed to call /upload and /object (comma-separated). Include localhost for dev.
-ALLOWED_ORIGINS = "https://survivor.rcpz.tools,http://localhost:5173"
+# App origins allowed to call the API AND to receive the Steam sign-in redirect (comma-separated).
+# The Steam callback only redirects back to an origin in this list (guards against open redirect).
+ALLOWED_ORIGINS = "https://survivor.rcpz.tools,http://localhost:5173,http://localhost:5174"
 # 100 MB per user. Change here + in web/src/cloud/config.ts if you ever raise it.
 QUOTA_BYTES = "104857600"
 
-# Secret (NOT in this file) - set once with:
-#   wrangler secret put SUPABASE_SERVICE_ROLE
-# Paste the Supabase service_role key (Project Settings -> API). It bypasses RLS so the Worker
-# can read usage and write/delete rows on the user's behalf.
+# Secrets (NOT in this file) - set once each with `wrangler secret put <NAME>`:
+#   SUPABASE_SERVICE_ROLE   Supabase service_role key (Project Settings -> API). Bypasses RLS so the
+#                           Worker can read usage and write/delete rows on the user's behalf.
+#   STEAM_WEB_API_KEY       https://steamcommunity.com/dev/apikey - lists a modder's Workshop mods.
+#   STEAM_SESSION_SECRET    any long random string - HMAC key for the modder session token.
 
 # Custom share domain: after `wrangler deploy`, map a domain to this Worker in the Cloudflare
 # dashboard (Workers & Pages -> pz-studio-cloud -> Settings -> Domains & Routes -> Add custom

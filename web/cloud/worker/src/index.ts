@@ -22,6 +22,8 @@ export interface Env {
   SUPABASE_SERVICE_ROLE: string; // secret (bypasses RLS to read usage + write/delete rows)
   ALLOWED_ORIGINS?: string;      // var, comma-separated app origins allowed to call the API
   QUOTA_BYTES?: string;          // var, optional override of the default 100 MB
+  STEAM_WEB_API_KEY?: string;    // secret: lists a modder's published Workshop items (GetUserFiles)
+  STEAM_SESSION_SECRET?: string; // secret: HMAC key for the short-lived modder session token
 }
 
 const DEFAULT_QUOTA = 100 * 1024 * 1024;
@@ -40,6 +42,10 @@ export default {
     if (request.method === 'POST' && url.pathname === '/upload') return withCors(await upload(request, url, env), corsHeaders);
     if (request.method === 'DELETE' && url.pathname === '/object') return withCors(await remove(request, url, env), corsHeaders);
     if (request.method === 'DELETE' && url.pathname === '/account') return withCors(await deleteAccount(request, env), corsHeaders);
+    // Modder hosting: Steam sign-in (browser redirects, no CORS) + their Workshop mods (app fetch, CORS).
+    if (request.method === 'GET' && url.pathname === '/steam/login') return steamLogin(url, env);
+    if (request.method === 'GET' && url.pathname === '/steam/callback') return steamCallback(url, env);
+    if (request.method === 'GET' && url.pathname === '/steam/mods') return withCors(await steamMods(request, env), corsHeaders);
     return withCors(json({ error: 'Not found' }, 404), corsHeaders);
   },
 };
@@ -261,6 +267,95 @@ ${modsBlock}
 </main></body></html>`;
 }
 
+// ---- Steam sign-in (OpenID 2.0) + Workshop mod listing, for the modder-hosting flow ----
+// A modder proves ownership just by signing in: GetUserFiles only ever lists items THAT SteamID
+// published, so "your mods" and "you own them" are one query. We hand the app a short-lived
+// HMAC-signed token carrying the SteamID; the app sends it back as a Bearer to read the mods.
+
+const STEAM_OPENID = 'https://steamcommunity.com/openid/login';
+const STEAM_CLAIMED_ID = /^https:\/\/steamcommunity\.com\/openid\/id\/(\d{17})$/;
+const b64url = (bytes: Uint8Array) => btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+const fromB64url = (s: string) => Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/')), (c) => c.charCodeAt(0));
+const bearer = (request: Request) => { const a = request.headers.get('Authorization'); return a?.startsWith('Bearer ') ? a.slice(7) : null; };
+
+async function hmac(data: string, secret: string): Promise<string> {
+  const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  return b64url(new Uint8Array(await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(data))));
+}
+async function signSteamSession(steamid: string, env: Env): Promise<string> {
+  const body = b64url(new TextEncoder().encode(JSON.stringify({ steamid, exp: Date.now() + 7 * 86400000 })));
+  return `${body}.${await hmac(body, env.STEAM_SESSION_SECRET || '')}`;
+}
+async function steamSessionId(token: string | null, env: Env): Promise<string | null> {
+  if (!token) return null;
+  const [body, sig] = token.split('.');
+  if (!body || !sig || (await hmac(body, env.STEAM_SESSION_SECRET || '')) !== sig) return null;
+  try {
+    const p = JSON.parse(new TextDecoder().decode(fromB64url(body))) as { steamid?: string; exp?: number };
+    return p.steamid && p.exp && Date.now() < p.exp ? p.steamid : null;
+  } catch { return null; }
+}
+
+// Only ever redirect back to an app origin we explicitly allow - guards against an open redirect
+// leaking the session token to an attacker-controlled site.
+function allowedAppUrl(raw: string | null, env: Env): string {
+  const allowed = (env.ALLOWED_ORIGINS || '').split(',').map((s) => s.trim()).filter(Boolean);
+  if (!raw) return allowed[0] || '';
+  try { const u = new URL(raw); return allowed.includes(u.origin) ? u.origin + u.pathname : (allowed[0] || ''); }
+  catch { return allowed[0] || ''; }
+}
+
+function steamLogin(url: URL, env: Env): Response {
+  const app = allowedAppUrl(url.searchParams.get('return'), env);
+  const returnTo = `${url.origin}/steam/callback?app=${encodeURIComponent(app)}`;
+  const p = new URLSearchParams({
+    'openid.ns': 'http://specs.openid.net/auth/2.0',
+    'openid.mode': 'checkid_setup',
+    'openid.return_to': returnTo,
+    'openid.realm': url.origin,
+    'openid.identity': 'http://specs.openid.net/auth/2.0/identifier_select',
+    'openid.claimed_id': 'http://specs.openid.net/auth/2.0/identifier_select',
+  });
+  return Response.redirect(`${STEAM_OPENID}?${p.toString()}`, 302);
+}
+
+async function steamCallback(url: URL, env: Env): Promise<Response> {
+  const app = allowedAppUrl(url.searchParams.get('app'), env) || '/';
+  // Never trust the returned params: re-ask Steam to authenticate the assertion.
+  const check = new URLSearchParams(url.search);
+  check.set('openid.mode', 'check_authentication');
+  const vres = await fetch(STEAM_OPENID, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: check.toString() });
+  const valid = /is_valid\s*:\s*true/.test(await vres.text());
+  const m = STEAM_CLAIMED_ID.exec(url.searchParams.get('openid.claimed_id') || '');
+  const back = new URL(app);
+  if (!valid || !m) { back.hash = 'steam_error=1'; return Response.redirect(back.toString(), 302); }
+  back.hash = `steam=${await signSteamSession(m[1], env)}`; // fragment: not sent to servers or logs
+  return Response.redirect(back.toString(), 302);
+}
+
+async function steamApi(path: string, params: Record<string, string>, env: Env): Promise<{ response?: { publishedfiledetails?: Array<Record<string, unknown>> } }> {
+  const u = new URL(`https://api.steampowered.com/${path}/`);
+  u.searchParams.set('key', env.STEAM_WEB_API_KEY || '');
+  for (const [k, v] of Object.entries(params)) u.searchParams.set(k, v);
+  const res = await fetch(u.toString());
+  if (!res.ok) throw new Error(`steam ${path} ${res.status}`);
+  return res.json();
+}
+
+async function steamMods(request: Request, env: Env): Promise<Response> {
+  const steamid = await steamSessionId(bearer(request), env);
+  if (!steamid) return json({ error: 'Unauthorized' }, 401);
+  try {
+    const r = await steamApi('IPublishedFileService/GetUserFiles/v1', {
+      steamid, appid: '108600', numperpage: '100', page: '1', return_previews: 'true', return_tags: 'true',
+    }, env);
+    const mods = (r.response?.publishedfiledetails || []).map((f) => ({
+      id: String(f.publishedfileid), title: String(f.title || ''), preview: (f.preview_url as string) || null, size: Number(f.file_size) || 0,
+    }));
+    return json({ steamid, mods });
+  } catch { return json({ error: 'Steam lookup failed' }, 502); }
+}
+
 // Verify a Supabase access token by asking Supabase who it belongs to. Returns the user id or null.
 async function verifyUser(request: Request, env: Env): Promise<string | null> {
   const auth = request.headers.get('Authorization');
@@ -295,7 +390,7 @@ function cors(env: Env, origin: string | null): Record<string, string> {
   const allow = origin && (allowed.includes('*') || allowed.includes(origin)) ? origin : (allowed[0] || '*');
   return {
     'access-control-allow-origin': allow,
-    'access-control-allow-methods': 'POST, DELETE, OPTIONS',
+    'access-control-allow-methods': 'GET, POST, DELETE, OPTIONS',
     'access-control-allow-headers': 'authorization, content-type, x-share-meta',
     'access-control-max-age': '86400',
     vary: 'Origin',
