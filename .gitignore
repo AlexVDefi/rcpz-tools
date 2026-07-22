@@ -10,3 +10,6 @@ asset-bake/
 
 # R2 upload credentials (S3 API token). Never commit.
 .r2.env
+
+# Steam Web API key (+ test SteamID) for the modder-hosting flow. Never commit.
+.steam.env
