@@ -208,25 +208,40 @@ export class CharacterEngine {
     const aspect = cam.aspect || 1, fovV = cam.fov * Math.PI / 180;
     const right = new THREE.Vector3(), up = new THREE.Vector3(), tmp = new THREE.Vector3();
     const clamp = (v: number, a: number, b: number) => Math.max(a, Math.min(b, v));
-    const WANT = 1.5, GAIN = 0.6; // target silhouette span (~75% of the frame) and pan damping (parallax)
-    orbit.state.radius = 12; orbit.apply(); // start wide so the body is on-screen, then converge inward
-    for (let i = 0; i < 14; i++) {
+    const WANT = 1.5; // target silhouette span (~75% of the frame)
+    const measure = () => {
       this.drawFrame();
       gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, buf);
       let minX = 1e9, maxX = -1, minY = 1e9, maxY = -1, cnt = 0;
       for (let y = 0; y < h; y += STEP) for (let x = 0; x < w; x += STEP) { if (buf[(y * w + x) * 4 + 3] > 40) { cnt++; if (x < minX) minX = x; if (x > maxX) maxX = x; if (y < minY) minY = y; if (y > maxY) maxY = y; } }
-      if (!cnt) { orbit.state.radius = clamp(orbit.state.radius * 1.5, 0.6, 25); orbit.apply(); continue; } // lost it: zoom out to find
+      if (!cnt) return null;
       const xL = minX / w * 2 - 1, xR = maxX / w * 2 - 1, yB = minY / h * 2 - 1, yT = maxY / h * 2 - 1; // NDC (gl y is bottom-up)
-      const cx = (xL + xR) / 2, cy = (yB + yT) / 2, span = Math.max(xR - xL, yT - yB);
-      const edge = xL < -0.95 || xR > 0.95 || yB < -0.95 || yT > 0.95;
+      return { cx: (xL + xR) / 2, cy: (yB + yT) / 2, span: Math.max(xR - xL, yT - yB), edge: xL < -0.95 || xR > 0.95 || yB < -0.95 || yT > 0.95 };
+    };
+    const panToCentre = (cx: number, cy: number, gain: number) => {
       cam.updateMatrixWorld(true);
       right.setFromMatrixColumn(cam.matrixWorld, 0); up.setFromMatrixColumn(cam.matrixWorld, 1);
       const halfH = orbit.state.radius * Math.tan(fovV / 2), halfW = halfH * aspect;
-      orbit.state.target.add(tmp.copy(right).multiplyScalar(cx * halfW * GAIN)).add(tmp.copy(up).multiplyScalar(cy * halfH * GAIN));
-      const zf = edge ? Math.max(span / WANT, 1.2) : span / WANT;
+      orbit.state.target.add(tmp.copy(right).multiplyScalar(cx * halfW * gain)).add(tmp.copy(up).multiplyScalar(cy * halfH * gain));
+    };
+    orbit.state.radius = 12; orbit.apply(); // start wide so the body is on-screen, then converge inward
+    // phase 1: pan + zoom together until the body is roughly framed
+    for (let i = 0; i < 16; i++) {
+      const s = measure();
+      if (!s) { orbit.state.radius = clamp(orbit.state.radius * 1.5, 0.6, 25); orbit.apply(); continue; }
+      panToCentre(s.cx, s.cy, 0.7);
+      const zf = s.edge ? Math.max(s.span / WANT, 1.2) : s.span / WANT;
       orbit.state.radius = clamp(orbit.state.radius * clamp(zf, 0.6, 1.6), 0.6, 25);
       orbit.apply();
-      if (!edge && Math.abs(span - WANT) < 0.1 && Math.abs(cx) < 0.06 && Math.abs(cy) < 0.06) break;
+      if (!s.edge && Math.abs(s.span - WANT) < 0.08 && Math.abs(s.cx) < 0.04 && Math.abs(s.cy) < 0.04) break;
+    }
+    // phase 2: zoom is set - a few pan-only passes (higher gain) to nail the centre
+    for (let i = 0; i < 6; i++) {
+      const s = measure();
+      if (!s) break;
+      if (Math.abs(s.cx) < 0.02 && Math.abs(s.cy) < 0.02) break;
+      panToCentre(s.cx, s.cy, 0.9);
+      orbit.apply();
     }
     this.grid.visible = gV; if (this.shadow) this.shadow.visible = sV; if (this.floorMesh) this.floorMesh.visible = fV;
     this.drawFrame();
