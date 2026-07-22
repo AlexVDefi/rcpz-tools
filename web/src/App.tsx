@@ -70,7 +70,6 @@ export function App() {
   const [hostedMods, setHostedMods] = useState<HostedMod[]>([]); // community mods available to layer over hosted vanilla
   const [enabledMods, setEnabledMods] = useState<string[]>(() => { try { return JSON.parse(localStorage.getItem('pz-enabled-mods') || '[]'); } catch { return []; } });
   const [disabledLocal, setDisabledLocal] = useState<string[]>([]); // locally-loaded mods the user toggled off (session only; default all on)
-  const [localExpanded, setLocalExpanded] = useState(false); // "Your installed mods" grid expanded
   const [pendingLocal, setPendingLocal] = useState(false); // user chose "use my game files" from hosted but hasn't picked an install yet
   const [progress, setProgress] = useState('');
   const [scan, setScan] = useState<Scan | null>(null);
@@ -228,12 +227,12 @@ export function App() {
         setError('No mods found there. Point at your Zomboid/mods, Zomboid/Workshop, or the Steam 108600 folder.');
         setOverlay('out'); setPhase('ready'); window.setTimeout(() => setOverlay(null), 480); return;
       }
-      setMods(discovered); setDisabledLocal([]); setLocalExpanded(true); // freshly loaded: all on, show the grid
+      setMods(discovered); setDisabledLocal([]); // freshly loaded: all on
       rebuildHosted(HOSTED_ASSETS_URL, hostedMods.filter((m) => enabledMods.includes(m.modId)), discovered);
     } catch (e) { setError((e as Error).message); setOverlay('out'); setPhase('ready'); window.setTimeout(() => setOverlay(null), 480); }
   }, [rebuildHosted, hostedMods, enabledMods]);
   const clearLocalMods = useCallback(() => {
-    setMods([]); setDisabledLocal([]); setLocalExpanded(false);
+    setMods([]); setDisabledLocal([]);
     if (HOSTED_ASSETS_URL) rebuildHosted(HOSTED_ASSETS_URL, hostedMods.filter((m) => enabledMods.includes(m.modId)), []);
   }, [rebuildHosted, hostedMods, enabledMods]);
   // "Use my game files instead": leave hosted and show the full local onboarding (Sources + disclaimers).
@@ -464,77 +463,28 @@ export function App() {
                   {fsaSupported && <button className="secondary" onClick={useLocalFiles} disabled={phase === 'scanning'} style={{ padding: '7px 13px', fontSize: 12.5 }}>Use my game files instead</button>}
                 </div>
 
-                {hostedMods.length > 0 && (
-                  <div style={{ marginTop: 14, borderTop: '1px solid var(--line)', paddingTop: 12 }}>
-                    <div style={{ fontSize: 12.5, fontWeight: 600 }}>Community mods <span style={{ color: 'var(--muted)', fontWeight: 400 }}>· hosted by their creators</span></div>
-                    <div style={{ color: 'var(--muted)', fontSize: 12, margin: '3px 0 10px' }}>Optional - enable any to use its assets in the studio. No install needed.</div>
-                    <div style={{ display: 'grid', gap: 10, gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))' }}>
-                      {hostedMods.map((m) => {
-                        const on = enabledMods.includes(m.modId);
-                        return (
-                          <div key={m.modId} className="card" style={{ padding: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column', borderColor: on ? 'var(--accent)' : 'var(--line)' }}>
-                            <div style={{ aspectRatio: '16 / 9', background: '#0e0e12' }}>
-                              {m.preview
-                                ? <img src={m.preview} alt="" loading="lazy" style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
-                                : <div style={{ width: '100%', height: '100%', display: 'grid', placeItems: 'center', color: '#3a3a44' }}>◈</div>}
-                            </div>
-                            <div style={{ padding: '8px 10px 10px', display: 'flex', flexDirection: 'column', gap: 8, flex: 1 }}>
-                              <div style={{ fontSize: 12.5, fontWeight: 600, lineHeight: 1.3, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>{m.title}</div>
-                              <label style={{ marginTop: 'auto', display: 'flex', alignItems: 'center', gap: 8, cursor: phase === 'scanning' ? 'wait' : 'pointer' }}>
-                                <span style={{ flex: 1, minWidth: 0, color: 'var(--muted)', fontSize: 11.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{m.author ? `by ${m.author}` : ''}</span>
-                                <input type="checkbox" checked={on} disabled={phase === 'scanning'} onChange={() => toggleHostedMod(m.modId)} style={{ width: 17, height: 17, accentColor: 'var(--accent)', flexShrink: 0 }} />
-                              </label>
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                )}
-
-                {fsaSupported && (
-                  <div style={{ marginTop: 14, borderTop: '1px solid var(--line)', paddingTop: 12 }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 7, flexWrap: 'wrap' }}>
-                      <b style={{ fontSize: 12.5 }}>Your installed mods</b>
-                      <InfoDot text={<>Load mods already installed on your PC to use alongside the built-in assets. Point at your <code>Zomboid/mods</code>, your <code>Zomboid/Workshop</code>, or the Steam <code>...workshop/content/108600</code> folder - as long as it is <b>not</b> under <code>C:\Program Files</code> (browsers cannot read there).</>} />
-                      {mods.length > 0 && (
-                        <span style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
-                          <button className="secondary" onClick={loadLocalMods} disabled={phase === 'scanning'} style={{ padding: '5px 11px', fontSize: 12 }}>Change</button>
-                          <button className="secondary" onClick={clearLocalMods} disabled={phase === 'scanning'} style={{ padding: '5px 11px', fontSize: 12 }}>Remove</button>
-                        </span>
-                      )}
-                    </div>
-                    {mods.length > 0 ? (
+                {(() => {
+                  const busy = phase === 'scanning';
+                  const tabs: ModTab[] = [];
+                  if (hostedMods.length > 0) tabs.push({
+                    key: 'community', label: 'Community mods', onToggle: toggleHostedMod,
+                    items: hostedMods.map((m) => ({ id: m.modId, title: m.title, author: m.author, enabled: enabledMods.includes(m.modId), preview: m.preview })),
+                    note: 'Hosted by their creators. Optional - enable any to use its assets in the studio, no install needed.',
+                  });
+                  if (fsaSupported) tabs.push({
+                    key: 'local', label: 'Your installed mods', onToggle: toggleLocalMod,
+                    items: mods.map((m) => ({ id: m.modId, title: m.name, author: m.author, enabled: !disabledLocal.includes(m.modId), poster: m.poster })),
+                    note: <>Loaded from your PC, layered over the built-in assets. <InfoDot text={<>Point at your <code>Zomboid/mods</code>, your <code>Zomboid/Workshop</code>, or the Steam <code>...workshop/content/108600</code> folder - as long as it is <b>not</b> under <code>C:\Program Files</code> (browsers cannot read there).</>} /></>,
+                    controls: mods.length > 0 ? (
                       <>
-                        <button onClick={() => setLocalExpanded((v) => !v)} style={{ marginTop: 7, padding: 0, background: 'none', border: 'none', color: 'var(--muted)', fontSize: 12.5, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-                          <b style={{ color: 'var(--text)' }}>{mods.filter((m) => !disabledLocal.includes(m.modId)).length}</b> of {mods.length} mod{mods.length === 1 ? '' : 's'} loaded from your PC enabled
-                          <span style={{ fontSize: 10, opacity: 0.8 }}>{localExpanded ? '▲' : '▼'}</span>
-                        </button>
-                        {localExpanded && (
-                          <div style={{ display: 'grid', gap: 10, gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', marginTop: 10 }}>
-                            {mods.map((m) => {
-                              const on = !disabledLocal.includes(m.modId);
-                              return (
-                                <div key={m.modId} className="card" style={{ padding: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column', borderColor: on ? 'var(--accent)' : 'var(--line)' }}>
-                                  <div style={{ aspectRatio: '16 / 9', background: '#0e0e12' }}><LocalPoster handle={m.poster} /></div>
-                                  <div style={{ padding: '8px 10px 10px', display: 'flex', flexDirection: 'column', gap: 8, flex: 1 }}>
-                                    <div style={{ fontSize: 12.5, fontWeight: 600, lineHeight: 1.3, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>{m.name}</div>
-                                    <label style={{ marginTop: 'auto', display: 'flex', alignItems: 'center', gap: 8, cursor: phase === 'scanning' ? 'wait' : 'pointer' }}>
-                                      <span style={{ flex: 1, minWidth: 0, color: 'var(--muted)', fontSize: 11.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{m.author ? `by ${m.author}` : ''}</span>
-                                      <input type="checkbox" checked={on} disabled={phase === 'scanning'} onChange={() => toggleLocalMod(m.modId)} style={{ width: 17, height: 17, accentColor: 'var(--accent)', flexShrink: 0 }} />
-                                    </label>
-                                  </div>
-                                </div>
-                              );
-                            })}
-                          </div>
-                        )}
+                        <button className="secondary" onClick={loadLocalMods} disabled={busy} style={{ padding: '5px 11px', fontSize: 12 }}>Change</button>
+                        <button className="secondary" onClick={clearLocalMods} disabled={busy} style={{ padding: '5px 11px', fontSize: 12 }}>Remove</button>
                       </>
-                    ) : (
-                      <button className="secondary" onClick={loadLocalMods} disabled={phase === 'scanning'} style={{ marginTop: 9, padding: '6px 12px', fontSize: 12.5 }}>Load locally installed mods</button>
-                    )}
-                  </div>
-                )}
+                    ) : undefined,
+                    empty: <button className="secondary" onClick={loadLocalMods} disabled={busy} style={{ padding: '6px 12px', fontSize: 12.5 }}>Load locally installed mods</button>,
+                  });
+                  return tabs.length > 0 ? <ModsPanel tabs={tabs} busy={busy} /> : null;
+                })()}
               </>
             ) : (
               <>
@@ -889,6 +839,100 @@ function LocalPoster({ handle }: { handle?: FileSystemFileHandle }) {
   return url
     ? <img src={url} alt="" loading="lazy" style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
     : <div style={{ width: '100%', height: '100%', display: 'grid', placeItems: 'center', color: '#3a3a44' }}>◈</div>;
+}
+
+const MODS_PER_PAGE = 12;
+type ModItem = { id: string; title: string; author?: string | null; enabled: boolean; preview?: string | null; poster?: FileSystemFileHandle };
+type ModTab = { key: string; label: string; items: ModItem[]; onToggle: (id: string) => void; note?: ReactNode; controls?: ReactNode; empty?: ReactNode };
+
+// Thumbnail for a mod card: a hosted preview URL, a local poster handle, or a placeholder.
+function ModThumb({ preview, poster }: { preview?: string | null; poster?: FileSystemFileHandle }) {
+  if (preview) return <img src={preview} alt="" loading="lazy" style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />;
+  if (poster) return <LocalPoster handle={poster} />;
+  return <div style={{ width: '100%', height: '100%', display: 'grid', placeItems: 'center', color: '#3a3a44' }}>◈</div>;
+}
+
+// Tabbed mods browser (community-hosted / locally-installed) with search, an enabled/disabled
+// filter, and pagination. Each tab supplies its own normalized item list + toggle handler.
+function ModsPanel({ tabs, busy }: { tabs: ModTab[]; busy: boolean }) {
+  const [active, setActive] = useState(0);
+  const [query, setQuery] = useState('');
+  const [filter, setFilter] = useState<'all' | 'on' | 'off'>('all');
+  const [page, setPage] = useState(0);
+  const idx = Math.min(active, tabs.length - 1);
+  const tab = tabs[idx];
+  const items = tab.items;
+  useEffect(() => { setPage(0); }, [idx, query, filter, items.length]); // any of these invalidates the current page
+
+  const q = query.trim().toLowerCase();
+  const enabledCount = items.filter((m) => m.enabled).length;
+  const filtered = items.filter((m) => {
+    if (filter === 'on' && !m.enabled) return false;
+    if (filter === 'off' && m.enabled) return false;
+    return !q || `${m.title} ${m.author || ''}`.toLowerCase().includes(q);
+  });
+  const pages = Math.max(1, Math.ceil(filtered.length / MODS_PER_PAGE));
+  const p = Math.min(page, pages - 1);
+  const shown = filtered.slice(p * MODS_PER_PAGE, p * MODS_PER_PAGE + MODS_PER_PAGE);
+  const inputStyle = { padding: '7px 10px', fontSize: 12.5, background: '#14141a', border: '1px solid var(--line)', borderRadius: 7, color: 'var(--text)' } as const;
+
+  return (
+    <div style={{ marginTop: 14, borderTop: '1px solid var(--line)', paddingTop: 12 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', gap: 4 }}>
+          {tabs.map((t, i) => (
+            <button key={t.key} onClick={() => setActive(i)} style={{
+              padding: '6px 12px', fontSize: 12.5, fontWeight: 600, cursor: 'pointer', borderRadius: 7,
+              background: i === idx ? 'var(--accent)' : 'transparent', color: i === idx ? '#fff' : 'var(--muted)',
+              border: `1px solid ${i === idx ? 'var(--accent)' : 'var(--line)'}`,
+            }}>{t.label} <span style={{ opacity: 0.7, fontWeight: 400 }}>{t.items.length}</span></button>
+          ))}
+        </div>
+        {tab.controls && <span style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>{tab.controls}</span>}
+      </div>
+      {tab.note && <div style={{ color: 'var(--muted)', fontSize: 12, margin: '9px 0 0', display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>{tab.note}</div>}
+
+      {items.length === 0 ? (
+        <div style={{ marginTop: 11 }}>{tab.empty}</div>
+      ) : (
+        <>
+          <div style={{ display: 'flex', gap: 8, margin: '11px 0', flexWrap: 'wrap', alignItems: 'center' }}>
+            <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search name or author" style={{ ...inputStyle, flex: 1, minWidth: 150 }} />
+            <select value={filter} onChange={(e) => setFilter(e.target.value as 'all' | 'on' | 'off')} style={inputStyle}>
+              <option value="all">All ({items.length})</option>
+              <option value="on">Enabled ({enabledCount})</option>
+              <option value="off">Disabled ({items.length - enabledCount})</option>
+            </select>
+          </div>
+          {shown.length === 0 ? (
+            <div style={{ color: 'var(--muted)', fontSize: 12.5, padding: '8px 0 4px' }}>No mods match your search.</div>
+          ) : (
+            <div style={{ display: 'grid', gap: 10, gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))' }}>
+              {shown.map((m) => (
+                <div key={m.id} className="card" style={{ padding: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column', borderColor: m.enabled ? 'var(--accent)' : 'var(--line)' }}>
+                  <div style={{ aspectRatio: '16 / 9', background: '#0e0e12' }}><ModThumb preview={m.preview} poster={m.poster} /></div>
+                  <div style={{ padding: '8px 10px 10px', display: 'flex', flexDirection: 'column', gap: 8, flex: 1 }}>
+                    <div style={{ fontSize: 12.5, fontWeight: 600, lineHeight: 1.3, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>{m.title}</div>
+                    <label style={{ marginTop: 'auto', display: 'flex', alignItems: 'center', gap: 8, cursor: busy ? 'wait' : 'pointer' }}>
+                      <span style={{ flex: 1, minWidth: 0, color: 'var(--muted)', fontSize: 11.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{m.author ? `by ${m.author}` : ''}</span>
+                      <input type="checkbox" checked={m.enabled} disabled={busy} onChange={() => tab.onToggle(m.id)} style={{ width: 17, height: 17, accentColor: 'var(--accent)', flexShrink: 0 }} />
+                    </label>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+          {pages > 1 && (
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 14, marginTop: 13 }}>
+              <button className="secondary" onClick={() => setPage(p - 1)} disabled={p === 0} style={{ padding: '5px 12px', fontSize: 12.5 }}>‹ Prev</button>
+              <span style={{ color: 'var(--muted)', fontSize: 12 }}>Page {p + 1} of {pages}</span>
+              <button className="secondary" onClick={() => setPage(p + 1)} disabled={p >= pages - 1} style={{ padding: '5px 12px', fontSize: 12.5 }}>Next ›</button>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
 }
 
 function FolderChip({ label, name, connected, warn, action, onAction, disabled, hint }: {
