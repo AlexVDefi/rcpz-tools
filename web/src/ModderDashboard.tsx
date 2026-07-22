@@ -123,7 +123,7 @@ export function ModderDashboard({ steam }: { steam: SteamState }) {
         <div className="card" style={{ color: 'var(--muted)' }}>Steam returned no published PZ mods for this account. If your Workshop is set to private, make it public and Refresh.</div>
       )}
       {mods && mods.length > 0 && (
-        <div className="card"><ModsPanel tabs={[tab]} busy={loading} /></div>
+        <div className="card"><ModsPanel tabs={[tab]} busy={loading} divided={false} /></div>
       )}
 
       {confirmMod && (

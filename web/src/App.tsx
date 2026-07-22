@@ -72,6 +72,7 @@ export function App() {
   const [enabledMods, setEnabledMods] = useState<string[]>(() => { try { return JSON.parse(localStorage.getItem('pz-enabled-mods') || '[]'); } catch { return []; } });
   const [disabledLocal, setDisabledLocal] = useState<string[]>([]); // locally-loaded mods the user toggled off (session only; default all on)
   const [activeModTab, setActiveModTab] = useState(''); // which ModsPanel tab is showing (hosted path), for the safety disclaimer
+  const [savedWorkshop, setSavedWorkshop] = useState<FileSystemDirectoryHandle | null>(null); // remembered mods folder awaiting a one-click reconnect after a reload dropped its permission
   const [pendingLocal, setPendingLocal] = useState(false); // user chose "use my game files" from hosted but hasn't picked an install yet
   const [progress, setProgress] = useState('');
   const [scan, setScan] = useState<Scan | null>(null);
@@ -198,11 +199,12 @@ export function App() {
   }, []);
 
   // Load the configured hosted bundle (the "Start now" / "built-in assets" path).
-  const useHosted = useCallback(async () => {
+  const useHosted = useCallback(async (localOverride?: DiscoveredMod[]) => {
     if (!HOSTED_ASSETS_URL) return;
     let list = hostedMods;
     if (!list.length) { list = await fetchHostedMods(); if (list.length) setHostedMods(list); } // ready enabled-mod restore
-    rebuildHosted(HOSTED_ASSETS_URL, list.filter((m) => enabledMods.includes(m.modId)), mods.filter((m) => !disabledLocal.includes(m.modId)));
+    const local = (localOverride ?? mods).filter((m) => !disabledLocal.includes(m.modId));
+    rebuildHosted(HOSTED_ASSETS_URL, list.filter((m) => enabledMods.includes(m.modId)), local);
   }, [rebuildHosted, hostedMods, enabledMods, mods, disabledLocal]);
   // Enable/disable a community mod: persist the choice and, if we're on hosted assets, re-layer now.
   const toggleHostedMod = useCallback((modId: string) => {
@@ -243,12 +245,24 @@ export function App() {
         setError('No mods found there. Point at your Zomboid/mods, Zomboid/Workshop, or the Steam 108600 folder.');
         setOverlay('out'); setPhase('ready'); window.setTimeout(() => setOverlay(null), 480); return;
       }
-      setMods(discovered); setDisabledLocal([]); // freshly loaded: all on
+      setMods(discovered); setDisabledLocal([]); setSavedWorkshop(null); // freshly loaded: all on
       rebuildHosted(HOSTED_ASSETS_URL, hostedMods.filter((m) => enabledMods.includes(m.modId)), discovered);
     } catch (e) { setError((e as Error).message); setOverlay('out'); setPhase('ready'); window.setTimeout(() => setOverlay(null), 480); }
   }, [rebuildHosted, hostedMods, enabledMods]);
+  // Re-grant read access to the mods folder remembered from a previous session (one click, no re-pick),
+  // then discover + layer. requestPermission needs this user gesture; queryPermission can't restore it silently.
+  const reconnectLocalMods = useCallback(async () => {
+    if (!savedWorkshop) return;
+    if (!(await requestPermission(savedWorkshop))) return; // user declined the re-grant prompt
+    setError(''); setScanHosted(true); setScan(null); setPhase('scanning'); setOverlay('in');
+    try {
+      const discovered = await discoverWorkshopMods(savedWorkshop);
+      setMods(discovered); setDisabledLocal([]); setSavedWorkshop(null);
+      rebuildHosted(HOSTED_ASSETS_URL, hostedMods.filter((m) => enabledMods.includes(m.modId)), discovered);
+    } catch (e) { setError((e as Error).message); setOverlay('out'); setPhase('ready'); window.setTimeout(() => setOverlay(null), 480); }
+  }, [savedWorkshop, rebuildHosted, hostedMods, enabledMods]);
   const clearLocalMods = useCallback(() => {
-    setMods([]); setDisabledLocal([]);
+    setMods([]); setDisabledLocal([]); setSavedWorkshop(null);
     if (HOSTED_ASSETS_URL) rebuildHosted(HOSTED_ASSETS_URL, hostedMods.filter((m) => enabledMods.includes(m.modId)), []);
   }, [rebuildHosted, hostedMods, enabledMods]);
   // "Use my game files instead": leave hosted and show the full local onboarding (Sources + disclaimers).
@@ -290,7 +304,19 @@ export function App() {
           return;
         }
       }
-      if (hostedAvailable && localStorage.getItem(SOURCE_KEY) === 'hosted') useHosted(); // returning hosted user
+      if (hostedAvailable && localStorage.getItem(SOURCE_KEY) === 'hosted') {
+        // Returning hosted user: also restore the mods folder they had loaded. If its read permission
+        // survived the reload, re-discover silently; otherwise remember the handle for a one-click reconnect.
+        let localMods: DiscoveredMod[] = [];
+        try {
+          const ws = await loadDir(WORKSHOP_KEY);
+          if (ws) {
+            if (await hasPermission(ws)) { localMods = await discoverWorkshopMods(ws); setMods(localMods); }
+            else setSavedWorkshop(ws);
+          }
+        } catch { /* best-effort; fall through to a vanilla+community rebuild */ }
+        useHosted(localMods);
+      }
     })();
   }, [rebuild, useHosted]);
 
@@ -412,7 +438,7 @@ export function App() {
                 <p style={{ color: 'var(--muted)', fontSize: 13.5, lineHeight: 1.6, margin: '9px 0 16px', flex: 1 }}>
                   Start right away with the vanilla Project Zomboid assets, hosted online. No download, works on any device - phones and non-Chromium browsers included.
                 </p>
-                <button onClick={useHosted} style={{ padding: '10px 18px', fontSize: 14.5 }}>Start now</button>
+                <button onClick={() => useHosted()} style={{ padding: '10px 18px', fontSize: 14.5 }}>Start now</button>
                 <div style={{ color: 'var(--muted)', fontSize: 12, marginTop: 8 }}>Nothing to install, no file permissions to grant.</div>
               </div>
             )}
@@ -463,7 +489,7 @@ export function App() {
               {/* top-right: on hosted show what loaded; on the local path offer a way back to built-in */}
               {phase === 'ready' && assetSource === 'hosted' && progress && <span style={{ color: 'var(--muted)', fontSize: 12.5, marginLeft: 'auto' }}>{progress}</span>}
               {phase !== 'scanning' && assetSource !== 'hosted' && hostedAvailable && (
-                <button className="secondary" onClick={useHosted} style={{ marginLeft: 'auto', height: 28, padding: '0 12px', fontSize: 12.5 }}>Switch to built-in assets</button>
+                <button className="secondary" onClick={() => useHosted()} style={{ marginLeft: 'auto', height: 28, padding: '0 12px', fontSize: 12.5 }}>Switch to built-in assets</button>
               )}
             </div>
             {assetSource === 'hosted' ? (
@@ -497,7 +523,17 @@ export function App() {
                         <button className="secondary" onClick={clearLocalMods} disabled={busy} style={{ padding: '5px 11px', fontSize: 12 }}>Remove</button>
                       </>
                     ) : undefined,
-                    empty: <button className="secondary" onClick={loadLocalMods} disabled={busy} style={{ padding: '6px 12px', fontSize: 12.5 }}>Load locally installed mods</button>,
+                    empty: savedWorkshop ? (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 8, alignItems: 'flex-start' }}>
+                        <div style={{ color: 'var(--muted)', fontSize: 12 }}>Your mods folder <code>{savedWorkshop.name}</code> is remembered from last time - reconnect to use it again (a reload drops file access for security).</div>
+                        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                          <button onClick={reconnectLocalMods} disabled={busy} style={{ padding: '6px 12px', fontSize: 12.5 }}>Reconnect {savedWorkshop.name}</button>
+                          <button className="secondary" onClick={loadLocalMods} disabled={busy} style={{ padding: '6px 12px', fontSize: 12.5 }}>Choose a different folder</button>
+                        </div>
+                      </div>
+                    ) : (
+                      <button className="secondary" onClick={loadLocalMods} disabled={busy} style={{ padding: '6px 12px', fontSize: 12.5 }}>Load locally installed mods</button>
+                    ),
                   });
                   return tabs.length > 0 ? <ModsPanel tabs={tabs} busy={busy} onTab={setActiveModTab} /> : null;
                 })()}

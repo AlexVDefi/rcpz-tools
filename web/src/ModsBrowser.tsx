@@ -58,7 +58,7 @@ export function ModThumb({ preview, poster }: { preview?: string | null; poster?
   return <div style={FILL_PLACEHOLDER}>◈</div>;
 }
 
-export function ModsPanel({ tabs, busy, onTab }: { tabs: ModTab[]; busy: boolean; onTab?: (key: string) => void }) {
+export function ModsPanel({ tabs, busy, onTab, divided = true }: { tabs: ModTab[]; busy: boolean; onTab?: (key: string) => void; divided?: boolean }) {
   const [active, setActive] = useState(0);
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState<'all' | 'on' | 'off'>('all');
@@ -88,7 +88,7 @@ export function ModsPanel({ tabs, busy, onTab }: { tabs: ModTab[]; busy: boolean
   const cardBusy = (m: ModItem) => busy || !!m.busy;
 
   return (
-    <div style={{ marginTop: 14, borderTop: '1px solid var(--line)', paddingTop: 12 }}>
+    <div style={divided ? { marginTop: 14, borderTop: '1px solid var(--line)', paddingTop: 12 } : undefined}>
       {(tabs.length > 1 || tab.controls) && (
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
           {tabs.length > 1 && (
