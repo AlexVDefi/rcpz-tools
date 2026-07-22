@@ -69,6 +69,8 @@ export function App() {
   const [assetSource, setAssetSource] = useState<'local' | 'hosted' | null>(null); // which path built the current index
   const [hostedMods, setHostedMods] = useState<HostedMod[]>([]); // community mods available to layer over hosted vanilla
   const [enabledMods, setEnabledMods] = useState<string[]>(() => { try { return JSON.parse(localStorage.getItem('pz-enabled-mods') || '[]'); } catch { return []; } });
+  const [disabledLocal, setDisabledLocal] = useState<string[]>([]); // locally-loaded mods the user toggled off (session only; default all on)
+  const [localExpanded, setLocalExpanded] = useState(false); // "Your installed mods" grid expanded
   const [pendingLocal, setPendingLocal] = useState(false); // user chose "use my game files" from hosted but hasn't picked an install yet
   const [progress, setProgress] = useState('');
   const [scan, setScan] = useState<Scan | null>(null);
@@ -199,14 +201,20 @@ export function App() {
     if (!HOSTED_ASSETS_URL) return;
     let list = hostedMods;
     if (!list.length) { list = await fetchHostedMods(); if (list.length) setHostedMods(list); } // ready enabled-mod restore
-    rebuildHosted(HOSTED_ASSETS_URL, list.filter((m) => enabledMods.includes(m.modId)), mods);
-  }, [rebuildHosted, hostedMods, enabledMods, mods]);
+    rebuildHosted(HOSTED_ASSETS_URL, list.filter((m) => enabledMods.includes(m.modId)), mods.filter((m) => !disabledLocal.includes(m.modId)));
+  }, [rebuildHosted, hostedMods, enabledMods, mods, disabledLocal]);
   // Enable/disable a community mod: persist the choice and, if we're on hosted assets, re-layer now.
   const toggleHostedMod = useCallback((modId: string) => {
     const next = enabledMods.includes(modId) ? enabledMods.filter((x) => x !== modId) : [...enabledMods, modId];
     setEnabledMods(next); localStorage.setItem('pz-enabled-mods', JSON.stringify(next));
-    if (assetSource === 'hosted' && HOSTED_ASSETS_URL) rebuildHosted(HOSTED_ASSETS_URL, hostedMods.filter((m) => next.includes(m.modId)), mods);
-  }, [enabledMods, hostedMods, assetSource, rebuildHosted, mods]);
+    if (assetSource === 'hosted' && HOSTED_ASSETS_URL) rebuildHosted(HOSTED_ASSETS_URL, hostedMods.filter((m) => next.includes(m.modId)), mods.filter((m) => !disabledLocal.includes(m.modId)));
+  }, [enabledMods, hostedMods, assetSource, rebuildHosted, mods, disabledLocal]);
+  // Enable/disable one locally-loaded mod (session only) and, if we're on hosted assets, re-layer now.
+  const toggleLocalMod = useCallback((modId: string) => {
+    const next = disabledLocal.includes(modId) ? disabledLocal.filter((x) => x !== modId) : [...disabledLocal, modId];
+    setDisabledLocal(next);
+    if (assetSource === 'hosted' && HOSTED_ASSETS_URL) rebuildHosted(HOSTED_ASSETS_URL, hostedMods.filter((m) => enabledMods.includes(m.modId)), mods.filter((m) => !next.includes(m.modId)));
+  }, [disabledLocal, assetSource, rebuildHosted, hostedMods, enabledMods, mods]);
   // "Load locally installed mods" while on hosted assets: pick a mods folder, discover, layer over vanilla.
   const loadLocalMods = useCallback(async () => {
     let h: FileSystemDirectoryHandle | null = null;
@@ -220,12 +228,12 @@ export function App() {
         setError('No mods found there. Point at your Zomboid/mods, Zomboid/Workshop, or the Steam 108600 folder.');
         setOverlay('out'); setPhase('ready'); window.setTimeout(() => setOverlay(null), 480); return;
       }
-      setMods(discovered);
+      setMods(discovered); setDisabledLocal([]); setLocalExpanded(true); // freshly loaded: all on, show the grid
       rebuildHosted(HOSTED_ASSETS_URL, hostedMods.filter((m) => enabledMods.includes(m.modId)), discovered);
     } catch (e) { setError((e as Error).message); setOverlay('out'); setPhase('ready'); window.setTimeout(() => setOverlay(null), 480); }
   }, [rebuildHosted, hostedMods, enabledMods]);
   const clearLocalMods = useCallback(() => {
-    setMods([]);
+    setMods([]); setDisabledLocal([]); setLocalExpanded(false);
     if (HOSTED_ASSETS_URL) rebuildHosted(HOSTED_ASSETS_URL, hostedMods.filter((m) => enabledMods.includes(m.modId)), []);
   }, [rebuildHosted, hostedMods, enabledMods]);
   // "Use my game files instead": leave hosted and show the full local onboarding (Sources + disclaimers).
@@ -496,9 +504,35 @@ export function App() {
                         </span>
                       )}
                     </div>
-                    {mods.length > 0
-                      ? <div style={{ color: 'var(--muted)', fontSize: 12.5, marginTop: 7 }}><b style={{ color: 'var(--text)' }}>{mods.length}</b> mod{mods.length === 1 ? '' : 's'} loaded from your PC, layered over the built-in assets.</div>
-                      : <button className="secondary" onClick={loadLocalMods} disabled={phase === 'scanning'} style={{ marginTop: 9, padding: '6px 12px', fontSize: 12.5 }}>Load locally installed mods</button>}
+                    {mods.length > 0 ? (
+                      <>
+                        <button onClick={() => setLocalExpanded((v) => !v)} style={{ marginTop: 7, padding: 0, background: 'none', border: 'none', color: 'var(--muted)', fontSize: 12.5, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                          <b style={{ color: 'var(--text)' }}>{mods.filter((m) => !disabledLocal.includes(m.modId)).length}</b> of {mods.length} mod{mods.length === 1 ? '' : 's'} loaded from your PC enabled
+                          <span style={{ fontSize: 10, opacity: 0.8 }}>{localExpanded ? '▲' : '▼'}</span>
+                        </button>
+                        {localExpanded && (
+                          <div style={{ display: 'grid', gap: 10, gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', marginTop: 10 }}>
+                            {mods.map((m) => {
+                              const on = !disabledLocal.includes(m.modId);
+                              return (
+                                <div key={m.modId} className="card" style={{ padding: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column', borderColor: on ? 'var(--accent)' : 'var(--line)' }}>
+                                  <div style={{ aspectRatio: '16 / 9', background: '#0e0e12' }}><LocalPoster handle={m.poster} /></div>
+                                  <div style={{ padding: '8px 10px 10px', display: 'flex', flexDirection: 'column', gap: 8, flex: 1 }}>
+                                    <div style={{ fontSize: 12.5, fontWeight: 600, lineHeight: 1.3, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>{m.name}</div>
+                                    <label style={{ marginTop: 'auto', display: 'flex', alignItems: 'center', gap: 8, cursor: phase === 'scanning' ? 'wait' : 'pointer' }}>
+                                      <span style={{ flex: 1, minWidth: 0, color: 'var(--muted)', fontSize: 11.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{m.author ? `by ${m.author}` : ''}</span>
+                                      <input type="checkbox" checked={on} disabled={phase === 'scanning'} onChange={() => toggleLocalMod(m.modId)} style={{ width: 17, height: 17, accentColor: 'var(--accent)', flexShrink: 0 }} />
+                                    </label>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </>
+                    ) : (
+                      <button className="secondary" onClick={loadLocalMods} disabled={phase === 'scanning'} style={{ marginTop: 9, padding: '6px 12px', fontSize: 12.5 }}>Load locally installed mods</button>
+                    )}
                   </div>
                 )}
               </>
@@ -841,6 +875,20 @@ function InfoDot({ text }: { text: ReactNode }) {
       )}
     </span>
   );
+}
+
+// Thumbnail for a locally-loaded mod: reads its poster/icon file into an object URL, revoked on unmount.
+function LocalPoster({ handle }: { handle?: FileSystemFileHandle }) {
+  const [url, setUrl] = useState<string | null>(null);
+  useEffect(() => {
+    let dead = false; let made: string | null = null;
+    if (handle) handle.getFile().then((f) => { if (dead) return; made = URL.createObjectURL(f); setUrl(made); }).catch(() => {});
+    else setUrl(null);
+    return () => { dead = true; if (made) URL.revokeObjectURL(made); };
+  }, [handle]);
+  return url
+    ? <img src={url} alt="" loading="lazy" style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
+    : <div style={{ width: '100%', height: '100%', display: 'grid', placeItems: 'center', color: '#3a3a44' }}>◈</div>;
 }
 
 function FolderChip({ label, name, connected, warn, action, onAction, disabled, hint }: {
