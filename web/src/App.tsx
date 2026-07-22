@@ -74,6 +74,7 @@ export function App() {
   const [activeModTab, setActiveModTab] = useState(''); // which ModsPanel tab is showing (hosted path), for the safety disclaimer
   const [savedWorkshop, setSavedWorkshop] = useState<FileSystemDirectoryHandle | null>(null); // remembered mods folder awaiting a one-click reconnect after a reload dropped its permission
   const [relayering, setRelayering] = useState(false); // a debounced mod-toggle re-layer is pending/running (shows a small spinner, not the full modal)
+  const [agreedTerms, setAgreedTerms] = useState(() => localStorage.getItem('pz-terms-agreed') === '1'); // first-visit Indie Stone terms gate
   const [pendingLocal, setPendingLocal] = useState(false); // user chose "use my game files" from hosted but hasn't picked an install yet
   const [progress, setProgress] = useState('');
   const [scan, setScan] = useState<Scan | null>(null);
@@ -673,6 +674,33 @@ export function App() {
       </div>
 
       {overlay && <ScanOverlay scan={scan} closing={overlay === 'out'} hosted={scanHosted} />}
+      {!agreedTerms && <TermsGate onAgree={() => { localStorage.setItem('pz-terms-agreed', '1'); setAgreedTerms(true); }} />}
+    </div>
+  );
+}
+
+// First-visit (web) / first-launch (desktop) gate: acknowledge that this is an unofficial fan tool and
+// agree to the Indie Stone Terms before using it. Shown once, then remembered in localStorage.
+function TermsGate({ onAgree }: { onAgree: () => void }) {
+  const TERMS = 'https://projectzomboid.com/blog/support/terms-conditions/';
+  const link = { color: 'var(--accent)' };
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: '#000d', display: 'grid', placeItems: 'center', zIndex: 200, padding: 20 }}>
+      <div className="card" style={{ maxWidth: 500, width: '100%' }}>
+        <b style={{ fontSize: 17 }}>Welcome to PZ Survivor Studio</b>
+        <p style={{ color: 'var(--muted)', fontSize: 13.5, lineHeight: 1.65, margin: '12px 0 0' }}>
+          PZ Survivor Studio is a fan-made, unofficial tool with <b style={{ color: 'var(--text)' }}>no affiliation or connection to The Indie Stone</b>.
+        </p>
+        <p style={{ color: 'var(--muted)', fontSize: 13.5, lineHeight: 1.65, margin: '10px 0 0' }}>
+          Thanks to The Indie Stone for creating <a href="https://projectzomboid.com/" target="_blank" rel="noopener noreferrer" style={link}>Project Zomboid</a>, which made this possible. This is an unofficial fan production for non-commercial purposes, made under the Indie Stone Terms.
+        </p>
+        <p style={{ color: 'var(--muted)', fontSize: 13.5, lineHeight: 1.65, margin: '10px 0 0' }}>
+          By using this app and the Project Zomboid assets it needs, you agree to the <a href={TERMS} target="_blank" rel="noopener noreferrer" style={link}>Indie Stone Terms &amp; Conditions</a>. Any project you create using these assets must also comply with those Terms.
+        </p>
+        <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 18 }}>
+          <button onClick={onAgree} style={{ padding: '9px 18px', fontSize: 14 }}>I agree, continue</button>
+        </div>
+      </div>
     </div>
   );
 }
