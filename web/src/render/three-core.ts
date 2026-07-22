@@ -121,7 +121,7 @@ export function makeOrbit(getCamera: () => THREE.Camera, dom: HTMLElement, targe
   const state = { radius: 2.2, theta: Math.PI * 0.5, phi: Math.PI * 0.42, target };
   let mode: 'none' | 'rotate' | 'pan' = 'none';
   let lastX = 0, lastY = 0;
-  const api = { state, apply, setTarget, dispose, onInteract: undefined as (() => void) | undefined };
+  const api = { state, apply, setTarget, dispose, onInteract: undefined as (() => void) | undefined, onAdjust: undefined as (() => void) | undefined };
 
   function apply() {
     const camera = getCamera() as THREE.PerspectiveCamera & THREE.OrthographicCamera & { __aspect?: number };
@@ -157,6 +157,7 @@ export function makeOrbit(getCamera: () => THREE.Camera, dom: HTMLElement, targe
     if (e.button === 2) { mode = 'pan'; e.preventDefault(); } // pan keeps the current (e.g. iso) camera
     else if (e.button === 0) { mode = 'rotate'; api.onInteract?.(); } // only rotating leaves a locked camera
     else return;
+    api.onAdjust?.();
     lastX = e.clientX; lastY = e.clientY;
   };
   const onUp = () => { mode = 'none'; };
@@ -169,6 +170,7 @@ export function makeOrbit(getCamera: () => THREE.Camera, dom: HTMLElement, targe
   };
   const onWheel = (e: WheelEvent) => {
     e.preventDefault();
+    api.onAdjust?.();
     state.radius = Math.max(0.6, Math.min(8, state.radius * (1 + Math.sign(e.deltaY) * 0.1)));
     apply();
   };
@@ -179,6 +181,7 @@ export function makeOrbit(getCamera: () => THREE.Camera, dom: HTMLElement, targe
   // sets touch-action:none so these gestures don't scroll/zoom the page.
   let pinch = 0;
   const onTouchStart = (e: TouchEvent) => {
+    api.onAdjust?.();
     if (e.touches.length === 1) { mode = 'rotate'; api.onInteract?.(); lastX = e.touches[0].clientX; lastY = e.touches[0].clientY; }
     else if (e.touches.length >= 2) {
       mode = 'pan';

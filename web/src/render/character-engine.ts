@@ -48,6 +48,7 @@ export class CharacterEngine {
   private viewRect: { x: number; y: number; w: number; h: number } | null = null;
   private exportAspect: number | null = null;
   private bodyBounds: { minY: number; maxY: number; cx: number; cz: number } | null = null;
+  private autoFrame = false; // when set, canvas resizes re-fit the whole body (mobile default until the user adjusts the camera)
   private bodyMeshes: THREE.SkinnedMesh[] = []; // body skinned meshes, for measuring the true posed sole
   private turntable = false;
   private spin = 0; // live turntable angle (rad)
@@ -81,7 +82,8 @@ export class CharacterEngine {
     this.addShadow();
     this.orbit = makeOrbit(() => this.camera as THREE.PerspectiveCamera, canvas);
     // dragging the mouse in the locked PZ-iso view drops back to free orbit
-    this.orbit.onInteract = () => { if (this.camMode === 'iso') this.setCamMode('orbit'); };
+    this.orbit.onInteract = () => { this.autoFrame = false; if (this.camMode === 'iso') this.setCamMode('orbit'); };
+    this.orbit.onAdjust = () => { this.autoFrame = false; }; // any pan/zoom/touch also ends auto-framing
     this.fit();
     const loop = () => {
       if (this.disposed) return;
@@ -141,6 +143,14 @@ export class CharacterEngine {
   /** Set the export/viewfinder aspect (w/h), or null for the full viewport. */
   setExportAspect(aspect: number | null) { this.exportAspect = aspect; this.fit(); }
 
+  /** Canvas resized (viewport / layout / device-mode change): re-fit the projection and, while
+   *  auto-framing is on, re-frame the whole body to the new size. Called by the ResizeObserver. */
+  resize() { this.fit(); if (this.autoFrame && this.bodyBounds) this.frameToBody(); }
+
+  /** Turn on/off "keep the whole body framed as the canvas resizes" (the mobile default). Framing
+   *  once immediately if a body is loaded; the user adjusting the camera or picking a preset ends it. */
+  setAutoFrame(on: boolean) { this.autoFrame = on; if (on && this.bodyBounds) this.frameToBody(); }
+
   // ---- scene controls (port of character.js setCamMode / bindView / bindLighting) ----
 
   /** Switch between free perspective orbit and the vanilla PZ iso camera (pitch 30, yaw 45). */
@@ -157,6 +167,7 @@ export class CharacterEngine {
    *  a real focal length, framed on the body from its measured bounds; `iso` is the PZ camera. */
   applyCameraPreset(preset: 'orbit' | 'iso' | 'front' | 'portrait') {
     if (preset === 'iso' || preset === 'orbit') { this.setCamMode(preset); return; }
+    this.autoFrame = false; // an explicit front/portrait framing should stick, not be re-fit on resize
     this.preset = preset;
     this.camMode = 'orbit';
     this.camera = this.perspCam;

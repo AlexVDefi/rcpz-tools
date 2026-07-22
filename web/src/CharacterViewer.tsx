@@ -205,7 +205,7 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
     eng.onCamMode = setCamMode; // keep the Scene-tab toggle in sync with auto-switches
     eng.onViewfinder = setViewfinder; // studio letterbox rect (CSS px)
     engineRef.current = eng;
-    const ro = new ResizeObserver(() => eng.fit());
+    const ro = new ResizeObserver(() => eng.resize());
     if (canvasRef.current?.parentElement) ro.observe(canvasRef.current.parentElement);
     return () => { ro.disconnect(); eng.dispose(); engineRef.current = null; };
   }, [ctx]);
@@ -226,8 +226,9 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
     vv?.addEventListener('resize', update);
     return () => { window.removeEventListener('resize', update); window.removeEventListener('orientationchange', update); vv?.removeEventListener('resize', update); };
   }, [isMobile]);
-  // Re-fit the camera to the whole body when switching into the mobile layout.
-  useEffect(() => { if (isMobile) engineRef.current?.frameToBody(); }, [isMobile]);
+  // On mobile, keep the whole body auto-framed as the canvas/layout/device-mode changes (until the user
+  // adjusts the camera or picks a preset). Off on desktop. Re-applies when the form factor flips.
+  useEffect(() => { engineRef.current?.setAutoFrame(isMobile); }, [isMobile]);
 
   useEffect(() => {
     let cancelled = false;
@@ -237,7 +238,7 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
       try {
         await eng.loadBody(gender);
         if (cancelled) return;
-        if (isMobileRef.current) eng.frameToBody(); // phone default: whole character centered + fitted
+        eng.setAutoFrame(isMobileRef.current); // phone default: whole character centered + fitted, kept on resize
         setStatus(''); setEquipTick((t) => t + 1);
         if (pendingImportRef.current) { const p = pendingImportRef.current; pendingImportRef.current = null; await applyLookRef.current?.(p); }
         else if (pendingPresetRef.current) { const p = pendingPresetRef.current; pendingPresetRef.current = null; await applyPresetLookRef.current?.(p); }
@@ -250,19 +251,6 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
     })();
     return () => { cancelled = true; };
   }, [gender, idleClip]);
-
-  // Frame the whole body on mobile once it's loaded AND the canvas has settled its portrait size.
-  // Deferred past two paints (so fit() has run with the real aspect) and read off the live engine ref,
-  // so it survives StrictMode's double-mount and the async load resolving before layout. Re-runs each
-  // (re)load. Without this the default camera stays zoomed in on the legs on a tall phone screen.
-  const mobileFramedRef = useRef(false);
-  useEffect(() => {
-    if (status !== '') { mobileFramedRef.current = false; return; } // reset while (re)loading
-    if (mobileFramedRef.current || !isMobile) return;
-    mobileFramedRef.current = true;
-    const id = requestAnimationFrame(() => requestAnimationFrame(() => { if (isMobileRef.current) engineRef.current?.frameToBody(); }));
-    return () => cancelAnimationFrame(id);
-  }, [status, isMobile]);
 
   async function guard(fn: () => Promise<unknown>) {
     try { await fn(); } catch (e) { setNowPlaying('error: ' + (e instanceof Error ? e.message : String(e))); }
