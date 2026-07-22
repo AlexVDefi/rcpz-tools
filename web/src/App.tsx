@@ -827,6 +827,11 @@ function InfoDot({ text }: { text: ReactNode }) {
   );
 }
 
+// Absolute-fill so the thumbnail box keeps its own aspect ratio (the image, being out of flow,
+// can't stretch the box to its natural height); `contain` shows the whole poster, letterboxed.
+const FILL = { position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'contain', display: 'block' } as const;
+const FILL_PLACEHOLDER = { position: 'absolute', inset: 0, display: 'grid', placeItems: 'center', color: '#3a3a44' } as const;
+
 // Thumbnail for a locally-loaded mod: reads its poster/icon file into an object URL, revoked on unmount.
 function LocalPoster({ handle }: { handle?: FileSystemFileHandle }) {
   const [url, setUrl] = useState<string | null>(null);
@@ -837,8 +842,8 @@ function LocalPoster({ handle }: { handle?: FileSystemFileHandle }) {
     return () => { dead = true; if (made) URL.revokeObjectURL(made); };
   }, [handle]);
   return url
-    ? <img src={url} alt="" loading="lazy" style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
-    : <div style={{ width: '100%', height: '100%', display: 'grid', placeItems: 'center', color: '#3a3a44' }}>◈</div>;
+    ? <img src={url} alt="" loading="lazy" style={FILL} />
+    : <div style={FILL_PLACEHOLDER}>◈</div>;
 }
 
 const GRID_PER_PAGE = 8;  // 2 rows of 4, so the pager stays in view without scrolling
@@ -846,11 +851,12 @@ const LIST_PER_PAGE = 10; // compact rows fit more per page
 type ModItem = { id: string; title: string; author?: string | null; enabled: boolean; preview?: string | null; poster?: FileSystemFileHandle };
 type ModTab = { key: string; label: string; items: ModItem[]; onToggle: (id: string) => void; note?: ReactNode; controls?: ReactNode; empty?: ReactNode };
 
-// Thumbnail for a mod card: a hosted preview URL, a local poster handle, or a placeholder.
+// Thumbnail for a mod card: a hosted preview URL, a local poster handle, or a placeholder. Must sit
+// inside a position:relative box (the grid/list thumbnail wrappers) - the image fills it absolutely.
 function ModThumb({ preview, poster }: { preview?: string | null; poster?: FileSystemFileHandle }) {
-  if (preview) return <img src={preview} alt="" loading="lazy" style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />;
+  if (preview) return <img src={preview} alt="" loading="lazy" style={FILL} />;
   if (poster) return <LocalPoster handle={poster} />;
-  return <div style={{ width: '100%', height: '100%', display: 'grid', placeItems: 'center', color: '#3a3a44' }}>◈</div>;
+  return <div style={FILL_PLACEHOLDER}>◈</div>;
 }
 
 // Tabbed mods browser (community-hosted / locally-installed) with search, an enabled/disabled
@@ -923,7 +929,7 @@ function ModsPanel({ tabs, busy }: { tabs: ModTab[]; busy: boolean }) {
             <div style={{ display: 'grid', gap: 10, gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', alignItems: 'start' }}>
               {shown.map((m) => (
                 <div key={m.id} className="card" style={{ padding: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column', borderColor: m.enabled ? 'var(--accent)' : 'var(--line)' }}>
-                  <div style={{ aspectRatio: '16 / 9', background: '#0e0e12', flexShrink: 0 }}><ModThumb preview={m.preview} poster={m.poster} /></div>
+                  <div style={{ position: 'relative', aspectRatio: '16 / 9', background: '#0e0e12', flexShrink: 0, overflow: 'hidden' }}><ModThumb preview={m.preview} poster={m.poster} /></div>
                   <div style={{ padding: '8px 10px 10px', display: 'flex', flexDirection: 'column', gap: 7 }}>
                     <div style={{ fontSize: 12.5, fontWeight: 600, lineHeight: 1.3, height: '2.6em', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>{m.title}</div>
                     <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: busy ? 'wait' : 'pointer' }}>
@@ -938,7 +944,7 @@ function ModsPanel({ tabs, busy }: { tabs: ModTab[]; busy: boolean }) {
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
               {shown.map((m) => (
                 <label key={m.id} className="card" style={{ display: 'flex', alignItems: 'center', gap: 11, padding: '7px 10px', borderColor: m.enabled ? 'var(--accent)' : 'var(--line)', cursor: busy ? 'wait' : 'pointer' }}>
-                  <div style={{ width: 54, height: 32, flexShrink: 0, borderRadius: 4, overflow: 'hidden', background: '#0e0e12' }}><ModThumb preview={m.preview} poster={m.poster} /></div>
+                  <div style={{ position: 'relative', width: 54, height: 32, flexShrink: 0, borderRadius: 4, overflow: 'hidden', background: '#0e0e12' }}><ModThumb preview={m.preview} poster={m.poster} /></div>
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontSize: 12.5, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{m.title}</div>
                     {m.author && <div style={{ color: 'var(--muted)', fontSize: 11.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>by {m.author}</div>}
