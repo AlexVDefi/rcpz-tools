@@ -176,6 +176,19 @@ export class CharacterEngine {
     this.onCamMode?.('orbit');
   }
 
+  /** Fit the whole body in view, centered, keeping the current orbit angle. Zooms out extra on
+   *  portrait / narrow viewports (phones) so the character never crops. Used for the mobile default. */
+  frameToBody() {
+    const b = this.bodyBounds;
+    const H = b ? b.maxY - b.minY : 1.3;
+    const fovV = this.perspCam.fov * Math.PI / 180;
+    const aspect = this.exportAspect ?? this.perspCam.aspect;
+    const margin = 1.4 * (aspect < 1 ? 1 + (1 - aspect) * 0.6 : 1); // narrower viewport -> more breathing room
+    this.orbit.setTarget(new THREE.Vector3(b ? b.cx : 0, (b ? b.minY : 0) + H / 2, b ? b.cz : 0));
+    this.orbit.state.radius = Math.max(0.8, (H * margin / 2) / Math.tan(fovV / 2));
+    this.orbit.apply();
+  }
+
   setTurntable(on: boolean) { this.turntable = on; }
   setSpinAngle(rad: number) { this.rigs.setFacing(rad); }
 

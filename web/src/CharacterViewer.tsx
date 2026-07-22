@@ -113,6 +113,11 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
   const [equipTick, setEquipTick] = useState(0);
   const [, setBusy] = useState('');
   const [panelW, setPanelW] = useState(() => Number(localStorage.getItem('pz-panel-w')) || 480);
+  // mobile: the tabbed panel is a bottom drawer over a full-height canvas; keep the latest isMobile in
+  // a ref so the async body-load can frame the camera for the current form factor without re-running.
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [mobileViewH, setMobileViewH] = useState(0);
+  const isMobileRef = useRef(isMobile); isMobileRef.current = isMobile;
   const [clothOnBody, setClothOnBody] = useState(true);
   const [favs, setFavs] = useState<Set<string>>(() => { try { return new Set(JSON.parse(localStorage.getItem('pz-favorites') || '[]') as string[]); } catch { return new Set(); } });
   useEffect(() => { localStorage.setItem('pz-favorites', JSON.stringify([...favs])); }, [favs]);
@@ -205,6 +210,25 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
     return () => { ro.disconnect(); eng.dispose(); engineRef.current = null; };
   }, [ctx]);
 
+  // Mobile: size the whole character view to the visible viewport below the header, tracking the
+  // address-bar show/hide (visualViewport) so the canvas + bottom tab bar always fill the screen.
+  useEffect(() => {
+    if (!isMobile) { setMobileViewH(0); return; }
+    const vv = window.visualViewport;
+    const update = () => {
+      const top = containerRef.current?.getBoundingClientRect().top ?? 56;
+      const vh = vv?.height ?? window.innerHeight;
+      setMobileViewH(Math.max(360, Math.round(vh - Math.max(0, top) - 16))); // leave room for the app's bottom padding
+    };
+    update();
+    window.addEventListener('resize', update);
+    window.addEventListener('orientationchange', update);
+    vv?.addEventListener('resize', update);
+    return () => { window.removeEventListener('resize', update); window.removeEventListener('orientationchange', update); vv?.removeEventListener('resize', update); };
+  }, [isMobile]);
+  // Re-fit the camera to the whole body when switching into the mobile layout.
+  useEffect(() => { if (isMobile) engineRef.current?.frameToBody(); }, [isMobile]);
+
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -213,6 +237,7 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
       try {
         await eng.loadBody(gender);
         if (cancelled) return;
+        if (isMobileRef.current) eng.frameToBody(); // phone default: whole character centered + fitted
         setStatus(''); setEquipTick((t) => t + 1);
         if (pendingImportRef.current) { const p = pendingImportRef.current; pendingImportRef.current = null; await applyLookRef.current?.(p); }
         else if (pendingPresetRef.current) { const p = pendingPresetRef.current; pendingPresetRef.current = null; await applyPresetLookRef.current?.(p); }
@@ -511,11 +536,74 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
   void equipTick; // re-read equipped state on every equip change
   const equipList = engineRef.current?.equippedList() ?? [];
 
+  // the active tab's content - rendered in the side panel on desktop, in a bottom drawer on mobile
+  const panelBody = (
+    <div style={{ flex: 1, minHeight: 0 }}>
+      {tab === 'animate' && (
+        <AssetGrid<typeof clipItems[number] & GridItem>
+          items={clipItems as (typeof clipItems[number] & GridItem)[]}
+          facetLabel="categories"
+          active={(it) => it.id === currentClipId}
+          onPick={(it) => playClip(it)}
+          renderThumb={(it) => <ClipThumb clip={it} thumbs={thumbs} preview={preview} />} />
+      )}
+      {tab === 'clothing' && (
+        <AssetGrid<typeof clothing[number] & GridItem>
+          items={clothing as (typeof clothing[number] & GridItem)[]}
+          facetLabel="groups"
+          facetOrder={CLOTHING_GROUP_ORDER as string[]}
+          active={(it) => { void equipTick; return !!engineRef.current?.isEquipped(it.name); }}
+          onPick={(it) => toggleCloth(it)}
+          favActive={(it) => favs.has(favKey('clothing', it.name))}
+          onToggleFav={(it) => toggleFav('clothing', it.name)}
+          extraControls={(
+            <div style={{ display: 'flex', border: '1px solid var(--line)', borderRadius: 6, overflow: 'hidden' }} title="thumbnail style">
+              <button className="secondary" onClick={() => setClothOnBody(true)} style={segBtn(clothOnBody)}>on body</button>
+              <button className="secondary" onClick={() => setClothOnBody(false)} style={segBtn(!clothOnBody)}>item</button>
+            </div>
+          )}
+          renderThumb={(it) => <Thumb depKey={`c:${it.name}:${gender}:${clothOnBody}`} getUrl={() => thumbs.clothing(it, gender, clothOnBody)} />} />
+      )}
+      {tab === 'held' && (
+        <AssetGrid<typeof held[number] & GridItem>
+          items={held as (typeof held[number] & GridItem)[]}
+          facetLabel="types"
+          facetOrder={HELD_GROUP_ORDER as string[]}
+          active={(it) => { void equipTick; return !!engineRef.current?.isHeld(it.name); }}
+          onPick={(it) => toggleHeld(it)}
+          favActive={(it) => favs.has(favKey('held', it.name))}
+          onToggleFav={(it) => toggleFav('held', it.name)}
+          tagsOf={(it) => it.tags}
+          overlay={(it) => {
+            void equipTick;
+            const hand = engineRef.current?.heldHand(it.name);
+            if (!hand) return null; // only once the item is actually held
+            return (
+              <span role="button" title={`held in ${hand} hand (click to switch)`}
+                onClick={(e) => { e.stopPropagation(); setHeldHand(it.name, hand === 'left' ? 'right' : 'left'); }}
+                style={{ position: 'absolute', bottom: 4, right: 4, minWidth: 18, textAlign: 'center', padding: '1px 5px', fontSize: 11, fontWeight: 700, lineHeight: 1.4, borderRadius: 4, cursor: 'pointer', background: 'var(--accent)', color: '#fff', textShadow: '0 1px 2px #000' }}>
+                {hand === 'left' ? 'L' : 'R'}
+              </span>
+            );
+          }}
+          renderThumb={(it) => <Thumb depKey={`h:${it.name}`} getUrl={() => thumbs.held(it)} />} />
+      )}
+      {tab === 'character' && <CharacterTab hairData={hairData} gender={gender} setGender={setGender} skin={skin} tones={tones} onSkin={(t) => { setSkin(t); engineRef.current?.setSkin(t); }} thumbs={thumbs} hairSel={hairSel} beardSel={beardSel} hairColor={hairColor} beardColor={beardColor} onPickPart={applyHairPart} onRecolour={recolourPart} favs={favs} onToggleFav={toggleFav} onImport={() => setImportOpen(true)}
+        savedCount={Object.keys(presets).length} onOpenSaved={() => setPresetsOpen(true)} />}
+      {tab === 'export' && (
+        <div style={{ padding: 12, overflow: 'auto', height: '100%' }}>
+          <ExportSection cloud={cloud}
+            studio={{ camPreset, setCamPreset, studioAspect, setStudioAspect, bg, setBg, turntable, setTurntable, gifMode, setGifMode, mp4Seconds, setMp4Seconds, exporting, runExport }} />
+        </div>
+      )}
+    </div>
+  );
+
   return (
-    <div ref={containerRef} style={{ display: 'flex', flexDirection: isMobile ? 'column' : 'row', gap: isMobile ? 10 : 0, height: isMobile ? 'auto' : 'calc(100vh - 128px)', minHeight: isMobile ? 0 : 460 }}>
+    <div ref={containerRef} style={{ display: 'flex', flexDirection: isMobile ? 'column' : 'row', gap: isMobile ? 8 : 0, height: isMobile ? (mobileViewH || '80vh') : 'calc(100vh - 128px)', minHeight: isMobile ? 0 : 460 }}>
       {importOpen && <ImportModal onClose={() => setImportOpen(false)} onImport={applyImport} />}
       {presetsOpen && <PresetsModal presets={presets} onClose={() => setPresetsOpen(false)} onSave={savePreset} onLoad={(p) => { void applyPreset(p); setPresetsOpen(false); }} onDelete={deletePreset} />}
-      <div style={{ flex: isMobile ? 'none' : 1, height: isMobile ? '56vh' : undefined, minWidth: isMobile ? 0 : 320, position: 'relative', background: '#14141a', border: '1px solid var(--line)', borderRadius: 8, overflow: 'hidden' }}>
+      <div style={{ flex: 1, minHeight: 0, minWidth: isMobile ? 0 : 320, position: 'relative', background: '#14141a', border: '1px solid var(--line)', borderRadius: 8, overflow: 'hidden' }}>
         {/* studio layer: background sits behind the (transparent) WebGL canvas. With a framing
             aspect it's clipped to the viewfinder rect (outside stays the neutral letterbox); in
             "Fit" mode there's no viewfinder, so it fills the whole view. */}
@@ -643,73 +731,37 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
         </div>
       )}
 
-      <div style={{ width: isMobile ? '100%' : panelW, flexShrink: 0, minWidth: isMobile ? 0 : 300, height: isMobile ? '72vh' : undefined, display: 'flex', flexDirection: 'column', minHeight: 0, background: 'var(--panel)', border: '1px solid var(--line)', borderRadius: 8 }}>
-        <TabStrip tabs={tabs} active={tab} onSelect={setTab} />
-
-        <div style={{ flex: 1, minHeight: 0 }}>
-          {tab === 'animate' && (
-            <AssetGrid<typeof clipItems[number] & GridItem>
-              items={clipItems as (typeof clipItems[number] & GridItem)[]}
-              facetLabel="categories"
-              active={(it) => it.id === currentClipId}
-              onPick={(it) => playClip(it)}
-              renderThumb={(it) => <ClipThumb clip={it} thumbs={thumbs} preview={preview} />} />
-          )}
-
-          {tab === 'clothing' && (
-            <AssetGrid<typeof clothing[number] & GridItem>
-              items={clothing as (typeof clothing[number] & GridItem)[]}
-              facetLabel="groups"
-              facetOrder={CLOTHING_GROUP_ORDER as string[]}
-              active={(it) => { void equipTick; return !!engineRef.current?.isEquipped(it.name); }}
-              onPick={(it) => toggleCloth(it)}
-              favActive={(it) => favs.has(favKey('clothing', it.name))}
-              onToggleFav={(it) => toggleFav('clothing', it.name)}
-              extraControls={(
-                <div style={{ display: 'flex', border: '1px solid var(--line)', borderRadius: 6, overflow: 'hidden' }} title="thumbnail style">
-                  <button className="secondary" onClick={() => setClothOnBody(true)} style={segBtn(clothOnBody)}>on body</button>
-                  <button className="secondary" onClick={() => setClothOnBody(false)} style={segBtn(!clothOnBody)}>item</button>
-                </div>
-              )}
-              renderThumb={(it) => <Thumb depKey={`c:${it.name}:${gender}:${clothOnBody}`} getUrl={() => thumbs.clothing(it, gender, clothOnBody)} />} />
-          )}
-
-          {tab === 'held' && (
-            <AssetGrid<typeof held[number] & GridItem>
-              items={held as (typeof held[number] & GridItem)[]}
-              facetLabel="types"
-              facetOrder={HELD_GROUP_ORDER as string[]}
-              active={(it) => { void equipTick; return !!engineRef.current?.isHeld(it.name); }}
-              onPick={(it) => toggleHeld(it)}
-              favActive={(it) => favs.has(favKey('held', it.name))}
-              onToggleFav={(it) => toggleFav('held', it.name)}
-              tagsOf={(it) => it.tags}
-              overlay={(it) => {
-                void equipTick;
-                const hand = engineRef.current?.heldHand(it.name);
-                if (!hand) return null; // only once the item is actually held
-                return (
-                  <span role="button" title={`held in ${hand} hand (click to switch)`}
-                    onClick={(e) => { e.stopPropagation(); setHeldHand(it.name, hand === 'left' ? 'right' : 'left'); }}
-                    style={{ position: 'absolute', bottom: 4, right: 4, minWidth: 18, textAlign: 'center', padding: '1px 5px', fontSize: 11, fontWeight: 700, lineHeight: 1.4, borderRadius: 4, cursor: 'pointer', background: 'var(--accent)', color: '#fff', textShadow: '0 1px 2px #000' }}>
-                    {hand === 'left' ? 'L' : 'R'}
-                  </span>
-                );
-              }}
-              renderThumb={(it) => <Thumb depKey={`h:${it.name}`} getUrl={() => thumbs.held(it)} />} />
-          )}
-
-          {tab === 'character' && <CharacterTab hairData={hairData} gender={gender} setGender={setGender} skin={skin} tones={tones} onSkin={(t) => { setSkin(t); engineRef.current?.setSkin(t); }} thumbs={thumbs} hairSel={hairSel} beardSel={beardSel} hairColor={hairColor} beardColor={beardColor} onPickPart={applyHairPart} onRecolour={recolourPart} favs={favs} onToggleFav={toggleFav} onImport={() => setImportOpen(true)}
-            savedCount={Object.keys(presets).length} onOpenSaved={() => setPresetsOpen(true)} />}
-
-          {tab === 'export' && (
-            <div style={{ padding: 12, overflow: 'auto', height: '100%' }}>
-              <ExportSection cloud={cloud}
-                studio={{ camPreset, setCamPreset, studioAspect, setStudioAspect, bg, setBg, turntable, setTurntable, gifMode, setGifMode, mp4Seconds, setMp4Seconds, exporting, runExport }} />
-            </div>
-          )}
+      {isMobile ? (
+        // bottom tab bar: tapping a tab opens the drawer with that tab's content
+        <div style={{ display: 'flex', gap: 5, flexShrink: 0, background: 'var(--panel)', border: '1px solid var(--line)', borderRadius: 10, padding: 5 }}>
+          {tabs.map(([t, label]) => (
+            <button key={t} onClick={() => { setTab(t); setDrawerOpen(true); }}
+              style={{ flex: 1, minWidth: 0, padding: '9px 2px', fontSize: 11.5, fontWeight: 600, borderRadius: 7, background: 'transparent', color: 'var(--text)', border: 'none', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{label}</button>
+          ))}
         </div>
-      </div>
+      ) : (
+        <div style={{ width: panelW, flexShrink: 0, minWidth: 300, display: 'flex', flexDirection: 'column', minHeight: 0, background: 'var(--panel)', border: '1px solid var(--line)', borderRadius: 8 }}>
+          <TabStrip tabs={tabs} active={tab} onSelect={setTab} />
+          {panelBody}
+        </div>
+      )}
+
+      {isMobile && drawerOpen && (
+        <div onClick={() => setDrawerOpen(false)} style={{ position: 'fixed', inset: 0, zIndex: 70, background: '#0007', display: 'flex', flexDirection: 'column', justifyContent: 'flex-end' }}>
+          <div onClick={(e) => e.stopPropagation()} style={{ height: 'min(80vh, 680px)', display: 'flex', flexDirection: 'column', background: 'var(--panel)', borderTop: '1px solid var(--line)', borderRadius: '14px 14px 0 0', overflow: 'hidden', boxShadow: '0 -14px 44px #000a', paddingBottom: 'env(safe-area-inset-bottom)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: 8, borderBottom: '1px solid var(--line)', flexShrink: 0 }}>
+              <div className="tabstrip" style={{ display: 'flex', gap: 4, flex: 1, overflowX: 'auto' }}>
+                {tabs.map(([t, label]) => (
+                  <button key={t} onClick={() => setTab(t)}
+                    style={{ flexShrink: 0, padding: '7px 11px', fontSize: 12.5, borderRadius: 7, whiteSpace: 'nowrap', cursor: 'pointer', background: tab === t ? 'var(--accent)' : 'transparent', color: tab === t ? '#fff' : 'var(--muted)', border: `1px solid ${tab === t ? 'var(--accent)' : 'var(--line)'}` }}>{label}</button>
+                ))}
+              </div>
+              <button className="secondary" onClick={() => setDrawerOpen(false)} aria-label="Close" style={{ width: 32, height: 32, padding: 0, display: 'grid', placeItems: 'center', fontSize: 15, flexShrink: 0 }}>✕</button>
+            </div>
+            {panelBody}
+          </div>
+        </div>
+      )}
 
       {tourStep !== null && <ViewerTour steps={tourSteps} step={tourStep} onNext={advanceTour} onSkip={skipTour} />}
     </div>
