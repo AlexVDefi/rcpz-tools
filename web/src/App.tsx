@@ -437,7 +437,11 @@ export function App() {
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
               <b style={{ fontSize: 13 }}>Sources</b>
               {phase === 'scanning' && <span style={{ color: 'var(--muted)', fontSize: 12.5 }}><span className="spinner" /> scanning…</span>}
-              {phase === 'ready' && progress && <span style={{ color: 'var(--muted)', fontSize: 12.5, marginLeft: 'auto' }}>{progress}</span>}
+              {/* top-right: on hosted show what loaded; on the local path offer a way back to built-in */}
+              {phase === 'ready' && assetSource === 'hosted' && progress && <span style={{ color: 'var(--muted)', fontSize: 12.5, marginLeft: 'auto' }}>{progress}</span>}
+              {phase !== 'scanning' && assetSource !== 'hosted' && hostedAvailable && (
+                <button className="secondary" onClick={useHosted} style={{ marginLeft: 'auto', height: 28, padding: '0 12px', fontSize: 12.5 }}>Switch to built-in assets</button>
+              )}
             </div>
             {assetSource === 'hosted' ? (
               <>
@@ -509,7 +513,6 @@ export function App() {
                     hint={<>Point at any mods folder and it works out the layout: your Steam Workshop content (<code>steamapps\workshop\content\108600</code>), your <code>Zomboid\mods</code>, or <code>Zomboid\Workshop</code> - or the <code>Zomboid</code> folder to get both. Optional, only needed for modded content.</>} />
                 </div>
                 {!isDesktop && <div style={{ marginTop: 12 }}><ProgramFilesHelp /></div>}
-                {hostedAvailable && <button className="secondary" onClick={useHosted} disabled={phase === 'scanning'} style={{ marginTop: 10, padding: '6px 12px', fontSize: 12.5 }}>Switch to built-in assets (no install needed)</button>}
               </>
             )}
             {error && <p style={{ color: '#ff8a8a', margin: '10px 0 0' }}>Error: {error}</p>}
