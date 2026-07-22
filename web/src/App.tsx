@@ -73,6 +73,7 @@ export function App() {
   const [disabledLocal, setDisabledLocal] = useState<string[]>([]); // locally-loaded mods the user toggled off (session only; default all on)
   const [activeModTab, setActiveModTab] = useState(''); // which ModsPanel tab is showing (hosted path), for the safety disclaimer
   const [savedWorkshop, setSavedWorkshop] = useState<FileSystemDirectoryHandle | null>(null); // remembered mods folder awaiting a one-click reconnect after a reload dropped its permission
+  const [relayering, setRelayering] = useState(false); // a debounced mod-toggle re-layer is pending/running (shows a small spinner, not the full modal)
   const [pendingLocal, setPendingLocal] = useState(false); // user chose "use my game files" from hosted but hasn't picked an install yet
   const [progress, setProgress] = useState('');
   const [scan, setScan] = useState<Scan | null>(null);
@@ -132,6 +133,9 @@ export function App() {
 
   const fadeTimer = useRef<number | null>(null);
   const restoredRef = useRef(false); // the session-restore effect must run exactly once, not on every callback identity change
+  const relayerTimer = useRef<number | null>(null); // debounce timer for mod-toggle re-layers
+  const pendingLayer = useRef<{ community: HostedMod[]; local: DiscoveredMod[] } | null>(null); // latest desired layer, applied when the debounce fires
+  const hostedSourceCache = useRef(new Map<string, Awaited<ReturnType<typeof loadHostedSource>>>()); // immutable hosted bundles (vanilla + community) reused across re-layers, so toggling never re-fetches them
   const rebuild = useCallback(async (installH: FileSystemDirectoryHandle, active: DiscoveredMod[]) => {
     // show the scan overlay in the SAME render as phase='scanning' (batched), so it's the first
     // thing on screen - no flash of the empty Sources card before the modal appears.
@@ -163,21 +167,34 @@ export function App() {
   // Load a hosted asset bundle (tools/bake-assets.mjs) instead of a local install. Produces
   // the same index the FSA path does, so the rest of the app is unchanged. Reached via
   // ?assets=<baseUrl> for now; becomes the no-install default once R2-hosted.
-  const rebuildHosted = useCallback(async (baseUrl: string, communityMods: HostedMod[] = [], localModList: DiscoveredMod[] = []) => {
-    if (fadeTimer.current) { clearTimeout(fadeTimer.current); fadeTimer.current = null; }
-    setPhase('scanning'); setOverlay('in'); setError(''); setScanHosted(true); setPendingLocal(false);
+  // `quiet` re-layers without the full scan modal (just a small spinner) - used when toggling mods,
+  // where the disruptive overlay felt jarring. The vanilla + community bundles are immutable, so they
+  // are cached and reused across re-layers; only the (cheap) index rebuild and local-mod re-read run.
+  const rebuildHosted = useCallback(async (baseUrl: string, communityMods: HostedMod[] = [], localModList: DiscoveredMod[] = [], quiet = false) => {
+    if (quiet) setRelayering(true);
+    else {
+      // a full rebuild supersedes any pending toggle re-layer (whose args would be stale)
+      if (relayerTimer.current) { clearTimeout(relayerTimer.current); relayerTimer.current = null; } pendingLayer.current = null; setRelayering(false);
+      if (fadeTimer.current) { clearTimeout(fadeTimer.current); fadeTimer.current = null; } setPhase('scanning'); setOverlay('in');
+    }
+    setError(''); setScanHosted(true); setPendingLocal(false);
     const t0 = performance.now();
     try {
-      const { source: vanilla, manifest } = await loadHostedSource(baseUrl, { id: 'hosted' });
+      const cache = hostedSourceCache.current;
+      const getHosted = async (url: string, id: string) => {
+        const hit = cache.get(url); if (hit) return hit;
+        const res = await loadHostedSource(url, { id }); cache.set(url, res); return res;
+      };
+      const { source: vanilla, manifest } = await getHosted(baseUrl, 'hosted');
       // Higher-priority sources layered over vanilla: the user's own installed mods first, then the
       // enabled community mods, then vanilla (so anything local overrides community overrides vanilla).
       const communitySources = [];
       for (const m of communityMods) {
-        try { const { source } = await loadHostedSource(m.url, { id: `hostedmod:${m.modId}` }); communitySources.push(source); }
+        try { const { source } = await getHosted(m.url, `hostedmod:${m.modId}`); communitySources.push(source); }
         catch { /* a mod bundle that fails to load is skipped, not fatal */ }
       }
       const localSources = modSources(localModList); // FSA sources over the user's installed mods
-      const idx = await buildAssetIndex([...localSources, ...communitySources, vanilla], { onProgress: (p: Scan) => setScan(p) });
+      const idx = await buildAssetIndex([...localSources, ...communitySources, vanilla], quiet ? {} : { onProgress: (p: Scan) => setScan(p) });
       const clothing = listClothing(idx);
       const { hair, beards } = listHair(idx);
       setCounts({
@@ -190,13 +207,26 @@ export function App() {
       setInstallHandle(null);
       const extras = [communitySources.length && `${communitySources.length} community`, localModList.length && `${localModList.length} local mod${localModList.length === 1 ? '' : 's'}`].filter(Boolean).join(' + ');
       setProgress(`built-in assets${extras ? ` + ${extras}` : ''} (${manifest.version}) in ${((performance.now() - t0) / 1000).toFixed(1)}s`);
-      setPhase('ready');
-    } catch (e) { setError(e instanceof Error ? e.message : String(e)); setPhase('error'); }
+      if (!quiet) setPhase('ready');
+    } catch (e) { setError(e instanceof Error ? e.message : String(e)); if (!quiet) setPhase('error'); }
     finally {
-      setOverlay('out');
-      fadeTimer.current = window.setTimeout(() => { setOverlay(null); setScan(null); fadeTimer.current = null; }, 480);
+      if (quiet) setRelayering(false);
+      else { setOverlay('out'); fadeTimer.current = window.setTimeout(() => { setOverlay(null); setScan(null); fadeTimer.current = null; }, 480); }
     }
   }, []);
+  // Debounce mod-toggle re-layers: rapid toggles collapse into a single quiet rebuild ~350ms after the
+  // last one. The checkbox state updates instantly; only the (spinner-only) index rebuild is deferred.
+  const scheduleRelayer = useCallback((community: HostedMod[], local: DiscoveredMod[]) => {
+    if (assetSource !== 'hosted' || !HOSTED_ASSETS_URL) return;
+    pendingLayer.current = { community, local };
+    setRelayering(true); // instant feedback during the debounce window
+    if (relayerTimer.current) clearTimeout(relayerTimer.current);
+    relayerTimer.current = window.setTimeout(() => {
+      relayerTimer.current = null;
+      const p = pendingLayer.current; pendingLayer.current = null;
+      if (p) rebuildHosted(HOSTED_ASSETS_URL, p.community, p.local, true);
+    }, 350);
+  }, [assetSource, rebuildHosted]);
 
   // Load the configured hosted bundle (the "Start now" / "built-in assets" path).
   const useHosted = useCallback(async (localOverride?: DiscoveredMod[]) => {
@@ -206,32 +236,32 @@ export function App() {
     const local = (localOverride ?? mods).filter((m) => !disabledLocal.includes(m.modId));
     rebuildHosted(HOSTED_ASSETS_URL, list.filter((m) => enabledMods.includes(m.modId)), local);
   }, [rebuildHosted, hostedMods, enabledMods, mods, disabledLocal]);
-  // Enable/disable a community mod: persist the choice and, if we're on hosted assets, re-layer now.
+  // Enable/disable a community mod: persist the choice instantly, then debounce a quiet re-layer.
   const toggleHostedMod = useCallback((modId: string) => {
     const next = enabledMods.includes(modId) ? enabledMods.filter((x) => x !== modId) : [...enabledMods, modId];
     setEnabledMods(next); localStorage.setItem('pz-enabled-mods', JSON.stringify(next));
-    if (assetSource === 'hosted' && HOSTED_ASSETS_URL) rebuildHosted(HOSTED_ASSETS_URL, hostedMods.filter((m) => next.includes(m.modId)), mods.filter((m) => !disabledLocal.includes(m.modId)));
-  }, [enabledMods, hostedMods, assetSource, rebuildHosted, mods, disabledLocal]);
-  // Enable/disable one locally-loaded mod (session only) and, if we're on hosted assets, re-layer now.
+    scheduleRelayer(hostedMods.filter((m) => next.includes(m.modId)), mods.filter((m) => !disabledLocal.includes(m.modId)));
+  }, [enabledMods, hostedMods, mods, disabledLocal, scheduleRelayer]);
+  // Enable/disable one locally-loaded mod (session only); debounce a quiet re-layer.
   const toggleLocalMod = useCallback((modId: string) => {
     const next = disabledLocal.includes(modId) ? disabledLocal.filter((x) => x !== modId) : [...disabledLocal, modId];
     setDisabledLocal(next);
-    if (assetSource === 'hosted' && HOSTED_ASSETS_URL) rebuildHosted(HOSTED_ASSETS_URL, hostedMods.filter((m) => enabledMods.includes(m.modId)), mods.filter((m) => !next.includes(m.modId)));
-  }, [disabledLocal, assetSource, rebuildHosted, hostedMods, enabledMods, mods]);
+    scheduleRelayer(hostedMods.filter((m) => enabledMods.includes(m.modId)), mods.filter((m) => !next.includes(m.modId)));
+  }, [disabledLocal, hostedMods, enabledMods, mods, scheduleRelayer]);
   // Bulk enable/disable community mods (Select all / Deselect all over the filtered set).
   const setManyHostedMods = useCallback((ids: string[], enable: boolean) => {
     const set = new Set(ids);
     const next = enable ? [...new Set([...enabledMods, ...ids])] : enabledMods.filter((x) => !set.has(x));
     setEnabledMods(next); localStorage.setItem('pz-enabled-mods', JSON.stringify(next));
-    if (assetSource === 'hosted' && HOSTED_ASSETS_URL) rebuildHosted(HOSTED_ASSETS_URL, hostedMods.filter((m) => next.includes(m.modId)), mods.filter((m) => !disabledLocal.includes(m.modId)));
-  }, [enabledMods, hostedMods, assetSource, rebuildHosted, mods, disabledLocal]);
+    scheduleRelayer(hostedMods.filter((m) => next.includes(m.modId)), mods.filter((m) => !disabledLocal.includes(m.modId)));
+  }, [enabledMods, hostedMods, mods, disabledLocal, scheduleRelayer]);
   // Bulk enable/disable locally-loaded mods.
   const setManyLocalMods = useCallback((ids: string[], enable: boolean) => {
     const set = new Set(ids);
     const next = enable ? disabledLocal.filter((x) => !set.has(x)) : [...new Set([...disabledLocal, ...ids])];
     setDisabledLocal(next);
-    if (assetSource === 'hosted' && HOSTED_ASSETS_URL) rebuildHosted(HOSTED_ASSETS_URL, hostedMods.filter((m) => enabledMods.includes(m.modId)), mods.filter((m) => !next.includes(m.modId)));
-  }, [disabledLocal, assetSource, rebuildHosted, hostedMods, enabledMods, mods]);
+    scheduleRelayer(hostedMods.filter((m) => enabledMods.includes(m.modId)), mods.filter((m) => !next.includes(m.modId)));
+  }, [disabledLocal, hostedMods, enabledMods, mods, scheduleRelayer]);
   // "Load locally installed mods" while on hosted assets: pick a mods folder, discover, layer over vanilla.
   const loadLocalMods = useCallback(async () => {
     let h: FileSystemDirectoryHandle | null = null;
@@ -268,6 +298,7 @@ export function App() {
   // "Use my game files instead": leave hosted and show the full local onboarding (Sources + disclaimers).
   const useLocalFiles = useCallback(() => {
     localStorage.setItem(SOURCE_KEY, 'local'); // so nothing auto-restores hosted over this choice
+    if (relayerTimer.current) { clearTimeout(relayerTimer.current); relayerTimer.current = null; } pendingLayer.current = null; setRelayering(false); // drop any pending toggle re-layer
     setIndex(null); setCounts(null); setAssetSource(null); setMods([]); setScanHosted(false); setError(''); setPendingLocal(true);
   }, []);
   // Fetch the community mods available to layer, once, when a hosted bundle is configured.
@@ -487,7 +518,9 @@ export function App() {
               <b style={{ fontSize: 13 }}>Sources</b>
               {phase === 'scanning' && <span style={{ color: 'var(--muted)', fontSize: 12.5 }}><span className="spinner" /> scanning…</span>}
               {/* top-right: on hosted show what loaded; on the local path offer a way back to built-in */}
-              {phase === 'ready' && assetSource === 'hosted' && progress && <span style={{ color: 'var(--muted)', fontSize: 12.5, marginLeft: 'auto' }}>{progress}</span>}
+              {assetSource === 'hosted' && (relayering
+                ? <span style={{ marginLeft: 'auto', color: 'var(--muted)', fontSize: 12.5, display: 'inline-flex', alignItems: 'center', gap: 6 }}><span className="spinner" /> updating…</span>
+                : (phase === 'ready' && progress && <span style={{ color: 'var(--muted)', fontSize: 12.5, marginLeft: 'auto' }}>{progress}</span>))}
               {phase !== 'scanning' && assetSource !== 'hosted' && hostedAvailable && (
                 <button className="secondary" onClick={() => useHosted()} style={{ marginLeft: 'auto', height: 28, padding: '0 12px', fontSize: 12.5 }}>Switch to built-in assets</button>
               )}
