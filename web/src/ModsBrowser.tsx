@@ -139,16 +139,18 @@ export function ModsPanel({ tabs, busy, onTab, divided = true }: { tabs: ModTab[
             // Every card is the same shape: fixed 4/3 thumbnail (contain-fit) + a 2-line title slot.
             <div style={{ display: 'grid', gap: 10, gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', alignItems: 'start' }}>
               {shown.map((m) => (
-                <div key={m.id} className="card" style={{ padding: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column', borderColor: m.enabled ? 'var(--accent)' : 'var(--line)' }}>
+                // whole card is a label, so clicking anywhere toggles (interactive descendants like the
+                // Workshop link don't, per the HTML label spec)
+                <label key={m.id} className="card" style={{ padding: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column', borderColor: m.enabled ? 'var(--accent)' : 'var(--line)', cursor: cardBusy(m) ? 'wait' : 'pointer', userSelect: 'none' }}>
                   <div style={{ position: 'relative', aspectRatio: '4 / 3', background: '#0e0e12', flexShrink: 0, overflow: 'hidden' }}><ModThumb preview={m.preview} poster={m.poster} /></div>
                   <div style={{ padding: '8px 10px 10px', display: 'flex', flexDirection: 'column', gap: 7 }}>
                     <div style={{ fontSize: 12.5, fontWeight: 600, lineHeight: 1.3, height: '2.6em', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>{m.title}</div>
-                    <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: cardBusy(m) ? 'wait' : 'pointer' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                       <span style={{ flex: 1, minWidth: 0, color: 'var(--muted)', fontSize: 11.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{m.subtitle ?? (m.author ? `by ${m.author}` : '')}</span>
                       <input type="checkbox" checked={m.enabled} disabled={cardBusy(m)} onChange={() => tab.onToggle(m.id)} style={{ width: 17, height: 17, accentColor: 'var(--accent)', flexShrink: 0 }} />
-                    </label>
+                    </div>
                   </div>
-                </div>
+                </label>
               ))}
             </div>
           ) : (
