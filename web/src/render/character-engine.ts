@@ -145,11 +145,11 @@ export class CharacterEngine {
 
   /** Canvas resized (viewport / layout / device-mode change): re-fit the projection and, while
    *  auto-framing is on, re-frame the whole body to the new size. Called by the ResizeObserver. */
-  resize() { this.fit(); if (this.autoFrame && this.bodyBounds) this.frameToBody(); }
+  resize() { this.fit(); if (this.autoFrame && this.bodyMeshes.length) this.frameToBody(); }
 
   /** Turn on/off "keep the whole body framed as the canvas resizes" (the mobile default). Framing
    *  once immediately if a body is loaded; the user adjusting the camera or picking a preset ends it. */
-  setAutoFrame(on: boolean) { this.autoFrame = on; if (on && this.bodyBounds) this.frameToBody(); }
+  setAutoFrame(on: boolean) { this.autoFrame = on; if (on && this.bodyMeshes.length) this.frameToBody(); }
 
   // ---- scene controls (port of character.js setCamMode / bindView / bindLighting) ----
 
@@ -190,23 +190,24 @@ export class CharacterEngine {
   /** Fit the whole body in view, centered, keeping the current orbit angle. Zooms out extra on
    *  portrait / narrow viewports (phones) so the character never crops. Used for the mobile default. */
   frameToBody() {
-    const b = this.bodyBounds;
-    const H = b ? b.maxY - b.minY : 1.3;
+    const b = this.skinnedBounds() ?? this.bodyBounds; // true posed silhouette (bodyBounds is the raw un-posed extent)
+    if (!b) return;
+    const H = b.maxY - b.minY;
     const fovV = this.perspCam.fov * Math.PI / 180;
     // fit the full height with a little headroom; the vertical FOV is fixed, so this frames the whole
     // (tall, thin) character on any aspect - a tall phone fills nicely, a wide screen just adds side room.
-    const margin = 1.45;
-    this.orbit.setTarget(new THREE.Vector3(b ? b.cx : 0, (b ? b.minY : 0) + H / 2, b ? b.cz : 0));
+    const margin = 1.35;
+    this.orbit.setTarget(new THREE.Vector3(b.cx, b.minY + H / 2, b.cz));
     this.orbit.state.radius = Math.max(0.8, (H * margin / 2) / Math.tan(fovV / 2));
     this.orbit.apply();
   }
 
   // Diagnostic string (opt-in via ?camdebug) for the camera + canvas state.
   camDebugString(): string {
-    const b = this.bodyBounds;
-    const H = b ? b.maxY - b.minY : 0;
+    const rb = this.bodyBounds; const rawH = rb ? rb.maxY - rb.minY : 0;
+    const sb = this.skinnedBounds(); const skH = sb ? sb.maxY - sb.minY : 0;
     const c = this.renderer.domElement;
-    return `r=${this.orbit.state.radius.toFixed(2)} H=${H.toFixed(2)} tY=${this.orbit.state.target.y.toFixed(2)} asp=${this.perspCam.aspect.toFixed(2)} fov=${this.perspCam.fov.toFixed(0)} ${this.camMode} af=${this.autoFrame ? 1 : 0} c=${c.clientWidth}x${c.clientHeight}`;
+    return `r=${this.orbit.state.radius.toFixed(2)} rawH=${rawH.toFixed(2)} skH=${skH.toFixed(2)} tY=${this.orbit.state.target.y.toFixed(2)} asp=${this.perspCam.aspect.toFixed(2)} ${this.camMode} af=${this.autoFrame ? 1 : 0} c=${c.clientWidth}x${c.clientHeight}`;
   }
 
   setTurntable(on: boolean) { this.turntable = on; }
@@ -436,6 +437,29 @@ export class CharacterEngine {
       }
     }
     return m;
+  }
+
+  /** True skinned/posed bounds of the body (Y extent + XZ centre) at the current pose. Unlike
+   *  bodyBounds (Box3.setFromObject, which ignores GPU skinning and returns the raw un-posed geometry
+   *  extent - often ~half the real height), this applies the bone transforms, so it's the ACTUAL
+   *  rendered silhouette. Used to fit the camera on mobile. */
+  private skinnedBounds(): { minY: number; maxY: number; cx: number; cz: number } | null {
+    let minY = Infinity, maxY = -Infinity, minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+    const v = new THREE.Vector3();
+    for (const sm of this.bodyMeshes) {
+      const pos = sm.geometry.getAttribute('position');
+      if (!pos) continue;
+      sm.updateMatrixWorld(true);
+      for (let i = 0; i < pos.count; i++) {
+        v.fromBufferAttribute(pos as THREE.BufferAttribute, i);
+        sm.applyBoneTransform(i, v);
+        v.applyMatrix4(sm.matrixWorld);
+        if (v.y < minY) minY = v.y; if (v.y > maxY) maxY = v.y;
+        if (v.x < minX) minX = v.x; if (v.x > maxX) maxX = v.x;
+        if (v.z < minZ) minZ = v.z; if (v.z > maxZ) maxZ = v.z;
+      }
+    }
+    return Number.isFinite(minY) ? { minY, maxY, cx: (minX + maxX) / 2, cz: (minZ + maxZ) / 2 } : null;
   }
 
   /** Ground the rig set so the lowest posed sole rests on the grid. With a clip playing it samples
