@@ -422,21 +422,41 @@ export function App() {
     }
   }, [isMobile, agreedTerms, firstRun, phase, overlay, useHosted]);
 
+  // "Made by RedChili" + Ko-fi: a fixed corner chip on desktop, folded into the Help popout on mobile.
+  const creditLinks = (
+    <>
+      <a className="watermark" href="https://steamcommunity.com/id/mreastman/myworkshopfiles/?appid=108600" target="_blank" rel="noopener noreferrer" title="RedChili on the Steam Workshop">Made by RedChili</a>
+      <a className="kofi-link" href="https://ko-fi.com/redchili" target="_blank" rel="noopener noreferrer" title="Support RedChili on Ko-fi" aria-label="Support RedChili on Ko-fi"><img src={kofiUrl} alt="" /></a>
+    </>
+  );
+  const mobileAccountHelp = (
+    <>
+      {auth.configured && <AccountChip auth={auth} onSignIn={() => setAuthOpen(true)} onChangePassword={() => setChangePwOpen(true)} onDeleteAccount={() => setDeleteOpen(true)} />}
+      <HelpButton extra={creditLinks} />
+    </>
+  );
+
   return (
     <div style={{ maxWidth: wide ? 'none' : 1000, margin: wide ? 0 : '0 auto', padding: wide ? (isMobile ? '10px 10px' : '14px 20px') : (isMobile ? '14px 12px 30px' : '26px 24px 48px') }}>
-      <header style={{ position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: isMobile ? 8 : 12 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: isMobile ? 9 : 12 }}>
-          <img src={logoUrl} alt="PZ Survivor Studio" width={38} height={38} style={{ width: isMobile ? 30 : 38, height: isMobile ? 30 : 38, borderRadius: 9, objectFit: 'cover', display: 'block', border: '1px solid var(--line)' }} />
-          <div>
-            <div style={{ fontSize: isMobile ? 16 : 19, fontWeight: 700, lineHeight: 1.1 }}>PZ Survivor Studio</div>
-            {!isMobile && <div style={{ color: 'var(--muted)', fontSize: 12.5 }}>Dress, pose and export your survivors</div>}
+      <header style={{ position: 'relative', display: 'flex', flexDirection: isMobile ? 'column' : 'row', alignItems: isMobile ? 'stretch' : 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: isMobile ? 8 : 12 }}>
+        {/* top row: title (left) and, on mobile, the account + help controls (right) */}
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: isMobile ? 9 : 12, width: isMobile ? '100%' : 'auto' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: isMobile ? 9 : 12 }}>
+            <img src={logoUrl} alt="PZ Survivor Studio" width={38} height={38} style={{ width: isMobile ? 30 : 38, height: isMobile ? 30 : 38, borderRadius: 9, objectFit: 'cover', display: 'block', border: '1px solid var(--line)' }} />
+            <div>
+              <div style={{ fontSize: isMobile ? 16 : 19, fontWeight: 700, lineHeight: 1.1 }}>PZ Survivor Studio</div>
+              {!isMobile && <div style={{ color: 'var(--muted)', fontSize: 12.5 }}>Dress, pose and export your survivors</div>}
+            </div>
           </div>
+          {isMobile && (auth.configured || steam.configured || index != null) && (
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>{mobileAccountHelp}</div>
+          )}
         </div>
         {charName && !isMobile && <div title="Loaded character" style={{ position: 'absolute', left: '50%', top: '50%', transform: 'translate(-50%, -50%)', fontSize: 23, fontWeight: 600, color: 'var(--text)', pointerEvents: 'none', whiteSpace: 'nowrap', maxWidth: '40%', overflow: 'hidden', textOverflow: 'ellipsis' }}>{charName}</div>}
         {(index != null || auth.configured || steam.configured) && (
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: isMobile ? 'wrap' : undefined, justifyContent: isMobile ? 'flex-end' : undefined }}>
             {(index != null || auth.user || steam.token) && view !== 'overview' && (
-              <button className="secondary" title="Overview" aria-label="Overview" onClick={() => setView('overview')} style={{ height: NAV_H, width: isMobile ? NAV_H : undefined, padding: isMobile ? 0 : '0 14px', display: isMobile ? 'grid' : undefined, placeItems: isMobile ? 'center' : undefined, fontSize: isMobile ? 17 : undefined, lineHeight: isMobile ? 1 : undefined }}>{isMobile ? '⌂' : 'Overview'}</button>
+              <button className="secondary" title="Overview" aria-label="Overview" onClick={() => setView('overview')} style={{ height: NAV_H, width: isMobile ? NAV_H : undefined, padding: isMobile ? 0 : '0 14px', display: isMobile ? 'grid' : undefined, placeItems: isMobile ? 'center' : undefined, lineHeight: isMobile ? 1 : undefined }}>{isMobile ? <HomeIcon /> : 'Overview'}</button>
             )}
             {index != null && view !== 'character' && (
               <button onClick={() => setView('character')} style={{ height: NAV_H, padding: '0 18px', fontWeight: 600, boxShadow: '0 2px 10px #5b8cff55' }}>Character viewer →</button>
@@ -447,9 +467,9 @@ export function App() {
             {steam.configured && view !== 'mods' && (
               <button className="secondary" onClick={() => setView('mods')} title="Host your Workshop mods" style={{ height: NAV_H, padding: '0 14px' }}>Modders</button>
             )}
-            {auth.configured && <AccountChip auth={auth} onSignIn={() => setAuthOpen(true)} onChangePassword={() => setChangePwOpen(true)} onDeleteAccount={() => setDeleteOpen(true)} />}
+            {!isMobile && auth.configured && <AccountChip auth={auth} onSignIn={() => setAuthOpen(true)} onChangePassword={() => setChangePwOpen(true)} onDeleteAccount={() => setDeleteOpen(true)} />}
             {index != null && langs.length > 1 && <LanguageSelect langs={langs} value={itemLang} onChange={setItemLang} loading={langLoading} />}
-            <HelpButton />
+            {!isMobile && <HelpButton />}
           </div>
         )}
       </header>
@@ -683,14 +703,8 @@ export function App() {
 
       {view === 'mods' && steam.configured && <ModderDashboard steam={steam} />}
 
-      <div className="credit">
-        <a className="watermark" href="https://steamcommunity.com/id/mreastman/myworkshopfiles/?appid=108600"
-          target="_blank" rel="noopener noreferrer" title="RedChili on the Steam Workshop">Made by RedChili</a>
-        <a className="kofi-link" href="https://ko-fi.com/redchili" target="_blank" rel="noopener noreferrer"
-          title="Support RedChili on Ko-fi" aria-label="Support RedChili on Ko-fi">
-          <img src={kofiUrl} alt="" />
-        </a>
-      </div>
+      {/* desktop: fixed corner chip. mobile: folded into the Help popout (see accountAndHelp above). */}
+      {!isMobile && <div className="credit">{creditLinks}</div>}
 
       {overlay && <ScanOverlay scan={scan} closing={overlay === 'out'} hosted={scanHosted} />}
       {!agreedTerms && <TermsGate onAgree={() => { localStorage.setItem('pz-terms-agreed', '1'); setAgreedTerms(true); }} />}
@@ -725,7 +739,17 @@ function TermsGate({ onAgree }: { onAgree: () => void }) {
 }
 
 // Help / support popover: a question-mark button that reveals how to get in touch (email + Discord).
-function HelpButton() {
+// Lucide "house" icon, used for the compact Overview button on mobile.
+function HomeIcon({ size = 18 }: { size?: number }) {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8" />
+      <path d="M3 10a2 2 0 0 1 .709-1.528l7-6a2 2 0 0 1 2.582 0l7 6A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+    </svg>
+  );
+}
+
+function HelpButton({ extra }: { extra?: ReactNode }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -753,6 +777,7 @@ function HelpButton() {
             <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M19.27 5.33A16.7 16.7 0 0 0 15 4l-.2.4c1.9.46 2.78 1.13 3.7 1.96A15.6 15.6 0 0 0 12 5c-2.28 0-4.4.5-6.5 1.36.92-.83 1.96-1.55 3.7-1.96L9 4a16.7 16.7 0 0 0-4.27 1.33C2.36 8.82 1.6 12.75 2 16.63a16.9 16.9 0 0 0 5.06 2.56l.6-.83c-.55-.2-1.06-.45-1.55-.75l.38-.28a11.6 11.6 0 0 0 11.02 0l.38.28c-.49.3-1 .55-1.55.75l.6.83A16.7 16.7 0 0 0 22 16.63c.46-4.5-.73-8.4-2.73-11.3ZM8.9 14.66c-.98 0-1.79-.9-1.79-2s.79-2.02 1.79-2.02 1.8.91 1.79 2.02c0 1.1-.8 2-1.79 2Zm6.2 0c-.98 0-1.79-.9-1.79-2s.79-2.02 1.79-2.02 1.8.91 1.79 2.02c0 1.1-.79 2-1.79 2Z" /></svg>
             Join the Discord
           </a>
+          {extra && <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 14, paddingTop: 12, borderTop: '1px solid var(--line)' }}>{extra}</div>}
         </div>
       )}
     </div>
