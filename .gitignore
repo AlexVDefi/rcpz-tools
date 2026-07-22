@@ -7,3 +7,6 @@ out/
 
 # Baked Project Zomboid assets (game files, not ours to commit). Hosted from R2, never git.
 asset-bake/
+
+# R2 upload credentials (S3 API token). Never commit.
+.r2.env

@@ -24,7 +24,13 @@ const DESKTOP_APP_URL = 'https://github.com/AlexVDefi/rcpz-tools/releases'; // d
 const INSTALL_KEY = 'pz-install';
 const WORKSHOP_KEY = 'pz-workshop';
 const ACTIVE_KEY = 'pz-active-mods';
+const SOURCE_KEY = 'pz-asset-source'; // remembers the last choice: 'local' | 'hosted'
 const fsaSupported = fileAccessSupported; // true in the desktop app (native fs) or an FSA-capable browser
+// Hosted vanilla asset bundle (baked by tools/bake-assets.mjs, served from R2). When set, the app
+// offers a no-install path that works on ANY browser - local files/mods still need Chromium FSA.
+const HOSTED_ASSETS_URL = ((import.meta.env.VITE_HOSTED_ASSETS_URL as string) || '').trim();
+const hostedAvailable = !!HOSTED_ASSETS_URL;
+const usable = fsaSupported || hostedAvailable; // the app is usable if either path is available
 
 type Phase = 'unsupported' | 'idle' | 'need-permission' | 'scanning' | 'ready' | 'error';
 type View = 'overview' | 'character' | 'shared';
@@ -53,7 +59,8 @@ async function looksLikePzInstall(dir: FileSystemDirectoryHandle): Promise<boole
 }
 
 export function App() {
-  const [phase, setPhase] = useState<Phase>(fsaSupported ? 'idle' : 'unsupported');
+  const [phase, setPhase] = useState<Phase>(usable ? 'idle' : 'unsupported');
+  const [assetSource, setAssetSource] = useState<'local' | 'hosted' | null>(null); // which path built the current index
   const [progress, setProgress] = useState('');
   const [scan, setScan] = useState<Scan | null>(null);
   const [overlay, setOverlay] = useState<'in' | 'out' | null>(null); // scan modal: fading in, fading out, or gone
@@ -124,6 +131,7 @@ export function App() {
         modClothing: clothing.filter((c: { isMod: boolean }) => c.isMod).length,
       });
       setIndex(idx);
+      setAssetSource('local'); localStorage.setItem(SOURCE_KEY, 'local');
       setProgress(`scanned ${sources.length} root${sources.length === 1 ? '' : 's'} in ${((performance.now() - t0) / 1000).toFixed(1)}s`);
       setPhase('ready');
     } catch (e) { setError(e instanceof Error ? e.message : String(e)); setPhase('error'); }
@@ -151,7 +159,9 @@ export function App() {
         hairM: hair.male.length, hairF: hair.female.length, beards: beards.length, modClothing: 0,
       });
       setIndex(idx);
-      setProgress(`hosted assets (${manifest.version}) in ${((performance.now() - t0) / 1000).toFixed(1)}s`);
+      setAssetSource('hosted'); localStorage.setItem(SOURCE_KEY, 'hosted');
+      setInstallHandle(null); setMods([]);
+      setProgress(`built-in assets (${manifest.version}) in ${((performance.now() - t0) / 1000).toFixed(1)}s`);
       setPhase('ready');
     } catch (e) { setError(e instanceof Error ? e.message : String(e)); setPhase('error'); }
     finally {
@@ -160,33 +170,41 @@ export function App() {
     }
   }, []);
 
-  // ?assets=<baseUrl> loads a hosted bundle (validation entry point).
+  // Load the configured hosted bundle (the "Start now" / "built-in assets" path).
+  const useHosted = useCallback(() => { if (HOSTED_ASSETS_URL) rebuildHosted(HOSTED_ASSETS_URL); }, [rebuildHosted]);
+
+  // ?assets=<baseUrl> loads a hosted bundle (dev/validation override; prod uses HOSTED_ASSETS_URL).
   useEffect(() => {
     const url = new URLSearchParams(window.location.search).get('assets');
     if (url) rebuildHosted(url);
   }, [rebuildHosted]);
 
-  // restore install (+ workshop mods) on load
+  // Restore the last session on load: a granted local install (Chromium), else the hosted
+  // bundle if that was the last choice. First-time visitors get the source-choice screen.
   useEffect(() => {
-    if (!fsaSupported) return;
-    if (new URLSearchParams(window.location.search).get('assets')) return; // hosted path owns this load
+    if (new URLSearchParams(window.location.search).get('assets')) return; // ?assets= effect owns this load
     (async () => {
-      const inst = await loadDir(INSTALL_KEY);
-      if (!inst) return;
-      if (!(await hasPermission(inst))) { setInstallHandle(inst); setNeedPerm(true); return; }
-      // Committed to a scan: set the handle AND raise the modal in one batched render, so the
-      // Sources card and the modal appear on the same frame (no sources-without-modal flash),
-      // and the modal covers mod discovery (reading every mod.info) as well as the rebuild.
-      setInstallHandle(inst); setPhase('scanning'); setOverlay('in');
-      let discovered: DiscoveredMod[] = [];
-      try {
-        const ws = await loadDir(WORKSHOP_KEY);
-        if (ws && await hasPermission(ws)) { discovered = await discoverWorkshopMods(ws); setMods(discovered); }
-      } catch { /* discovery is best-effort; fall through to a vanilla rebuild so the modal never sticks */ }
-      const active = JSON.parse(localStorage.getItem(ACTIVE_KEY) || '[]').map((k: string) => discovered.find((m) => m.key === k)).filter(Boolean) as DiscoveredMod[];
-      rebuild(inst, active);
+      if (fsaSupported) {
+        const inst = await loadDir(INSTALL_KEY);
+        if (inst) {
+          if (!(await hasPermission(inst))) { setInstallHandle(inst); setNeedPerm(true); return; }
+          // Committed to a scan: set the handle AND raise the modal in one batched render, so the
+          // Sources card and the modal appear on the same frame (no sources-without-modal flash),
+          // and the modal covers mod discovery (reading every mod.info) as well as the rebuild.
+          setInstallHandle(inst); setPhase('scanning'); setOverlay('in');
+          let discovered: DiscoveredMod[] = [];
+          try {
+            const ws = await loadDir(WORKSHOP_KEY);
+            if (ws && await hasPermission(ws)) { discovered = await discoverWorkshopMods(ws); setMods(discovered); }
+          } catch { /* discovery is best-effort; fall through to a vanilla rebuild so the modal never sticks */ }
+          const active = JSON.parse(localStorage.getItem(ACTIVE_KEY) || '[]').map((k: string) => discovered.find((m) => m.key === k)).filter(Boolean) as DiscoveredMod[];
+          rebuild(inst, active);
+          return;
+        }
+      }
+      if (hostedAvailable && localStorage.getItem(SOURCE_KEY) === 'hosted') useHosted(); // returning hosted user
     })();
-  }, [rebuild]);
+  }, [rebuild, useHosted]);
 
   const pickInstall = useCallback(async () => {
     try {
@@ -285,22 +303,63 @@ export function App() {
       )}
 
       {phase !== 'unsupported' && view === 'overview' && firstRun && (
-        <section style={{ marginTop: 44, textAlign: 'center', maxWidth: 620, marginInline: 'auto' }}>
-          <h2 style={{ fontSize: 26, margin: '0 0 12px', lineHeight: 1.2 }}>Bring your survivors to life in the browser</h2>
-          <p style={{ color: 'var(--muted)', fontSize: 15, lineHeight: 1.65, margin: '0 0 24px' }}>
-            Point the tool at your local Project Zomboid folder to browse every outfit, weapon and animation, dress and pose a character, import a look straight from a save, and export stills, GIFs or MP4s. It all runs on your machine, and your game files never leave it{cloudConfigured ? ' - only renders you choose to share online get uploaded.' : '.'}
-          </p>
-          <button onClick={pickInstall} style={{ padding: '11px 22px', fontSize: 15 }}>Choose your PZ install folder…</button>
-          <div style={{ color: 'var(--muted)', fontSize: 12, marginTop: 10 }}>The folder that contains <code>media/</code>.{isDesktop ? '' : ' Chromium browsers only.'}</div>
-          {/* the desktop app reads any folder natively, so the browser-only C:\Program Files help is web-only */}
-          {!isDesktop && <div style={{ textAlign: 'left', maxWidth: 560, margin: '14px auto 0' }}><ProgramFilesHelp /></div>}
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'center', marginTop: 28 }}>
+        <section style={{ marginTop: 40, maxWidth: 760, marginInline: 'auto' }}>
+          <div style={{ textAlign: 'center', marginBottom: 26 }}>
+            <h2 style={{ fontSize: 26, margin: '0 0 12px', lineHeight: 1.2 }}>Bring your survivors to life in the browser</h2>
+            <p style={{ color: 'var(--muted)', fontSize: 15, lineHeight: 1.6, margin: 0 }}>
+              Browse every outfit, weapon and animation, dress and pose a character, and export stills, GIFs or MP4s. Choose how to load the game's assets.
+            </p>
+          </div>
+          {/* Two balanced cards: same title + pitch + button + one footer line each, equal height. */}
+          <div style={{ display: 'grid', gap: 14, alignItems: 'stretch', gridTemplateColumns: hostedAvailable && fsaSupported ? 'repeat(auto-fit, minmax(290px, 1fr))' : '1fr' }}>
+            {hostedAvailable && (
+              <div className="card" style={{ display: 'flex', flexDirection: 'column', textAlign: 'left' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <b style={{ fontSize: 15.5 }}>Use the built-in assets</b>
+                  <span style={{ background: 'var(--accent)', color: '#fff', fontSize: 10.5, fontWeight: 600, borderRadius: 999, padding: '2px 8px', letterSpacing: 0.3 }}>NO SETUP</span>
+                </div>
+                <p style={{ color: 'var(--muted)', fontSize: 13.5, lineHeight: 1.6, margin: '9px 0 16px', flex: 1 }}>
+                  Start right away with the vanilla Project Zomboid assets, hosted online. No download, works on any device - phones and non-Chromium browsers included.
+                </p>
+                <button onClick={useHosted} style={{ padding: '10px 18px', fontSize: 14.5 }}>Start now</button>
+                <div style={{ color: 'var(--muted)', fontSize: 12, marginTop: 8 }}>Nothing to install, no file permissions to grant.</div>
+              </div>
+            )}
+            {fsaSupported && (
+              <div className="card" style={{ display: 'flex', flexDirection: 'column', textAlign: 'left' }}>
+                <b style={{ fontSize: 15.5 }}>Use my own game files</b>
+                <p style={{ color: 'var(--muted)', fontSize: 13.5, lineHeight: 1.6, margin: '9px 0 16px', flex: 1 }}>
+                  Load vanilla assets from your own Project Zomboid install, and pick up your installed <b>mods</b> too. Modded content is only available this way{isDesktop ? '' : ', and needs a Chromium browser'}.
+                </p>
+                <button className={hostedAvailable ? 'secondary' : ''} onClick={pickInstall} style={{ padding: '10px 18px', fontSize: 14.5 }}>Choose install folder…</button>
+                <div style={{ color: 'var(--muted)', fontSize: 12, marginTop: 8 }}>The folder that contains <code>media/</code>.</div>
+              </div>
+            )}
+          </div>
+          {hostedAvailable && !fsaSupported && (
+            <p style={{ color: 'var(--muted)', fontSize: 12.5, textAlign: 'center', marginTop: 14 }}>
+              Want to use your own game files or mods? Open this on a desktop in a Chromium browser (Chrome, Edge, Brave, Opera).
+            </p>
+          )}
+          {/* Local-path details, grouped and clearly scoped: none of it applies to the built-in assets. */}
+          {fsaSupported && (
+            <div style={{ marginTop: 18, border: '1px solid var(--line)', borderRadius: 10, background: '#101014', padding: '13px 14px 15px' }}>
+              {hostedAvailable && (
+                <div style={{ fontSize: 12.5, color: 'var(--muted)', lineHeight: 1.55 }}>
+                  <b style={{ color: 'var(--text)', fontSize: 13 }}>Using your own game files?</b> Worth knowing before you do. The <b style={{ color: 'var(--text)' }}>built-in assets need none of this</b> - you'd only point at your own install to include <b style={{ color: 'var(--text)' }}>mods</b>.
+                </div>
+              )}
+              <SafetyInfo />
+              {/* the desktop app reads any folder natively, so the browser-only C:\Program Files help is web-only */}
+              {!isDesktop && <div style={{ marginTop: 8 }}><ProgramFilesHelp /></div>}
+            </div>
+          )}
+          {error && <p style={{ color: '#ff8a8a', marginTop: 18, textAlign: 'center' }}>Error: {error}</p>}
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'center', marginTop: 26 }}>
             {['Grids & thumbnails', 'Dress, pose & animate', 'Import from a save', 'Export PNG / GIF / MP4'].map((f) => (
               <span key={f} style={{ background: 'var(--panel)', border: '1px solid var(--line)', borderRadius: 999, padding: '6px 13px', fontSize: 12.5, color: 'var(--muted)' }}>{f}</span>
             ))}
           </div>
-          {error && <p style={{ color: '#ff8a8a', marginTop: 18 }}>Error: {error}</p>}
-          <div style={{ textAlign: 'left', marginTop: 28 }}><SafetyInfo /></div>
         </section>
       )}
 
@@ -312,14 +371,32 @@ export function App() {
               {phase === 'scanning' && <span style={{ color: 'var(--muted)', fontSize: 12.5 }}><span className="spinner" /> scanning…</span>}
               {phase === 'ready' && progress && <span style={{ color: 'var(--muted)', fontSize: 12.5, marginLeft: 'auto' }}>{progress}</span>}
             </div>
-            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-              <FolderChip label="Game install" name={installHandle?.name} connected={!!installHandle && !needPerm}
-                warn={needPerm ? 'reconnect needed' : undefined} action={needPerm ? 'Reconnect' : 'Change'} onAction={needPerm ? reconnect : pickInstall} disabled={phase === 'scanning'}
-                hint={<>The Project Zomboid install folder, which contains a <b>media</b> folder. On Steam: right-click <b>Project Zomboid</b> → <b>Manage</b> → <b>Browse local files</b>. Typical path: <code>Steam\steamapps\common\ProjectZomboid</code>.</>} />
-              <FolderChip label="Mods" name={mods.length ? `${mods.length} mods found` : undefined} connected={mods.length > 0}
-                action={mods.length ? 'Change' : 'Add'} onAction={pickWorkshop} disabled={phase === 'scanning'}
-                hint={<>Point at any mods folder and it works out the layout: your Steam Workshop content (<code>steamapps\workshop\content\108600</code>), your <code>Zomboid\mods</code>, or <code>Zomboid\Workshop</code> - or the <code>Zomboid</code> folder to get both. Optional, only needed for modded content.</>} />
-            </div>
+            {assetSource === 'hosted' ? (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+                <div style={{ flex: 1, minWidth: 240 }}>
+                  <div style={{ fontWeight: 600, fontSize: 13.5, display: 'flex', alignItems: 'center', gap: 7 }}>
+                    <span style={{ width: 8, height: 8, borderRadius: 999, background: '#4ac07a', display: 'inline-block' }} />
+                    Built-in vanilla assets
+                  </div>
+                  <div style={{ color: 'var(--muted)', fontSize: 12.5, marginTop: 4 }}>
+                    Loaded from the hosted library, no game install needed. Modded content needs your own game files.
+                  </div>
+                </div>
+                {fsaSupported && <button className="secondary" onClick={pickInstall} disabled={phase === 'scanning'} style={{ padding: '7px 13px', fontSize: 12.5 }}>Use my game files instead</button>}
+              </div>
+            ) : (
+              <>
+                <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+                  <FolderChip label="Game install" name={installHandle?.name} connected={!!installHandle && !needPerm}
+                    warn={needPerm ? 'reconnect needed' : undefined} action={needPerm ? 'Reconnect' : 'Change'} onAction={needPerm ? reconnect : pickInstall} disabled={phase === 'scanning'}
+                    hint={<>The Project Zomboid install folder, which contains a <b>media</b> folder. On Steam: right-click <b>Project Zomboid</b> → <b>Manage</b> → <b>Browse local files</b>. Typical path: <code>Steam\steamapps\common\ProjectZomboid</code>.</>} />
+                  <FolderChip label="Mods" name={mods.length ? `${mods.length} mods found` : undefined} connected={mods.length > 0}
+                    action={mods.length ? 'Change' : 'Add'} onAction={pickWorkshop} disabled={phase === 'scanning'}
+                    hint={<>Point at any mods folder and it works out the layout: your Steam Workshop content (<code>steamapps\workshop\content\108600</code>), your <code>Zomboid\mods</code>, or <code>Zomboid\Workshop</code> - or the <code>Zomboid</code> folder to get both. Optional, only needed for modded content.</>} />
+                </div>
+                {hostedAvailable && <button className="secondary" onClick={useHosted} disabled={phase === 'scanning'} style={{ marginTop: 10, padding: '6px 12px', fontSize: 12.5 }}>Switch to built-in assets (no install needed)</button>}
+              </>
+            )}
             {error && <p style={{ color: '#ff8a8a', margin: '10px 0 0' }}>Error: {error}</p>}
             <SafetyInfo />
           </div>
