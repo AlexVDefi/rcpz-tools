@@ -2,7 +2,7 @@
 // the built-in vanilla assets. Public, no auth. Empty when the cloud API isn't configured.
 import { CLOUD_API } from './config';
 
-export interface HostedMod { modId: string; title: string; url: string; }
+export interface HostedMod { modId: string; title: string; url: string; preview?: string | null; author?: string | null; }
 
 export async function fetchHostedMods(): Promise<HostedMod[]> {
   if (!CLOUD_API) return [];

@@ -40,6 +40,8 @@ create table if not exists public.mod_permissions (
   title           text,                          -- mod title (from Steam, not the client)
   status          text not null default 'allowed', -- consent: 'allowed' | 'revoked'
   terms_version   int  not null default 1,
+  preview         text,                          -- Workshop thumbnail url (for the app's mod grid)
+  author          text,                          -- creator's Steam persona name
   consented_at    timestamptz not null default now(),
   updated_at      timestamptz not null default now(),
   -- hosting pipeline state (written by the VPS backend, not the browser):
@@ -51,7 +53,9 @@ create table if not exists public.mod_permissions (
   unique (steamid, publishedfileid)              -- upsert target for /steam/permission
 );
 
--- Existing installs: add the hosting columns if the table predates them.
+-- Existing installs: add the columns if the table predates them.
+alter table public.mod_permissions add column if not exists preview       text;
+alter table public.mod_permissions add column if not exists author        text;
 alter table public.mod_permissions add column if not exists host_status   text;
 alter table public.mod_permissions add column if not exists host_error    text;
 alter table public.mod_permissions add column if not exists host_attempts int not null default 0;

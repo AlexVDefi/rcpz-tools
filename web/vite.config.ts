@@ -16,16 +16,20 @@ function buildCsp(env: Record<string, string>): string {
   const connect = new Set(["'self'"]);
   const sb = originOf(env.VITE_SUPABASE_URL);
   const api = originOf(env.VITE_CLOUD_API);
+  const assets = originOf(env.VITE_HOSTED_ASSETS_URL); // hosted vanilla + community mod bundles (R2/CDN)
   if (sb) { connect.add(sb); connect.add(sb.replace(/^https:/, 'wss:')); } // Supabase realtime uses wss
   if (api) connect.add(api);
-  // Shared renders are served from the Worker origin, so it must be allowed as an image/media
-  // source too (only when the online feature is configured).
-  const mediaExtra = api ? ` ${api}` : '';
+  if (assets) connect.add(assets);
+  // Shared renders come from the Worker origin, hosted assets from the CDN - both are allowed as
+  // image/media sources too (only when configured).
+  const mediaExtra = [api, assets].filter(Boolean).map((s) => ` ${s}`).join('');
+  // Steam Workshop thumbnails shown on the community-mods grid.
+  const steamImg = ' https://*.steamusercontent.com https://*.steamstatic.com';
   return [
     "default-src 'self'",
     "script-src 'self' 'wasm-unsafe-eval' 'unsafe-eval'",
     "style-src 'self' 'unsafe-inline'",
-    `img-src 'self' data: blob:${mediaExtra}`,
+    `img-src 'self' data: blob:${mediaExtra}${steamImg}`,
     `media-src 'self' blob:${mediaExtra}`,
     "font-src 'self'",
     `connect-src ${[...connect].join(' ')}`,

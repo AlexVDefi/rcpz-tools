@@ -14,6 +14,7 @@ export function ModderDashboard({ steam }: { steam: SteamState }) {
   const [busy, setBusy] = useState<Record<string, boolean>>({});
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [confirmMod, setConfirmMod] = useState<SteamMod | null>(null); // pending allow, awaiting co-contributor confirmation
 
   const load = useCallback(async () => {
     if (!token) return;
@@ -103,7 +104,7 @@ export function ModderDashboard({ steam }: { steam: SteamState }) {
                   <div style={{ fontSize: 13, fontWeight: 600, lineHeight: 1.3, flex: 1 }}>{m.title || `Workshop item ${m.id}`}</div>
                   <div style={{ color: 'var(--muted)', fontSize: 11.5 }}>{kb(m.size)} · <a href={`https://steamcommunity.com/sharedfiles/filedetails/?id=${m.id}`} target="_blank" rel="noopener noreferrer" style={{ color: 'var(--muted)' }}>Workshop ↗</a></div>
                   <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: busy[m.id] ? 'wait' : 'pointer', fontSize: 12.5, marginTop: 2 }}>
-                    <input type="checkbox" checked={allowed} disabled={!!busy[m.id]} onChange={(e) => toggle(m.id, e.target.checked)} />
+                    <input type="checkbox" checked={allowed} disabled={!!busy[m.id]} onChange={(e) => { if (e.target.checked) setConfirmMod(m); else toggle(m.id, false); }} />
                     <span style={{ color: allowed ? 'var(--text)' : 'var(--muted)', fontWeight: allowed ? 600 : 400 }}>
                       {busy[m.id] ? 'Saving…' : allowed ? 'Hosting allowed' : 'Allow hosting'}
                     </span>
@@ -112,6 +113,24 @@ export function ModderDashboard({ steam }: { steam: SteamState }) {
               </div>
             );
           })}
+        </div>
+      )}
+
+      {confirmMod && (
+        <div onClick={() => setConfirmMod(null)} style={{ position: 'fixed', inset: 0, background: '#000a', display: 'grid', placeItems: 'center', zIndex: 100, padding: 20 }}>
+          <div className="card" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 440, width: '100%' }}>
+            <b style={{ fontSize: 15 }}>Allow hosting for this mod?</b>
+            <p style={{ color: 'var(--muted)', fontSize: 13.5, lineHeight: 1.6, margin: '10px 0 6px' }}>
+              You're about to let <b style={{ color: 'var(--text)' }}>{confirmMod.title || `Workshop item ${confirmMod.id}`}</b> be hosted so anyone can use it in the studio with no install.
+            </p>
+            <p style={{ color: 'var(--muted)', fontSize: 13.5, lineHeight: 1.6, margin: '0 0 18px' }}>
+              If <b style={{ color: 'var(--text)' }}>anyone else contributed</b> to this mod, make sure you have <b style={{ color: 'var(--text)' }}>their permission</b> first. By continuing you confirm you have the right to host all of its assets.
+            </p>
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+              <button className="secondary" onClick={() => setConfirmMod(null)} style={{ padding: '8px 14px' }}>Cancel</button>
+              <button onClick={() => { const m = confirmMod; setConfirmMod(null); toggle(m.id, true); }} style={{ padding: '8px 14px' }}>I have permission, allow</button>
+            </div>
+          </div>
         </div>
       )}
     </div>

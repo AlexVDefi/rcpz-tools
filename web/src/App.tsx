@@ -419,14 +419,26 @@ export function App() {
                 </div>
                 {hostedMods.length > 0 && (
                   <div style={{ marginTop: 14, borderTop: '1px solid var(--line)', paddingTop: 12 }}>
-                    <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 8 }}>Community mods <span style={{ color: 'var(--muted)', fontWeight: 400 }}>· hosted by their creators, no install needed</span></div>
-                    <div style={{ display: 'grid', gap: 7 }}>
-                      {hostedMods.map((m) => (
-                        <label key={m.modId} style={{ display: 'flex', alignItems: 'center', gap: 9, fontSize: 13, cursor: phase === 'scanning' ? 'wait' : 'pointer' }}>
-                          <input type="checkbox" checked={enabledMods.includes(m.modId)} disabled={phase === 'scanning'} onChange={() => toggleHostedMod(m.modId)} />
-                          <span>{m.title}</span>
-                        </label>
-                      ))}
+                    <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 10 }}>Community mods <span style={{ color: 'var(--muted)', fontWeight: 400 }}>· hosted by their creators, no install needed</span></div>
+                    <div style={{ display: 'grid', gap: 10, gridTemplateColumns: 'repeat(auto-fill, minmax(168px, 1fr))' }}>
+                      {hostedMods.map((m) => {
+                        const on = enabledMods.includes(m.modId);
+                        return (
+                          <label key={m.modId} className="card" style={{ padding: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column', cursor: phase === 'scanning' ? 'wait' : 'pointer', borderColor: on ? 'var(--accent)' : 'var(--line)' }}>
+                            <div style={{ position: 'relative', aspectRatio: '16 / 9', background: '#0e0e12' }}>
+                              {m.preview
+                                ? <img src={m.preview} alt="" loading="lazy" style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
+                                : <div style={{ width: '100%', height: '100%', display: 'grid', placeItems: 'center', color: '#3a3a44' }}>◈</div>}
+                              <input type="checkbox" checked={on} disabled={phase === 'scanning'} onChange={() => toggleHostedMod(m.modId)}
+                                style={{ position: 'absolute', top: 8, left: 8, width: 17, height: 17, accentColor: 'var(--accent)' }} />
+                            </div>
+                            <div style={{ padding: '8px 10px 10px' }}>
+                              <div style={{ fontSize: 12.5, fontWeight: 600, lineHeight: 1.3, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>{m.title}</div>
+                              {m.author && <div style={{ color: 'var(--muted)', fontSize: 11.5, marginTop: 3 }}>by {m.author}</div>}
+                            </div>
+                          </label>
+                        );
+                      })}
                     </div>
                   </div>
                 )}

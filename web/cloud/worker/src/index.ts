@@ -338,7 +338,7 @@ async function steamCallback(url: URL, env: Env): Promise<Response> {
   return Response.redirect(back.toString(), 302);
 }
 
-async function steamApi(path: string, params: Record<string, string>, env: Env): Promise<{ response?: { publishedfiledetails?: Array<Record<string, unknown>> } }> {
+async function steamApi(path: string, params: Record<string, string>, env: Env): Promise<{ response?: { publishedfiledetails?: Array<Record<string, unknown>>; players?: Array<Record<string, unknown>> } }> {
   const u = new URL(`https://api.steampowered.com/${path}/`);
   u.searchParams.set('key', env.STEAM_WEB_API_KEY || '');
   for (const [k, v] of Object.entries(params)) u.searchParams.set(k, v);
@@ -380,19 +380,24 @@ async function steamPermission(request: Request, env: Env): Promise<Response> {
   const id = String(body.id || '');
   if (!/^\d+$/.test(id)) return json({ error: 'Bad mod id' }, 400);
 
-  let title = '';
+  let title = '', preview: string | null = null, author: string | null = null;
   try {
     const det = await steamApi('IPublishedFileService/GetDetails/v1', { 'publishedfileids[0]': id }, env);
     const f = det.response?.publishedfiledetails?.[0];
     if (!f || String(f.creator) !== steamid) return json({ error: 'You are not the owner of that mod' }, 403);
     title = String(f.title || '');
+    preview = (f.preview_url as string) || null;
+    if (body.allow) { // the author name (persona) for the app's mod grid
+      const sum = await steamApi('ISteamUser/GetPlayerSummaries/v2', { steamids: steamid }, env);
+      author = (sum.response?.players?.[0]?.personaname as string) || null;
+    }
   } catch { return json({ error: 'Steam verification failed' }, 502); }
 
   const now = new Date().toISOString();
   const row: Record<string, unknown> = { steamid, publishedfileid: id, title, status: body.allow ? 'allowed' : 'revoked', consented_at: now, terms_version: 1, updated_at: now };
   // Re-allowing resets the hosting state so the backend reprocesses (after a prior failure, or a
   // revoke). Revoking leaves host_status as-is so the remove sweep (revoked + hosted) still fires.
-  if (body.allow) { row.host_status = null; row.host_attempts = 0; row.host_error = null; }
+  if (body.allow) { row.host_status = null; row.host_attempts = 0; row.host_error = null; row.preview = preview; row.author = author; }
   const res = await fetch(`${env.SUPABASE_URL}/rest/v1/mod_permissions?on_conflict=steamid,publishedfileid`, {
     method: 'POST',
     headers: { ...svc(env), 'Content-Type': 'application/json', Prefer: 'resolution=merge-duplicates,return=minimal' },
@@ -415,13 +420,13 @@ async function steamPermission(request: Request, env: Env): Promise<Response> {
 // Public: the mods whose assets are currently hosted, for the app to offer. Aggregates the `hosted`
 // bundle list across every allowed+hosted consent row.
 async function hostedMods(env: Env): Promise<Response> {
-  const res = await fetch(`${env.SUPABASE_URL}/rest/v1/mod_permissions?status=eq.allowed&host_status=eq.hosted&select=title,hosted`, { headers: svc(env) });
+  const res = await fetch(`${env.SUPABASE_URL}/rest/v1/mod_permissions?status=eq.allowed&host_status=eq.hosted&select=title,hosted,preview,author`, { headers: svc(env) });
   if (!res.ok) return json({ error: 'query failed' }, 502);
-  const rows = (await res.json()) as { title?: string; hosted?: { modId?: string; url?: string }[] }[];
+  const rows = (await res.json()) as { title?: string; preview?: string; author?: string; hosted?: { modId?: string; url?: string }[] }[];
   const seen = new Set<string>();
-  const mods: { modId: string; title: string; url: string }[] = [];
+  const mods: { modId: string; title: string; url: string; preview: string | null; author: string | null }[] = [];
   for (const r of rows) for (const h of r.hosted || []) {
-    if (h.modId && h.url && !seen.has(h.modId)) { seen.add(h.modId); mods.push({ modId: h.modId, title: r.title || h.modId, url: h.url }); }
+    if (h.modId && h.url && !seen.has(h.modId)) { seen.add(h.modId); mods.push({ modId: h.modId, title: r.title || h.modId, url: h.url, preview: r.preview || null, author: r.author || null }); }
   }
   return json({ mods });
 }
