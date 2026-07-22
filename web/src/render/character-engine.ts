@@ -100,16 +100,19 @@ export class CharacterEngine {
   }
 
   /** Clear the whole buffer (transparent), then render the scene - full-canvas, or into the
-   *  centered viewfinder rect when an export aspect is active. */
+   *  centered viewfinder rect when an export aspect is active. vw/vh/viewRect are in drawing-buffer
+   *  pixels (for readPixels), but renderer.setViewport/setScissor take CSS pixels and re-multiply by
+   *  the pixelRatio internally - so divide by pr here, or the viewport is pr x too big (which zooms and
+   *  shifts the whole scene on any hi-dpi / mobile display, pr>1). */
   private drawFrame() {
-    const r = this.renderer;
+    const r = this.renderer, pr = r.getPixelRatio();
     r.setScissorTest(false);
-    r.setViewport(0, 0, this.vw, this.vh);
+    r.setViewport(0, 0, this.vw / pr, this.vh / pr);
     r.clear();
     if (this.viewRect) {
       const v = this.viewRect;
-      r.setViewport(v.x, v.y, v.w, v.h);
-      r.setScissor(v.x, v.y, v.w, v.h);
+      r.setViewport(v.x / pr, v.y / pr, v.w / pr, v.h / pr);
+      r.setScissor(v.x / pr, v.y / pr, v.w / pr, v.h / pr);
       r.setScissorTest(true);
     }
     r.render(this.scene, this.camera);
