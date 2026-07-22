@@ -11,6 +11,7 @@ import { CharacterViewer } from './CharacterViewer';
 import { SharedGallery } from './SharedGallery';
 import { ModderDashboard } from './ModderDashboard';
 import { ModsPanel, type ModTab } from './ModsBrowser';
+import { useIsMobile } from './useIsMobile';
 import { useSteam } from './cloud/steam';
 import { fetchHostedMods, type HostedMod } from './cloud/hosted-mods';
 import { useAuth, type AuthState } from './cloud/auth';
@@ -402,20 +403,38 @@ export function App() {
   const wide = view === 'character' && index != null;
 
   const firstRun = !installHandle && !counts;
+  // On phones the File System Access API isn't available, so there's no local-files path at all - the
+  // app runs purely on the hosted built-in assets + community mods. `canUseLocal` gates every bit of
+  // local-file UI; on desktop it's exactly `fsaSupported`, so nothing there changes.
+  const isMobile = useIsMobile();
+  const canUseLocal = fsaSupported && !isMobile;
+
+  // On mobile, skip the source-choice screen entirely: once the terms are accepted, load the hosted
+  // built-in assets automatically so the user lands straight in the studio / community mods.
+  const mobileAutoLoaded = useRef(false);
+  useEffect(() => {
+    if (mobileAutoLoaded.current) return;
+    // returning hosted users are already handled by the restore effect; only drive the FIRST visit here
+    if (localStorage.getItem(SOURCE_KEY) === 'hosted') { mobileAutoLoaded.current = true; return; }
+    if (isMobile && hostedAvailable && agreedTerms && firstRun && phase === 'idle' && !overlay) {
+      mobileAutoLoaded.current = true;
+      useHosted();
+    }
+  }, [isMobile, agreedTerms, firstRun, phase, overlay, useHosted]);
 
   return (
-    <div style={{ maxWidth: wide ? 'none' : 1000, margin: wide ? 0 : '0 auto', padding: wide ? '14px 20px' : '26px 24px 48px' }}>
-      <header style={{ position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <img src={logoUrl} alt="PZ Survivor Studio" width={38} height={38} style={{ width: 38, height: 38, borderRadius: 9, objectFit: 'cover', display: 'block', border: '1px solid var(--line)' }} />
+    <div style={{ maxWidth: wide ? 'none' : 1000, margin: wide ? 0 : '0 auto', padding: wide ? (isMobile ? '10px 10px' : '14px 20px') : (isMobile ? '14px 12px 30px' : '26px 24px 48px') }}>
+      <header style={{ position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: isMobile ? 8 : 12 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: isMobile ? 9 : 12 }}>
+          <img src={logoUrl} alt="PZ Survivor Studio" width={38} height={38} style={{ width: isMobile ? 30 : 38, height: isMobile ? 30 : 38, borderRadius: 9, objectFit: 'cover', display: 'block', border: '1px solid var(--line)' }} />
           <div>
-            <div style={{ fontSize: 19, fontWeight: 700, lineHeight: 1.1 }}>PZ Survivor Studio</div>
-            <div style={{ color: 'var(--muted)', fontSize: 12.5 }}>Dress, pose and export your survivors</div>
+            <div style={{ fontSize: isMobile ? 16 : 19, fontWeight: 700, lineHeight: 1.1 }}>PZ Survivor Studio</div>
+            {!isMobile && <div style={{ color: 'var(--muted)', fontSize: 12.5 }}>Dress, pose and export your survivors</div>}
           </div>
         </div>
-        {charName && <div title="Loaded character" style={{ position: 'absolute', left: '50%', top: '50%', transform: 'translate(-50%, -50%)', fontSize: 23, fontWeight: 600, color: 'var(--text)', pointerEvents: 'none', whiteSpace: 'nowrap', maxWidth: '40%', overflow: 'hidden', textOverflow: 'ellipsis' }}>{charName}</div>}
+        {charName && !isMobile && <div title="Loaded character" style={{ position: 'absolute', left: '50%', top: '50%', transform: 'translate(-50%, -50%)', fontSize: 23, fontWeight: 600, color: 'var(--text)', pointerEvents: 'none', whiteSpace: 'nowrap', maxWidth: '40%', overflow: 'hidden', textOverflow: 'ellipsis' }}>{charName}</div>}
         {(index != null || auth.configured || steam.configured) && (
-          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: isMobile ? 'wrap' : undefined, justifyContent: isMobile ? 'flex-end' : undefined }}>
             {(index != null || auth.user || steam.token) && view !== 'overview' && (
               <button className="secondary" onClick={() => setView('overview')} style={{ height: NAV_H, padding: '0 14px' }}>Overview</button>
             )}
@@ -460,7 +479,7 @@ export function App() {
             </p>
           </div>
           {/* Two balanced cards: same title + pitch + button + one footer line each, equal height. */}
-          <div style={{ display: 'grid', gap: 14, alignItems: 'stretch', gridTemplateColumns: hostedAvailable && fsaSupported ? 'repeat(auto-fit, minmax(290px, 1fr))' : '1fr' }}>
+          <div style={{ display: 'grid', gap: 14, alignItems: 'stretch', gridTemplateColumns: hostedAvailable && canUseLocal ? 'repeat(auto-fit, minmax(290px, 1fr))' : '1fr' }}>
             {hostedAvailable && (
               <div className="card" style={{ display: 'flex', flexDirection: 'column', textAlign: 'left' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -474,7 +493,7 @@ export function App() {
                 <div style={{ color: 'var(--muted)', fontSize: 12, marginTop: 8 }}>Nothing to install, no file permissions to grant.</div>
               </div>
             )}
-            {fsaSupported && (
+            {canUseLocal && (
               <div className="card" style={{ display: 'flex', flexDirection: 'column', textAlign: 'left' }}>
                 <b style={{ fontSize: 15.5 }}>Use my own game files</b>
                 <p style={{ color: 'var(--muted)', fontSize: 13.5, lineHeight: 1.6, margin: '9px 0 16px', flex: 1 }}>
@@ -485,13 +504,13 @@ export function App() {
               </div>
             )}
           </div>
-          {hostedAvailable && !fsaSupported && (
+          {hostedAvailable && !fsaSupported && !isMobile && (
             <p style={{ color: 'var(--muted)', fontSize: 12.5, textAlign: 'center', marginTop: 14 }}>
               Want to use your own game files or mods? Open this on a desktop in a Chromium browser (Chrome, Edge, Brave, Opera).
             </p>
           )}
           {/* Local-path details, grouped and clearly scoped: none of it applies to the built-in assets. */}
-          {fsaSupported && (
+          {canUseLocal && (
             <div style={{ marginTop: 18, border: '1px solid var(--line)', borderRadius: 10, background: '#101014', padding: '13px 14px 15px' }}>
               {hostedAvailable && (
                 <div style={{ fontSize: 12.5, color: 'var(--muted)', lineHeight: 1.55 }}>
@@ -536,7 +555,7 @@ export function App() {
                     </div>
                     <div style={{ color: 'var(--muted)', fontSize: 12.5, marginTop: 4 }}>Loaded from the hosted library, no game install needed.</div>
                   </div>
-                  {fsaSupported && <button className="secondary" onClick={useLocalFiles} disabled={phase === 'scanning'} style={{ padding: '7px 13px', fontSize: 12.5 }}>Use my game files instead</button>}
+                  {canUseLocal && <button className="secondary" onClick={useLocalFiles} disabled={phase === 'scanning'} style={{ padding: '7px 13px', fontSize: 12.5 }}>Use my game files instead</button>}
                 </div>
 
                 {(() => {
@@ -547,7 +566,7 @@ export function App() {
                     items: hostedMods.map((m) => ({ id: m.modId, title: m.title, author: m.author, enabled: enabledMods.includes(m.modId), preview: m.preview })),
                     note: 'Hosted by their creators. Optional - enable any to use its assets in the studio, no install needed.',
                   });
-                  if (fsaSupported) tabs.push({
+                  if (canUseLocal) tabs.push({
                     key: 'local', label: 'Your installed mods', onToggle: toggleLocalMod, onSetMany: setManyLocalMods,
                     items: mods.map((m) => ({ id: m.modId, title: m.name, author: m.author, enabled: !disabledLocal.includes(m.modId), poster: m.poster })),
                     note: <>Loaded from your PC. <InfoDot text={<>Point at your <code>Zomboid/mods</code>, your <code>Zomboid/Workshop</code>, or the Steam <code>...workshop/content/108600</code> folder - as long as it is <b>not</b> under <code>C:\Program Files</code> (browsers cannot read there).</>} /></>,
@@ -685,7 +704,7 @@ function TermsGate({ onAgree }: { onAgree: () => void }) {
   const TERMS = 'https://projectzomboid.com/blog/support/terms-conditions/';
   const link = { color: 'var(--accent)' };
   return (
-    <div style={{ position: 'fixed', inset: 0, background: '#000d', display: 'grid', placeItems: 'center', zIndex: 200, padding: 20 }}>
+    <div style={{ position: 'fixed', inset: 0, background: '#000d', display: 'grid', placeItems: 'center', zIndex: 600, padding: 20 }}>
       <div className="card" style={{ maxWidth: 500, width: '100%' }}>
         <b style={{ fontSize: 17 }}>Welcome to PZ Survivor Studio</b>
         <p style={{ color: 'var(--muted)', fontSize: 13.5, lineHeight: 1.65, margin: '12px 0 0' }}>

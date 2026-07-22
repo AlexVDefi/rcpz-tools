@@ -18,6 +18,7 @@ import { uploadRender, playerUrl } from './cloud/api';
 import type { ShareMeta } from './cloud/share-meta';
 import type { DisplayNames } from './item-names';
 import { cloudConfigured, fmtBytes } from './cloud/config';
+import { useIsMobile } from './useIsMobile';
 const SAVES_KEY = 'pz-saves-folder'; // remembered Zomboid folder for the import dialog (session-scoped, like the game/mods handles)
 const TOUR_KEY = 'pz-viewer-tour-done'; // set once the first-time guided tour has been seen
 
@@ -91,6 +92,7 @@ function clipCategory(name: string): string {
 }
 
 export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSignIn, uploads, displayNames }: { ctx: Ctx; index: unknown; onCharacterName?: (name: string | null) => void; auth: AuthState; onRequestSignIn: () => void; uploads: CloudUploads; displayNames: DisplayNames | null }) {
+  const isMobile = useIsMobile();
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const engineRef = useRef<CharacterEngine | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -510,10 +512,10 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
   const equipList = engineRef.current?.equippedList() ?? [];
 
   return (
-    <div ref={containerRef} style={{ display: 'flex', height: 'calc(100vh - 128px)', minHeight: 460 }}>
+    <div ref={containerRef} style={{ display: 'flex', flexDirection: isMobile ? 'column' : 'row', gap: isMobile ? 10 : 0, height: isMobile ? 'auto' : 'calc(100vh - 128px)', minHeight: isMobile ? 0 : 460 }}>
       {importOpen && <ImportModal onClose={() => setImportOpen(false)} onImport={applyImport} />}
       {presetsOpen && <PresetsModal presets={presets} onClose={() => setPresetsOpen(false)} onSave={savePreset} onLoad={(p) => { void applyPreset(p); setPresetsOpen(false); }} onDelete={deletePreset} />}
-      <div style={{ flex: 1, minWidth: 320, position: 'relative', background: '#14141a', border: '1px solid var(--line)', borderRadius: 8, overflow: 'hidden' }}>
+      <div style={{ flex: isMobile ? 'none' : 1, height: isMobile ? '56vh' : undefined, minWidth: isMobile ? 0 : 320, position: 'relative', background: '#14141a', border: '1px solid var(--line)', borderRadius: 8, overflow: 'hidden' }}>
         {/* studio layer: background sits behind the (transparent) WebGL canvas. With a framing
             aspect it's clipped to the viewfinder rect (outside stays the neutral letterbox); in
             "Fit" mode there's no viewfinder, so it fills the whole view. */}
@@ -521,7 +523,7 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
           <div style={viewfinder
             ? { position: 'absolute', left: viewfinder.left, top: viewfinder.top, width: viewfinder.width, height: viewfinder.height, outline: '1px solid #ffffff2a', ...bgStyle(bg) }
             : { position: 'absolute', inset: 0, ...bgStyle(bg) }} />
-          <canvas ref={canvasRef} style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', display: 'block' }} />
+          <canvas ref={canvasRef} style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', display: 'block', touchAction: 'none' }} />
         </div>
         {exporting && (
           <div style={{ position: 'absolute', left: '50%', top: '50%', transform: 'translate(-50%,-50%)', background: '#000000cc', color: '#fff', padding: '10px 16px', borderRadius: 8, fontSize: 13, zIndex: 5, textAlign: 'center' }}>
@@ -529,22 +531,22 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
             {exporting.label === 'video' && <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 3 }}>recording in real time</div>}
           </div>
         )}
-        <div style={{ position: 'absolute', left: 12, top: 12, display: 'flex', gap: 8, alignItems: 'center' }}>
-          {status && <span style={{ color: 'var(--muted)', background: '#00000099', padding: '4px 8px', borderRadius: 6 }}>{status}</span>}
-          <span style={{ color: 'var(--muted)', background: '#00000099', padding: '4px 8px', borderRadius: 6, maxWidth: 340, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{nowPlaying || 'pick a clip →'}</span>
-          {idleClip && <button data-tour="idle" className="secondary" title="Reset to idle animation" onClick={() => playClip(idleClip)} style={{ padding: '4px 10px', fontSize: 12, lineHeight: 1 }}>↺ Idle</button>}
+        <div style={{ position: 'absolute', left: isMobile ? 8 : 12, top: isMobile ? 8 : 12, display: 'flex', gap: isMobile ? 6 : 8, alignItems: 'center', maxWidth: isMobile ? '58%' : undefined }}>
+          {status && !isMobile && <span style={{ color: 'var(--muted)', background: '#00000099', padding: '4px 8px', borderRadius: 6 }}>{status}</span>}
+          <span style={{ color: 'var(--muted)', background: '#00000099', padding: '4px 8px', borderRadius: 6, fontSize: isMobile ? 11.5 : undefined, maxWidth: isMobile ? '100%' : 340, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{nowPlaying || 'pick a clip →'}</span>
+          {idleClip && <button data-tour="idle" className="secondary" title="Reset to idle animation" onClick={() => playClip(idleClip)} style={{ padding: '4px 10px', fontSize: 12, lineHeight: 1, flexShrink: 0 }}>↺ Idle</button>}
         </div>
-        <div style={{ position: 'absolute', right: 12, top: 12, display: 'flex', flexDirection: 'column', gap: 8, alignItems: 'flex-end' }}>
-          <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+        <div style={{ position: 'absolute', right: isMobile ? 8 : 12, top: isMobile ? 8 : 12, display: 'flex', flexDirection: 'column', gap: 8, alignItems: 'flex-end' }}>
+          <div style={{ display: 'flex', gap: isMobile ? 6 : 8, alignItems: 'flex-start' }}>
             <button className="secondary" title="Equipped items" onClick={() => { setEquipOpen((v) => !v); setSceneOpen(false); }}
-              style={{ borderRadius: 6, padding: '7px 12px', fontSize: 13, lineHeight: 1, border: '1px solid var(--line)', background: equipOpen ? 'var(--accent)' : 'var(--panel)', color: equipOpen ? '#fff' : 'var(--text)' }}>Equipped{equipList.length ? ` (${equipList.length})` : ''}</button>
+              style={{ borderRadius: 6, padding: isMobile ? '6px 9px' : '7px 12px', fontSize: isMobile ? 12 : 13, lineHeight: 1, border: '1px solid var(--line)', background: equipOpen ? 'var(--accent)' : 'var(--panel)', color: equipOpen ? '#fff' : 'var(--text)' }}>Equipped{equipList.length ? ` (${equipList.length})` : ''}</button>
             <button data-tour="scenebtn" className="secondary" title="Scene, lighting & floor" onClick={() => { setSceneOpen((v) => !v); setEquipOpen(false); }}
-              style={{ borderRadius: 6, padding: '7px 12px', fontSize: 13, lineHeight: 1, border: '1px solid var(--line)', background: sceneOpen ? 'var(--accent)' : 'var(--panel)', color: sceneOpen ? '#fff' : 'var(--text)' }}>Scene</button>
+              style={{ borderRadius: 6, padding: isMobile ? '6px 9px' : '7px 12px', fontSize: isMobile ? 12 : 13, lineHeight: 1, border: '1px solid var(--line)', background: sceneOpen ? 'var(--accent)' : 'var(--panel)', color: sceneOpen ? '#fff' : 'var(--text)' }}>Scene</button>
             <div data-tour="camera" style={{ display: 'flex', border: '1px solid var(--line)', borderRadius: 6, overflow: 'hidden' }}>
               <button className="secondary" title="Free orbit" onClick={() => setCamPreset('orbit')}
-                style={{ borderRadius: 0, padding: '5px 11px', fontSize: 24, lineHeight: 1, background: camMode === 'orbit' ? 'var(--accent)' : 'var(--panel)', color: camMode === 'orbit' ? '#fff' : 'var(--text)' }}>⟳</button>
+                style={{ borderRadius: 0, padding: isMobile ? '4px 9px' : '5px 11px', fontSize: isMobile ? 18 : 24, lineHeight: 1, background: camMode === 'orbit' ? 'var(--accent)' : 'var(--panel)', color: camMode === 'orbit' ? '#fff' : 'var(--text)' }}>⟳</button>
               <button className="secondary" title="PZ iso" onClick={() => setCamPreset('iso')}
-                style={{ borderRadius: 0, padding: '5px 11px', fontSize: 24, lineHeight: 1, background: camMode === 'iso' ? 'var(--accent)' : 'var(--panel)', color: camMode === 'iso' ? '#fff' : 'var(--text)' }}>◈</button>
+                style={{ borderRadius: 0, padding: isMobile ? '4px 9px' : '5px 11px', fontSize: isMobile ? 18 : 24, lineHeight: 1, background: camMode === 'iso' ? 'var(--accent)' : 'var(--panel)', color: camMode === 'iso' ? '#fff' : 'var(--text)' }}>◈</button>
             </div>
           </div>
           {/* Facing compass: only meaningful under the fixed PZ iso camera, so it appears
@@ -559,7 +561,7 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
           )}
         </div>
         {equipOpen && (
-          <div data-tour="equipmenu" style={{ position: 'absolute', right: 12, top: 54, width: 264, maxHeight: '68%', overflow: 'auto', background: '#0e0e13f2', border: '1px solid var(--line)', borderRadius: 8, padding: 8 }}>
+          <div data-tour="equipmenu" style={{ position: 'absolute', right: isMobile ? 8 : 12, top: isMobile ? 48 : 54, width: isMobile ? 'min(264px, calc(100vw - 24px))' : 264, maxHeight: '68%', overflow: 'auto', background: '#0e0e13f2', border: '1px solid var(--line)', borderRadius: 8, padding: 8 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
               <span style={{ fontSize: 12, color: 'var(--muted)' }}>Equipped ({equipList.length})</span>
               <span role="button" onClick={() => setEquipOpen(false)} title="close" style={{ cursor: 'pointer', color: 'var(--muted)', padding: '0 4px' }}>✕</span>
@@ -611,7 +613,7 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
           </div>
         )}
         {sceneOpen && (
-          <div data-tour="scenemenu" style={{ position: 'absolute', right: 12, top: 54, width: 280, maxHeight: '74%', overflow: 'auto', background: '#0e0e13f2', border: '1px solid var(--line)', borderRadius: 8, padding: 10 }}>
+          <div data-tour="scenemenu" style={{ position: 'absolute', right: isMobile ? 8 : 12, top: isMobile ? 48 : 54, width: isMobile ? 'min(280px, calc(100vw - 24px))' : 280, maxHeight: '74%', overflow: 'auto', background: '#0e0e13f2', border: '1px solid var(--line)', borderRadius: 8, padding: 10 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
               <span style={{ fontSize: 12, color: 'var(--muted)' }}>Scene &amp; lighting</span>
               <span role="button" onClick={() => setSceneOpen(false)} title="close" style={{ cursor: 'pointer', color: 'var(--muted)', padding: '0 4px' }}>✕</span>
@@ -635,11 +637,13 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
         </div>
       </div>
 
-      <div onMouseDown={startDrag} title="drag to resize" style={{ width: 12, cursor: 'col-resize', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-        <div style={{ width: 4, height: 44, borderRadius: 2, background: 'var(--line)' }} />
-      </div>
+      {!isMobile && (
+        <div onMouseDown={startDrag} title="drag to resize" style={{ width: 12, cursor: 'col-resize', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+          <div style={{ width: 4, height: 44, borderRadius: 2, background: 'var(--line)' }} />
+        </div>
+      )}
 
-      <div style={{ width: panelW, flexShrink: 0, minWidth: 300, display: 'flex', flexDirection: 'column', minHeight: 0, background: 'var(--panel)', border: '1px solid var(--line)', borderRadius: 8 }}>
+      <div style={{ width: isMobile ? '100%' : panelW, flexShrink: 0, minWidth: isMobile ? 0 : 300, height: isMobile ? '72vh' : undefined, display: 'flex', flexDirection: 'column', minHeight: 0, background: 'var(--panel)', border: '1px solid var(--line)', borderRadius: 8 }}>
         <TabStrip tabs={tabs} active={tab} onSelect={setTab} />
 
         <div style={{ flex: 1, minHeight: 0 }}>

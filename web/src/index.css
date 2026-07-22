@@ -185,3 +185,15 @@ details[open] .chev { transform: rotate(180deg); }
   .scan-overlay, .scan-card, .scan-logo, .scan-bar-fill, .scan-step.active .scan-step-dot, .overview-enter, .tour-card { animation: none; }
   .scan-overlay.closing { opacity: 0; }
 }
+/* ---- mobile / small-screen layout (desktop is untouched: all rules live inside this query) ---- */
+@media (max-width: 760px) {
+  html, body { overflow-x: hidden; }
+  body { -webkit-tap-highlight-color: transparent; }
+  .card { padding: 14px; border-radius: 10px; }
+  /* 16px stops iOS Safari from auto-zooming the page when a field gets focus */
+  input:not([type=range]):not([type=color]):not([type=checkbox]), select, textarea { font-size: 16px !important; }
+  /* the fixed credit chip would sit under thumb reach / content; tuck it into the corner */
+  .credit { right: 8px; bottom: 6px; }
+  /* share gallery: smaller cards fit two-up comfortably */
+  .share-grid { grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 8px; }
+}

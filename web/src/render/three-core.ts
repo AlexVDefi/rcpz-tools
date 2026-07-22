@@ -174,11 +174,49 @@ export function makeOrbit(getCamera: () => THREE.Camera, dom: HTMLElement, targe
   };
   const onContext = (e: Event) => e.preventDefault();
 
+  // Touch: one finger rotates, two fingers pinch-zoom + drag-pan. Additive to the mouse handlers
+  // (touch events don't fire from a desktop mouse), so desktop behaviour is unchanged. The canvas
+  // sets touch-action:none so these gestures don't scroll/zoom the page.
+  let pinch = 0;
+  const onTouchStart = (e: TouchEvent) => {
+    if (e.touches.length === 1) { mode = 'rotate'; api.onInteract?.(); lastX = e.touches[0].clientX; lastY = e.touches[0].clientY; }
+    else if (e.touches.length >= 2) {
+      mode = 'pan';
+      const a = e.touches[0], b = e.touches[1];
+      lastX = (a.clientX + b.clientX) / 2; lastY = (a.clientY + b.clientY) / 2;
+      pinch = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
+    }
+  };
+  const onTouchMove = (e: TouchEvent) => {
+    if (mode === 'none') return;
+    e.preventDefault();
+    if (e.touches.length === 1 && mode === 'rotate') {
+      const dx = e.touches[0].clientX - lastX, dy = e.touches[0].clientY - lastY;
+      lastX = e.touches[0].clientX; lastY = e.touches[0].clientY;
+      state.theta -= dx * 0.01; state.phi -= dy * 0.01; apply();
+    } else if (e.touches.length >= 2) {
+      const a = e.touches[0], b = e.touches[1];
+      const cx = (a.clientX + b.clientX) / 2, cy = (a.clientY + b.clientY) / 2;
+      const dist = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
+      if (pinch > 0 && dist > 0) state.radius = Math.max(0.6, Math.min(8, state.radius * (pinch / dist)));
+      pinch = dist;
+      pan(cx - lastX, cy - lastY); // pan() calls apply(), which also picks up the new radius
+      lastX = cx; lastY = cy;
+    }
+  };
+  const onTouchEnd = (e: TouchEvent) => {
+    if (e.touches.length === 0) { mode = 'none'; pinch = 0; }
+    else if (e.touches.length === 1) { mode = 'rotate'; lastX = e.touches[0].clientX; lastY = e.touches[0].clientY; }
+  };
+
   dom.addEventListener('mousedown', onDown);
   window.addEventListener('mouseup', onUp);
   window.addEventListener('mousemove', onMove);
   dom.addEventListener('wheel', onWheel, { passive: false });
   dom.addEventListener('contextmenu', onContext);
+  dom.addEventListener('touchstart', onTouchStart, { passive: false });
+  dom.addEventListener('touchmove', onTouchMove, { passive: false });
+  window.addEventListener('touchend', onTouchEnd);
   apply();
 
   function setTarget(t: THREE.Vector3) { target.copy(t); apply(); }
@@ -188,6 +226,9 @@ export function makeOrbit(getCamera: () => THREE.Camera, dom: HTMLElement, targe
     window.removeEventListener('mousemove', onMove);
     dom.removeEventListener('wheel', onWheel);
     dom.removeEventListener('contextmenu', onContext);
+    dom.removeEventListener('touchstart', onTouchStart);
+    dom.removeEventListener('touchmove', onTouchMove);
+    window.removeEventListener('touchend', onTouchEnd);
   }
   return api;
 }
