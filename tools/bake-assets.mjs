@@ -113,8 +113,12 @@ async function main() {
   const args = parseArgs(process.argv.slice(2));
   if (args.help) { console.log('usage: node tools/bake-assets.mjs --install <PZ dir> [--version 42.13.0] [--out dir] [--limit-clips N]'); return; }
 
-  const install = resolveInstall(args.install);
   const modBake = !!args.mod;
+  // Vanilla install is required for a vanilla bake; for a mod bake it is optional - if present it
+  // resolves vanilla assets the mod reuses (so they are found, not baked); if absent, those
+  // references simply miss (they live in the vanilla bundle at runtime anyway).
+  let install = null;
+  try { install = resolveInstall(args.install); } catch (e) { if (!modBake) throw e; }
   const modInfo = modBake ? readModInfo(args.mod) : null;
   const outRoot = args.out ? path.resolve(args.out) : path.join(REPO_ROOT, 'asset-bake');
   const outVer = modBake ? path.join(outRoot, 'mods', modInfo.id) : path.join(outRoot, args.version);
@@ -122,7 +126,7 @@ async function main() {
   fs.rmSync(outVer, { recursive: true, force: true });
   fs.mkdirSync(assetsDir, { recursive: true });
 
-  console.log(`Install : ${install}`);
+  console.log(`Install : ${install || '(none - mod-only, vanilla refs resolve at runtime)'}`);
   if (modBake) console.log(`Mod     : ${modInfo.name} (${modInfo.id})`);
   else console.log(`Version : ${args.version}`);
   console.log(`Output  : ${outVer}${args.limitClips ? `  (smoke test: ${args.limitClips} clips)` : ''}\n`);
@@ -146,7 +150,7 @@ async function main() {
     const roots = modRoots(args.mod);
     if (!roots.length) throw new Error(`no media/ found under the mod: ${args.mod}`);
     const modSrcs = roots.map((r, i) => capture(createNodeAssetSource(r, { id: `mod:${i}`, isMod: true, modName: modInfo.name })));
-    sources = [...modSrcs, createNodeAssetSource(install, { id: 'pz-install' })]; // mod wins; vanilla for resolution only
+    sources = [...modSrcs, ...(install ? [createNodeAssetSource(install, { id: 'pz-install' })] : [])]; // mod wins; vanilla (if any) for resolution only
   } else {
     sources = [capture(createNodeAssetSource(install, { id: 'pz-install' }))];
   }
