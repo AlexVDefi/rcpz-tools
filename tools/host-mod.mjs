@@ -69,9 +69,11 @@ async function main() {
 
   console.log(`[1/3] steamcmd download ${id} (${steamcmd}) ...`);
   const dl = await run(steamcmd, ['+login', 'anonymous', '+workshop_download_item', String(PZ_APPID), id, '+quit'], { cwd: steamRoot });
-  const contentDir = path.join(steamRoot, 'steamapps', 'workshop', 'content', String(PZ_APPID), id);
-  if (dl.code !== 0 && !fs.existsSync(contentDir)) throw new Error(`steamcmd download failed (exit ${dl.code})`);
-  if (!fs.existsSync(contentDir)) throw new Error(`download produced no content at ${contentDir}`);
+  // steamcmd prints the real install path, and it differs by platform (Linux uses ~/Steam,
+  // Windows uses <steamcmd dir>/steamapps) - parse it rather than guessing.
+  const dlPath = (/Downloaded item \d+ to "([^"]+)"/.exec(dl.stdout) || [])[1]?.trim();
+  const contentDir = dlPath || path.join(steamRoot, 'steamapps', 'workshop', 'content', String(PZ_APPID), id);
+  if (!fs.existsSync(contentDir)) throw new Error(`download produced no content (steamcmd exit ${dl.code})`);
 
   const modDirs = findModDirs(contentDir);
   if (!modDirs.length) throw new Error(`no mods with media found under item ${id}`);
