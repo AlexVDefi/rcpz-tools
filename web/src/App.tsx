@@ -12,7 +12,7 @@ import { SharedGallery } from './SharedGallery';
 import { ModderDashboard } from './ModderDashboard';
 import { ModsPanel, type ModTab } from './ModsBrowser';
 import { useIsMobile } from './useIsMobile';
-import { useSteam } from './cloud/steam';
+import { useSteam, type SteamState } from './cloud/steam';
 import { fetchHostedMods, type HostedMod } from './cloud/hosted-mods';
 import { useAuth, type AuthState } from './cloud/auth';
 import { useCloudUploads } from './cloud/uploads';
@@ -427,24 +427,39 @@ export function App() {
     <div style={{ maxWidth: wide ? 'none' : 1000, margin: wide ? 0 : '0 auto', padding: wide ? (isMobile ? '10px 10px' : '14px 20px') : (isMobile ? '14px 12px 30px' : '26px 24px 48px') }}>
       <header style={{ position: 'relative', display: 'flex', flexDirection: isMobile ? 'column' : 'row', alignItems: isMobile ? 'stretch' : 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: isMobile ? 8 : 12 }}>
         {/* top row: title (left) and, on mobile, the account + help controls (right) */}
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: isMobile ? 9 : 12, width: isMobile ? '100%' : 'auto' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: isMobile ? 9 : 12 }}>
-            <img src={logoUrl} alt="PZ Survivor Studio" width={38} height={38} style={{ width: isMobile ? 30 : 38, height: isMobile ? 30 : 38, borderRadius: 9, objectFit: 'cover', display: 'block', border: '1px solid var(--line)' }} />
-            <div>
-              <div style={{ fontSize: isMobile ? 16 : 19, fontWeight: 700, lineHeight: 1.1 }}>PZ Survivor Studio</div>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, width: isMobile ? '100%' : 'auto' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: isMobile ? 8 : 12, minWidth: 0 }}>
+            <img src={logoUrl} alt="PZ Survivor Studio" width={38} height={38} style={{ width: isMobile ? 28 : 38, height: isMobile ? 28 : 38, borderRadius: 9, objectFit: 'cover', display: 'block', border: '1px solid var(--line)', flexShrink: 0 }} />
+            <div style={{ minWidth: 0 }}>
+              <div style={{ fontSize: isMobile ? 15.5 : 19, fontWeight: 700, lineHeight: 1.1, whiteSpace: isMobile ? 'nowrap' : undefined, overflow: 'hidden', textOverflow: 'ellipsis' }}>PZ Survivor Studio</div>
               {!isMobile && <div style={{ color: 'var(--muted)', fontSize: 12.5 }}>Dress, pose and export your survivors</div>}
             </div>
           </div>
           {isMobile && (auth.configured || steam.configured || index != null) && (
-            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-              {mobileCharView ? homeButton : (auth.configured && <AccountChip auth={auth} onSignIn={() => setAuthOpen(true)} onChangePassword={() => setChangePwOpen(true)} onDeleteAccount={() => setDeleteOpen(true)} />)}
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexShrink: 0 }}>
+              {mobileCharView ? (
+                <>
+                  {index != null && langs.length > 1 && <LanguageGlobe langs={langs} value={itemLang} onChange={setItemLang} loading={langLoading} />}
+                  {homeButton}
+                </>
+              ) : (
+                <>
+                  {index != null && view !== 'character' && (
+                    <button onClick={() => setView('character')} title="Open the character studio"
+                      style={{ height: NAV_H, padding: '0 12px', fontWeight: 600, boxShadow: '0 2px 10px #5b8cff55', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                      <PersonStandingIcon /> Studio
+                    </button>
+                  )}
+                  <MobileMenu auth={auth} steam={steam} view={view} setView={setView} onSignIn={() => setAuthOpen(true)} onChangePassword={() => setChangePwOpen(true)} onDeleteAccount={() => setDeleteOpen(true)} />
+                </>
+              )}
               <HelpButton extra={creditLinks} />
             </div>
           )}
         </div>
         {charName && !isMobile && <div title="Loaded character" style={{ position: 'absolute', left: '50%', top: '50%', transform: 'translate(-50%, -50%)', fontSize: 23, fontWeight: 600, color: 'var(--text)', pointerEvents: 'none', whiteSpace: 'nowrap', maxWidth: '40%', overflow: 'hidden', textOverflow: 'ellipsis' }}>{charName}</div>}
-        {(index != null || auth.configured || steam.configured) && (
-          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: isMobile ? 'wrap' : undefined, justifyContent: isMobile ? 'flex-end' : undefined }}>
+        {!isMobile && (index != null || auth.configured || steam.configured) && (
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
             {view !== 'overview' && !mobileCharView && homeButton}
             {index != null && view !== 'character' && (
               <button onClick={() => setView('character')} style={{ height: NAV_H, padding: '0 18px', fontWeight: 600, boxShadow: '0 2px 10px #5b8cff55' }}>Character viewer →</button>
@@ -456,7 +471,7 @@ export function App() {
               <button className="secondary" onClick={() => setView('mods')} title="Host your Workshop mods" style={{ height: NAV_H, padding: '0 14px' }}>Modders</button>
             )}
             {!isMobile && auth.configured && <AccountChip auth={auth} onSignIn={() => setAuthOpen(true)} onChangePassword={() => setChangePwOpen(true)} onDeleteAccount={() => setDeleteOpen(true)} />}
-            {index != null && langs.length > 1 && <LanguageSelect langs={langs} value={itemLang} onChange={setItemLang} loading={langLoading} />}
+            {!isMobile && index != null && langs.length > 1 && <LanguageSelect langs={langs} value={itemLang} onChange={setItemLang} loading={langLoading} />}
             {!isMobile && <HelpButton />}
           </div>
         )}
@@ -747,6 +762,107 @@ function HomeIcon({ size = 18 }: { size?: number }) {
       <path d="M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8" />
       <path d="M3 10a2 2 0 0 1 .709-1.528l7-6a2 2 0 0 1 2.582 0l7 6A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
     </svg>
+  );
+}
+
+// Lucide "globe" icon for the mobile item-name language control.
+function GlobeIcon({ size = 18 }: { size?: number }) {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <circle cx="12" cy="12" r="10" /><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20" /><path d="M2 12h20" />
+    </svg>
+  );
+}
+
+// Mobile item-name language control: a globe icon that opens a picker. Makes clear it only changes
+// item/clothing NAMES, not the app's interface language.
+function LanguageGlobe({ langs, value, onChange, loading }: { langs: string[]; value: string; onChange: (l: string) => void; loading: boolean }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (e: Event) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false); };
+    window.addEventListener('mousedown', onDoc); window.addEventListener('touchstart', onDoc);
+    return () => { window.removeEventListener('mousedown', onDoc); window.removeEventListener('touchstart', onDoc); };
+  }, [open]);
+  return (
+    <div ref={ref} style={{ position: 'relative' }}>
+      <button className="secondary" title="Item name language" aria-label="Item name language" onClick={() => setOpen((v) => !v)}
+        style={{ display: 'grid', placeItems: 'center', width: NAV_H, height: NAV_H, padding: 0, background: open ? 'var(--accent)' : 'var(--panel)', color: open ? '#fff' : 'var(--text)' }}>
+        {loading ? <span className="spinner" /> : <GlobeIcon />}
+      </button>
+      {open && (
+        <div style={{ position: 'absolute', right: 0, top: 'calc(100% + 6px)', width: 232, maxHeight: '62vh', overflow: 'auto', background: 'var(--panel)', border: '1px solid var(--line)', borderRadius: 10, padding: 10, zIndex: 130, boxShadow: '0 14px 40px #000000aa' }}>
+          <div style={{ fontSize: 12.5, fontWeight: 700, marginBottom: 4 }}>Item name language</div>
+          <div style={{ fontSize: 11.5, color: 'var(--muted)', lineHeight: 1.5, marginBottom: 9 }}>Only changes the language of item and clothing <b style={{ color: 'var(--text)' }}>names</b> - not the app's interface.</div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+            {langs.map((l) => (
+              <button key={l} onClick={() => { onChange(l); setOpen(false); }}
+                style={{ textAlign: 'left', padding: '9px 10px', fontSize: 13.5, cursor: 'pointer', background: l === value ? 'var(--accent)' : 'transparent', color: l === value ? '#fff' : 'var(--text)', border: 'none', borderRadius: 6 }}>{languageLabel(l)}</button>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Lucide "menu" (burger) and "person-standing" (studio) icons for the mobile header.
+function BurgerIcon({ size = 18 }: { size?: number }) {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <line x1="4" x2="20" y1="6" y2="6" /><line x1="4" x2="20" y1="12" y2="12" /><line x1="4" x2="20" y1="18" y2="18" />
+    </svg>
+  );
+}
+function PersonStandingIcon({ size = 18 }: { size?: number }) {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <circle cx="12" cy="5" r="1" /><path d="m9 20 3-6 3 6" /><path d="m6 8 6 2 6-2" /><path d="M12 10v4" />
+    </svg>
+  );
+}
+
+// Mobile header overflow menu: Sign in / account + Modders + Shared, tucked behind a burger so the
+// top row stays compact.
+function MobileMenu({ auth, steam, view, setView, onSignIn, onChangePassword, onDeleteAccount }: {
+  auth: AuthState; steam: SteamState; view: View; setView: (v: View) => void;
+  onSignIn: () => void; onChangePassword: () => void; onDeleteAccount: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (e: Event) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false); };
+    window.addEventListener('mousedown', onDoc); window.addEventListener('touchstart', onDoc);
+    return () => { window.removeEventListener('mousedown', onDoc); window.removeEventListener('touchstart', onDoc); };
+  }, [open]);
+  const item = (label: string, onClick: () => void, danger?: boolean) => (
+    <button onClick={() => { setOpen(false); onClick(); }} style={{ width: '100%', textAlign: 'left', padding: '10px 12px', border: 0, background: 'transparent', color: danger ? '#ff8a8a' : 'var(--text)', fontSize: 13.5, borderRadius: 6, cursor: 'pointer' }}>{label}</button>
+  );
+  return (
+    <div ref={ref} style={{ position: 'relative' }}>
+      <button className="secondary" title="Menu" aria-label="Menu" onClick={() => setOpen((v) => !v)}
+        style={{ display: 'grid', placeItems: 'center', width: NAV_H, height: NAV_H, padding: 0, background: open ? 'var(--accent)' : 'var(--panel)', color: open ? '#fff' : 'var(--text)' }}>
+        <BurgerIcon />
+      </button>
+      {open && (
+        <div style={{ position: 'absolute', right: 0, top: 'calc(100% + 6px)', width: 216, background: 'var(--panel)', border: '1px solid var(--line)', borderRadius: 10, padding: 6, zIndex: 130, boxShadow: '0 14px 40px #000000aa' }}>
+          {view !== 'overview' && item('Overview', () => setView('overview'))}
+          {steam.configured && view !== 'mods' && item('Modders', () => setView('mods'))}
+          {auth.user && view !== 'shared' && item('Shared', () => setView('shared'))}
+          {auth.configured && auth.ready && (auth.user ? (
+            <>
+              <div style={{ height: 1, background: 'var(--line)', margin: '4px 0' }} />
+              <div style={{ fontSize: 11.5, color: 'var(--muted)', padding: '4px 12px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{auth.user.email || 'account'}</div>
+              {item('Change password…', onChangePassword)}
+              {item('Sign out', () => auth.signOut())}
+              {item('Delete account…', onDeleteAccount, true)}
+            </>
+          ) : item('Sign in (Optional)', onSignIn))}
+        </div>
+      )}
+    </div>
   );
 }
 
