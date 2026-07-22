@@ -251,6 +251,19 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
     return () => { cancelled = true; };
   }, [gender, idleClip]);
 
+  // Frame the whole body on mobile once it's loaded AND the canvas has settled its portrait size.
+  // Deferred past two paints (so fit() has run with the real aspect) and read off the live engine ref,
+  // so it survives StrictMode's double-mount and the async load resolving before layout. Re-runs each
+  // (re)load. Without this the default camera stays zoomed in on the legs on a tall phone screen.
+  const mobileFramedRef = useRef(false);
+  useEffect(() => {
+    if (status !== '') { mobileFramedRef.current = false; return; } // reset while (re)loading
+    if (mobileFramedRef.current || !isMobile) return;
+    mobileFramedRef.current = true;
+    const id = requestAnimationFrame(() => requestAnimationFrame(() => { if (isMobileRef.current) engineRef.current?.frameToBody(); }));
+    return () => cancelAnimationFrame(id);
+  }, [status, isMobile]);
+
   async function guard(fn: () => Promise<unknown>) {
     try { await fn(); } catch (e) { setNowPlaying('error: ' + (e instanceof Error ? e.message : String(e))); }
     finally { setBusy(''); setEquipTick((t) => t + 1); }

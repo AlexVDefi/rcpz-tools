@@ -182,8 +182,9 @@ export class CharacterEngine {
     const b = this.bodyBounds;
     const H = b ? b.maxY - b.minY : 1.3;
     const fovV = this.perspCam.fov * Math.PI / 180;
-    const aspect = this.exportAspect ?? this.perspCam.aspect;
-    const margin = 1.4 * (aspect < 1 ? 1 + (1 - aspect) * 0.6 : 1); // narrower viewport -> more breathing room
+    // fit the full height with a little headroom; the vertical FOV is fixed, so this frames the whole
+    // (tall, thin) character on any aspect - a tall phone fills nicely, a wide screen just adds side room.
+    const margin = 1.45;
     this.orbit.setTarget(new THREE.Vector3(b ? b.cx : 0, (b ? b.minY : 0) + H / 2, b ? b.cz : 0));
     this.orbit.state.radius = Math.max(0.8, (H * margin / 2) / Math.tan(fovV / 2));
     this.orbit.apply();
