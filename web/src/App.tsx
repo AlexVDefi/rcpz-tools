@@ -127,6 +127,7 @@ export function App() {
   useEffect(() => { localStorage.setItem(ACTIVE_KEY, JSON.stringify(activeKeys)); }, [activeKeys]);
 
   const fadeTimer = useRef<number | null>(null);
+  const restoredRef = useRef(false); // the session-restore effect must run exactly once, not on every callback identity change
   const rebuild = useCallback(async (installH: FileSystemDirectoryHandle, active: DiscoveredMod[]) => {
     // show the scan overlay in the SAME render as phase='scanning' (batched), so it's the first
     // thing on screen - no flash of the empty Sources card before the modal appears.
@@ -194,8 +195,11 @@ export function App() {
   }, []);
 
   // Load the configured hosted bundle (the "Start now" / "built-in assets" path).
-  const useHosted = useCallback(() => {
-    if (HOSTED_ASSETS_URL) rebuildHosted(HOSTED_ASSETS_URL, hostedMods.filter((m) => enabledMods.includes(m.modId)), mods);
+  const useHosted = useCallback(async () => {
+    if (!HOSTED_ASSETS_URL) return;
+    let list = hostedMods;
+    if (!list.length) { list = await fetchHostedMods(); if (list.length) setHostedMods(list); } // ready enabled-mod restore
+    rebuildHosted(HOSTED_ASSETS_URL, list.filter((m) => enabledMods.includes(m.modId)), mods);
   }, [rebuildHosted, hostedMods, enabledMods, mods]);
   // Enable/disable a community mod: persist the choice and, if we're on hosted assets, re-layer now.
   const toggleHostedMod = useCallback((modId: string) => {
@@ -226,6 +230,7 @@ export function App() {
   }, [rebuildHosted, hostedMods, enabledMods]);
   // "Use my game files instead": leave hosted and show the full local onboarding (Sources + disclaimers).
   const useLocalFiles = useCallback(() => {
+    localStorage.setItem(SOURCE_KEY, 'local'); // so nothing auto-restores hosted over this choice
     setIndex(null); setCounts(null); setAssetSource(null); setMods([]); setScanHosted(false); setError(''); setPendingLocal(true);
   }, []);
   // Fetch the community mods available to layer, once, when a hosted bundle is configured.
@@ -240,6 +245,8 @@ export function App() {
   // Restore the last session on load: a granted local install (Chromium), else the hosted
   // bundle if that was the last choice. First-time visitors get the source-choice screen.
   useEffect(() => {
+    if (restoredRef.current) return; // run once; not on every rebuild/useHosted identity change
+    restoredRef.current = true;
     if (new URLSearchParams(window.location.search).get('assets')) return; // ?assets= effect owns this load
     (async () => {
       if (fsaSupported) {
