@@ -201,6 +201,14 @@ export class CharacterEngine {
     this.orbit.apply();
   }
 
+  // Diagnostic string (opt-in via ?camdebug) for the camera + canvas state.
+  camDebugString(): string {
+    const b = this.bodyBounds;
+    const H = b ? b.maxY - b.minY : 0;
+    const c = this.renderer.domElement;
+    return `r=${this.orbit.state.radius.toFixed(2)} H=${H.toFixed(2)} tY=${this.orbit.state.target.y.toFixed(2)} asp=${this.perspCam.aspect.toFixed(2)} fov=${this.perspCam.fov.toFixed(0)} ${this.camMode} af=${this.autoFrame ? 1 : 0} c=${c.clientWidth}x${c.clientHeight}`;
+  }
+
   setTurntable(on: boolean) { this.turntable = on; }
   setSpinAngle(rad: number) { this.rigs.setFacing(rad); }
 

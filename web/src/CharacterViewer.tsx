@@ -117,6 +117,7 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
   // a ref so the async body-load can frame the camera for the current form factor without re-running.
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [mobileViewH, setMobileViewH] = useState(0);
+  const [camDbg, setCamDbg] = useState('');
   const isMobileRef = useRef(isMobile); isMobileRef.current = isMobile;
   const [clothOnBody, setClothOnBody] = useState(true);
   const [favs, setFavs] = useState<Set<string>>(() => { try { return new Set(JSON.parse(localStorage.getItem('pz-favorites') || '[]') as string[]); } catch { return new Set(); } });
@@ -229,6 +230,12 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
   // On mobile, keep the whole body auto-framed as the canvas/layout/device-mode changes (until the user
   // adjusts the camera or picks a preset). Off on desktop. Re-applies when the form factor flips.
   useEffect(() => { engineRef.current?.setAutoFrame(isMobile); }, [isMobile]);
+  // Opt-in camera diagnostic: add ?camdebug to the URL to overlay the live camera/canvas state.
+  useEffect(() => {
+    if (!new URLSearchParams(window.location.search).has('camdebug')) return;
+    const id = window.setInterval(() => setCamDbg(engineRef.current?.camDebugString() ?? ''), 250);
+    return () => window.clearInterval(id);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -624,6 +631,7 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
           {status && !isMobile && <span style={{ color: 'var(--muted)', background: '#00000099', padding: '4px 8px', borderRadius: 6 }}>{status}</span>}
           <span style={{ color: 'var(--muted)', background: '#00000099', padding: '4px 8px', borderRadius: 6, fontSize: isMobile ? 11.5 : undefined, maxWidth: isMobile ? '100%' : 340, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{nowPlaying || 'pick a clip →'}</span>
           {idleClip && <button data-tour="idle" className="secondary" title="Reset to idle animation" onClick={() => playClip(idleClip)} style={{ padding: '4px 10px', fontSize: 12, lineHeight: 1, flexShrink: 0 }}>↺ Idle</button>}
+          {camDbg && <span style={{ color: '#8fd', background: '#000000cc', padding: '3px 7px', borderRadius: 6, fontSize: 10.5, fontFamily: 'monospace' }}>{camDbg}</span>}
         </div>
         <div style={{ position: 'absolute', right: isMobile ? 8 : 12, top: isMobile ? 8 : 12, display: 'flex', flexDirection: 'column', gap: 8, alignItems: 'flex-end' }}>
           <div style={{ display: 'flex', gap: isMobile ? 6 : 8, alignItems: 'flex-start' }}>
