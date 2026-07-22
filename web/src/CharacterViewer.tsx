@@ -98,6 +98,9 @@ function ShirtIcon({ size = 18 }: { size?: number }) {
 function SunIcon({ size = 18 }: { size?: number }) {
   return <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4" /><path d="M12 2v2" /><path d="M12 20v2" /><path d="m4.93 4.93 1.41 1.41" /><path d="m17.66 17.66 1.41 1.41" /><path d="M2 12h2" /><path d="M20 12h2" /><path d="m6.34 17.66-1.41 1.41" /><path d="m19.07 4.93-1.41 1.41" /></svg>;
 }
+function ChevronIcon({ dir, size = 16 }: { dir: 'up' | 'down'; size?: number }) {
+  return <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.4} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={dir === 'up' ? 'm18 15-6-6-6 6' : 'm6 9 6 6 6-6'} /></svg>;
+}
 
 export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSignIn, uploads, displayNames }: { ctx: Ctx; index: unknown; onCharacterName?: (name: string | null) => void; auth: AuthState; onRequestSignIn: () => void; uploads: CloudUploads; displayNames: DisplayNames | null }) {
   const isMobile = useIsMobile();
@@ -150,6 +153,7 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
   const [loop, setLoop] = useState(true);
   const [speed, setSpeed] = useState(1);
   const [camMode, setCamMode] = useState<'orbit' | 'iso'>('orbit');
+  const [isoMenuOpen, setIsoMenuOpen] = useState(true); // mobile: whether the iso facing compass is expanded
   const [facing, setFacing] = useState<number | null>(0);
   const [light, setLight] = useState<Light>({ ...LIGHT_DEFAULT });
   const [grid, setGrid] = useState(true);
@@ -293,6 +297,14 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
     // the studio portrait presets look straight at the character, so face them South (toward the camera)
     if (camPreset === 'front' || camPreset === 'portrait') { setFacing(0); engineRef.current?.setFacing(0); }
   }, [camPreset]);
+  // Overlay camera buttons apply imperatively (not just via the camPreset effect): dragging in iso
+  // silently drifts the engine back to orbit, so re-picking 'iso' must re-apply even though the React
+  // camPreset value is unchanged - a plain setCamPreset('iso') would be a no-op and nothing would happen.
+  const applyCam = (p: CamPreset) => {
+    setCamPreset(p);
+    const e = engineRef.current; e?.applyCameraPreset(p);
+    if (p === 'front' || p === 'portrait') { setFacing(0); e?.setFacing(0); }
+  };
   useEffect(() => { engineRef.current?.setTurntable(turntable); }, [turntable]);
 
   // ---- first-time guided tour ----
@@ -647,15 +659,25 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
               {isMobile ? <SunIcon /> : 'Scene'}
             </button>
             <div data-tour="camera" style={{ display: 'flex', border: '1px solid var(--line)', borderRadius: 6, overflow: 'hidden', height: isMobile ? 36 : undefined }}>
-              <button className="secondary" title="Free orbit" onClick={() => setCamPreset('orbit')}
+              <button className="secondary" title="Free orbit" onClick={() => applyCam('orbit')}
                 style={{ borderRadius: 0, padding: isMobile ? 0 : '5px 11px', width: isMobile ? 36 : undefined, height: isMobile ? '100%' : undefined, display: isMobile ? 'grid' : undefined, placeItems: isMobile ? 'center' : undefined, fontSize: isMobile ? 20 : 24, lineHeight: 1, ...(isMobile ? { border: 'none' } : null), background: camMode === 'orbit' ? 'var(--accent)' : 'var(--panel)', color: camMode === 'orbit' ? '#fff' : 'var(--text)' }}>⟳</button>
-              <button className="secondary" title="PZ iso" onClick={() => setCamPreset('iso')}
+              <button className="secondary" title={camMode === 'iso' && isMobile ? (isoMenuOpen ? 'PZ iso (tap to collapse the compass)' : 'PZ iso (tap to open the compass)') : 'PZ iso'}
+                onClick={() => { if (camMode !== 'iso') { applyCam('iso'); setIsoMenuOpen(true); } else if (isMobile) { setIsoMenuOpen((v) => !v); } else { applyCam('iso'); } }}
                 style={{ borderRadius: 0, padding: isMobile ? 0 : '5px 11px', width: isMobile ? 36 : undefined, height: isMobile ? '100%' : undefined, display: isMobile ? 'grid' : undefined, placeItems: isMobile ? 'center' : undefined, fontSize: isMobile ? 20 : 24, lineHeight: 1, ...(isMobile ? { border: 'none', borderLeft: '1px solid var(--line)' } : null), background: camMode === 'iso' ? 'var(--accent)' : 'var(--panel)', color: camMode === 'iso' ? '#fff' : 'var(--text)' }}>◈</button>
             </div>
           </div>
+          {/* Mobile: a chevron handle under the iso button, mirroring that tapping the ◈ button
+              collapses/expands the compass. Tapping the chevron itself toggles it too. */}
+          {isMobile && camMode === 'iso' && (
+            <button className="secondary" onClick={() => setIsoMenuOpen((v) => !v)}
+              aria-label={isoMenuOpen ? 'Collapse facing compass' : 'Expand facing compass'} title={isoMenuOpen ? 'Collapse facing compass' : 'Expand facing compass'}
+              style={{ width: 36, height: 20, padding: 0, display: 'grid', placeItems: 'center', borderRadius: 6, border: '1px solid var(--line)', background: 'var(--panel)', color: 'var(--muted)' }}>
+              <ChevronIcon dir={isoMenuOpen ? 'up' : 'down'} size={14} />
+            </button>
+          )}
           {/* Facing compass: only meaningful under the fixed PZ iso camera, so it appears
-              beneath the iso button and hides in free orbit. */}
-          {camMode === 'iso' && (
+              beneath the iso button and hides in free orbit (or when collapsed on mobile). */}
+          {camMode === 'iso' && (!isMobile || isoMenuOpen) && (
             <div title="Facing" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 34px)', gap: 3, background: '#0e0e13cc', border: '1px solid var(--line)', borderRadius: 8, padding: 5 }}>
               {FACING_GRID.map((cell, i) => cell === null ? <span key={i} /> : (
                 <button key={i} className="secondary" onClick={() => { setFacing(cell[1]); engineRef.current?.setFacing(cell[1]); }}
