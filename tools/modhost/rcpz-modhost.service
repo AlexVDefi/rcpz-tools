@@ -1,0 +1,18 @@
+[Unit]
+Description=rcpz-tools modder-hosting backend (steamcmd download + bake + upload to R2)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=rcpz
+WorkingDirectory=/opt/rcpz-tools
+EnvironmentFile=/opt/rcpz-tools/tools/modhost/.env
+ExecStart=/usr/bin/node tools/modhost/server.mjs
+Restart=on-failure
+RestartSec=5
+# steamcmd downloads and bake output are written under the working dir + /opt/steamcmd
+ReadWritePaths=/opt/rcpz-tools /opt/steamcmd
+
+[Install]
+WantedBy=multi-user.target

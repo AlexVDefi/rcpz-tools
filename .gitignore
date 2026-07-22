@@ -13,3 +13,6 @@ asset-bake/
 
 # Steam Web API key (+ test SteamID) for the modder-hosting flow. Never commit.
 .steam.env
+
+# Modder-hosting backend runtime env (lives on the VPS). Never commit.
+tools/modhost/.env

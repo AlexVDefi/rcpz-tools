@@ -38,14 +38,29 @@ create table if not exists public.mod_permissions (
   steamid         text not null,                 -- SteamID64 of the verified mod owner
   publishedfileid text not null,                 -- Steam Workshop item id
   title           text,                          -- mod title (from Steam, not the client)
-  status          text not null default 'allowed', -- 'allowed' | 'revoked'
+  status          text not null default 'allowed', -- consent: 'allowed' | 'revoked'
   terms_version   int  not null default 1,
   consented_at    timestamptz not null default now(),
   updated_at      timestamptz not null default now(),
+  -- hosting pipeline state (written by the VPS backend, not the browser):
+  host_status     text,                          -- null | 'queued' | 'processing' | 'hosted' | 'failed' | 'removed'
+  host_error      text,
+  host_attempts   int  not null default 0,
+  hosted          jsonb,                         -- [{ modId, url }] once hosted
+  hosted_at       timestamptz,
   unique (steamid, publishedfileid)              -- upsert target for /steam/permission
 );
 
+-- Existing installs: add the hosting columns if the table predates them.
+alter table public.mod_permissions add column if not exists host_status   text;
+alter table public.mod_permissions add column if not exists host_error    text;
+alter table public.mod_permissions add column if not exists host_attempts int not null default 0;
+alter table public.mod_permissions add column if not exists hosted        jsonb;
+alter table public.mod_permissions add column if not exists hosted_at     timestamptz;
+
 create index if not exists mod_permissions_steamid_idx on public.mod_permissions(steamid);
+-- The backend polls these: consent given but not yet hosted, or revoked but still hosted.
+create index if not exists mod_permissions_hoststatus_idx on public.mod_permissions(status, host_status);
 
 alter table public.mod_permissions enable row level security;
 -- No policies on purpose: only the Worker (service_role) reads/writes this table.

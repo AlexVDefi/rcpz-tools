@@ -24,6 +24,8 @@ export interface Env {
   QUOTA_BYTES?: string;          // var, optional override of the default 100 MB
   STEAM_WEB_API_KEY?: string;    // secret: lists a modder's published Workshop items (GetUserFiles)
   STEAM_SESSION_SECRET?: string; // secret: HMAC key for the short-lived modder session token
+  MODHOST_URL?: string;          // var: hosting backend base URL (e.g. http://<vps>:8790), optional
+  MODHOST_SECRET?: string;       // secret: shared secret sent to the backend in x-modhost-secret
 }
 
 const DEFAULT_QUOTA = 100 * 1024 * 1024;
@@ -392,6 +394,16 @@ async function steamPermission(request: Request, env: Env): Promise<Response> {
     body: JSON.stringify(row),
   });
   if (!res.ok) return json({ error: 'Could not save your choice' }, 500);
+
+  // Nudge the hosting backend to download+bake (or remove) now; it also polls, so this is
+  // best-effort - a failed ping just means the change is picked up on the next sweep.
+  if (env.MODHOST_URL && env.MODHOST_SECRET) {
+    try {
+      await fetch(`${env.MODHOST_URL.replace(/\/$/, '')}/host`, {
+        method: 'POST', headers: { 'x-modhost-secret': env.MODHOST_SECRET, 'content-type': 'application/json' }, body: JSON.stringify({ id }),
+      });
+    } catch { /* backend polls anyway */ }
+  }
   return json({ ok: true, id, status: row.status });
 }
 
