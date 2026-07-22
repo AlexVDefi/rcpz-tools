@@ -42,6 +42,9 @@ type Scan = { source: number; total: number; step: ScanStep; count: number; name
 const SCAN_STEPS: ScanStep[] = ['scripts', 'clothing', 'anims'];
 const STEP_NAME: Record<ScanStep, string> = { scripts: 'Scripts', clothing: 'Clothing', anims: 'Animations' };
 const STEP_VERB: Record<ScanStep, string> = { scripts: 'Reading scripts', clothing: 'Reading clothing', anims: 'Indexing animations' };
+// Hosted assets are fetched from the CDN, not read off disk - so the loading modal must not claim
+// to be "reading your game files" (that wording is kept for the local-install path).
+const STEP_VERB_HOSTED: Record<ScanStep, string> = { scripts: 'Loading scripts', clothing: 'Loading clothing', anims: 'Indexing animations' };
 interface Counts { clothing: number; clips: number; held: number; hairM: number; hairF: number; beards: number; modClothing: number; }
 
 // Sanity-check a picked folder before scanning it: a real PZ install has a `media` folder that
@@ -69,6 +72,7 @@ export function App() {
   const [progress, setProgress] = useState('');
   const [scan, setScan] = useState<Scan | null>(null);
   const [overlay, setOverlay] = useState<'in' | 'out' | null>(null); // scan modal: fading in, fading out, or gone
+  const [scanHosted, setScanHosted] = useState(false); // the in-progress load is hosted assets (CDN), not local files
   const [charName, setCharName] = useState<string | null>(null); // name of the loaded saved character
   const [error, setError] = useState('');
   const [counts, setCounts] = useState<Counts | null>(null);
@@ -126,7 +130,7 @@ export function App() {
     // show the scan overlay in the SAME render as phase='scanning' (batched), so it's the first
     // thing on screen - no flash of the empty Sources card before the modal appears.
     if (fadeTimer.current) { clearTimeout(fadeTimer.current); fadeTimer.current = null; }
-    setPhase('scanning'); setOverlay('in'); setError('');
+    setPhase('scanning'); setOverlay('in'); setError(''); setScanHosted(false);
     const t0 = performance.now();
     try {
       const sources = [...modSources(active), createFsaAssetSource(installH, { id: 'install', isMod: false })];
@@ -155,7 +159,7 @@ export function App() {
   // ?assets=<baseUrl> for now; becomes the no-install default once R2-hosted.
   const rebuildHosted = useCallback(async (baseUrl: string, mods: HostedMod[] = []) => {
     if (fadeTimer.current) { clearTimeout(fadeTimer.current); fadeTimer.current = null; }
-    setPhase('scanning'); setOverlay('in'); setError('');
+    setPhase('scanning'); setOverlay('in'); setError(''); setScanHosted(true);
     const t0 = performance.now();
     try {
       const { source: vanilla, manifest } = await loadHostedSource(baseUrl, { id: 'hosted' });
@@ -527,7 +531,7 @@ export function App() {
         </a>
       </div>
 
-      {overlay && <ScanOverlay scan={scan} closing={overlay === 'out'} />}
+      {overlay && <ScanOverlay scan={scan} closing={overlay === 'out'} hosted={scanHosted} />}
     </div>
   );
 }
@@ -631,17 +635,22 @@ function AccountChip({ auth, onSignIn, onChangePassword, onDeleteAccount }: { au
 
 // Full-screen scanning modal: blurs the page behind it, shows a live progress bar + step chips,
 // then fades out to reveal the freshly-scanned library.
-function ScanOverlay({ scan, closing }: { scan: Scan | null; closing: boolean }) {
+function ScanOverlay({ scan, closing, hosted }: { scan: Scan | null; closing: boolean; hosted: boolean }) {
   const stepIdx = scan ? SCAN_STEPS.indexOf(scan.step) : 0;
   // scan === null is the "preparing" window (discovering mods, before per-source progress
   // reports start): show a small shimmering bar, not a full one that reads as done/stuck.
   const pct = closing ? 100 : !scan ? 6 : Math.min(99, Math.round(((scan.source - 1) * 3 + stepIdx + 1) / (scan.total * 3) * 100));
+  const verbs = hosted ? STEP_VERB_HOSTED : STEP_VERB;
+  // Hosted: the vanilla source reports its name as "Game install"; relabel it, and name mod sources.
+  const sub = !scan ? 'Preparing…'
+    : hosted ? (scan.name && scan.name !== 'Game install' ? `Mod: ${scan.name}` : 'Built-in library')
+    : `Source ${scan.source} of ${scan.total} · ${scan.name}`;
   return (
     <div className={'scan-overlay' + (closing ? ' closing' : '')} role="status" aria-live="polite">
       <div className="scan-card">
         <img src={logoUrl} className="scan-logo" width={54} height={54} alt="" />
-        <div className="scan-title">{closing ? 'Ready' : 'Scanning your game files'}</div>
-        <div className="scan-sub">{scan ? `Source ${scan.source} of ${scan.total} · ${scan.name}` : 'Preparing…'}</div>
+        <div className="scan-title">{closing ? 'Ready' : hosted ? 'Loading the built-in assets' : 'Scanning your game files'}</div>
+        <div className="scan-sub">{sub}</div>
         <div className="scan-bar"><div className="scan-bar-fill" style={{ width: pct + '%' }} /></div>
         <div className="scan-steps">
           {SCAN_STEPS.map((st, i) => (
@@ -650,7 +659,7 @@ function ScanOverlay({ scan, closing }: { scan: Scan | null; closing: boolean })
             </div>
           ))}
         </div>
-        <div className="scan-detail">{scan && !closing ? <>{STEP_VERB[scan.step]}… <b>{scan.count.toLocaleString()}</b> found</> : 'Building your library…'}</div>
+        <div className="scan-detail">{scan && !closing ? <>{verbs[scan.step]}… <b>{scan.count.toLocaleString()}</b> found</> : 'Building your library…'}</div>
       </div>
     </div>
   );
