@@ -436,7 +436,7 @@ export function App() {
         {(index != null || auth.configured || steam.configured) && (
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: isMobile ? 'wrap' : undefined, justifyContent: isMobile ? 'flex-end' : undefined }}>
             {(index != null || auth.user || steam.token) && view !== 'overview' && (
-              <button className="secondary" onClick={() => setView('overview')} style={{ height: NAV_H, padding: '0 14px' }}>Overview</button>
+              <button className="secondary" title="Overview" aria-label="Overview" onClick={() => setView('overview')} style={{ height: NAV_H, width: isMobile ? NAV_H : undefined, padding: isMobile ? 0 : '0 14px', display: isMobile ? 'grid' : undefined, placeItems: isMobile ? 'center' : undefined, fontSize: isMobile ? 17 : undefined, lineHeight: isMobile ? 1 : undefined }}>{isMobile ? '⌂' : 'Overview'}</button>
             )}
             {index != null && view !== 'character' && (
               <button onClick={() => setView('character')} style={{ height: NAV_H, padding: '0 18px', fontWeight: 600, boxShadow: '0 2px 10px #5b8cff55' }}>Character viewer →</button>
