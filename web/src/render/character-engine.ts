@@ -39,6 +39,7 @@ export class CharacterEngine {
 
   private grid: THREE.GridHelper;
   private shadow: THREE.Mesh | null = null;
+  private fitBuf: Uint8Array | null = null; // scratch for the silhouette-based framing readback
   private floorMat: THREE.MeshBasicMaterial | null = null;
   private raf = 0;
   private disposed = false;
@@ -149,7 +150,7 @@ export class CharacterEngine {
 
   /** Turn on/off "keep the whole body framed as the canvas resizes" (the mobile default). Framing
    *  once immediately if a body is loaded; the user adjusting the camera or picking a preset ends it. */
-  setAutoFrame(on: boolean) { this.autoFrame = on; if (on && this.bodyMeshes.length) this.frameToBody(); }
+  setAutoFrame(on: boolean) { this.autoFrame = on; } // framing is driven explicitly / by resize(), once the body is posed
 
   // ---- scene controls (port of character.js setCamMode / bindView / bindLighting) ----
 
@@ -187,27 +188,48 @@ export class CharacterEngine {
     this.onCamMode?.('orbit');
   }
 
-  /** Fit the whole body in view, centered, keeping the current orbit angle. Zooms out extra on
-   *  portrait / narrow viewports (phones) so the character never crops. Used for the mobile default. */
+  /** Fit the whole body in view, centered, keeping the current orbit angle. This rig's retarget
+   *  skinning renders the mesh nowhere near what Box3/skeleton report (bind bounds are ~half height and
+   *  the wrong centre; a plain offscreen render also mis-skins it), so we render the real frame
+   *  (drawFrame), read back the character silhouette, and iterate pan+zoom until it's centred and fills
+   *  the frame. Used for the mobile default; only meaningful for the perspective (orbit) camera. The
+   *  intermediate frames aren't presented (all inside one JS turn), so there's no visible flicker. */
   frameToBody() {
-    const b = this.skinnedBounds() ?? this.bodyBounds; // true posed silhouette (bodyBounds is the raw un-posed extent)
-    if (!b) return;
-    const H = b.maxY - b.minY;
-    const fovV = this.perspCam.fov * Math.PI / 180;
-    // fit the full height with a little headroom; the vertical FOV is fixed, so this frames the whole
-    // (tall, thin) character on any aspect - a tall phone fills nicely, a wide screen just adds side room.
-    const margin = 1.35;
-    this.orbit.setTarget(new THREE.Vector3(b.cx, b.minY + H / 2, b.cz));
-    this.orbit.state.radius = Math.max(0.8, (H * margin / 2) / Math.tan(fovV / 2));
-    this.orbit.apply();
-  }
-
-  // Diagnostic string (opt-in via ?camdebug) for the camera + canvas state.
-  camDebugString(): string {
-    const rb = this.bodyBounds; const rawH = rb ? rb.maxY - rb.minY : 0;
-    const sb = this.skinnedBounds(); const skH = sb ? sb.maxY - sb.minY : 0;
-    const c = this.renderer.domElement;
-    return `r=${this.orbit.state.radius.toFixed(2)} rawH=${rawH.toFixed(2)} skH=${skH.toFixed(2)} tY=${this.orbit.state.target.y.toFixed(2)} asp=${this.perspCam.aspect.toFixed(2)} ${this.camMode} af=${this.autoFrame ? 1 : 0} c=${c.clientWidth}x${c.clientHeight}`;
+    if (!this.bodyMeshes.length || this.camMode !== 'orbit') return;
+    const cam = this.perspCam, orbit = this.orbit;
+    const gl = this.renderer.getContext();
+    const w = this.vw, h = this.vh, need = w * h * 4;
+    if (!this.fitBuf || this.fitBuf.length < need) this.fitBuf = new Uint8Array(need);
+    const buf = this.fitBuf;
+    const STEP = Math.max(1, Math.floor(Math.min(w, h) / 200)); // subsample the scan for speed (~200px)
+    // hide everything but the character so the alpha silhouette is the body (+ worn/held) only
+    const gV = this.grid.visible, sV = this.shadow?.visible ?? false, fV = this.floorMesh?.visible ?? false;
+    this.grid.visible = false; if (this.shadow) this.shadow.visible = false; if (this.floorMesh) this.floorMesh.visible = false;
+    const aspect = cam.aspect || 1, fovV = cam.fov * Math.PI / 180;
+    const right = new THREE.Vector3(), up = new THREE.Vector3(), tmp = new THREE.Vector3();
+    const clamp = (v: number, a: number, b: number) => Math.max(a, Math.min(b, v));
+    const WANT = 1.5, GAIN = 0.6; // target silhouette span (~75% of the frame) and pan damping (parallax)
+    orbit.state.radius = 12; orbit.apply(); // start wide so the body is on-screen, then converge inward
+    for (let i = 0; i < 14; i++) {
+      this.drawFrame();
+      gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, buf);
+      let minX = 1e9, maxX = -1, minY = 1e9, maxY = -1, cnt = 0;
+      for (let y = 0; y < h; y += STEP) for (let x = 0; x < w; x += STEP) { if (buf[(y * w + x) * 4 + 3] > 40) { cnt++; if (x < minX) minX = x; if (x > maxX) maxX = x; if (y < minY) minY = y; if (y > maxY) maxY = y; } }
+      if (!cnt) { orbit.state.radius = clamp(orbit.state.radius * 1.5, 0.6, 25); orbit.apply(); continue; } // lost it: zoom out to find
+      const xL = minX / w * 2 - 1, xR = maxX / w * 2 - 1, yB = minY / h * 2 - 1, yT = maxY / h * 2 - 1; // NDC (gl y is bottom-up)
+      const cx = (xL + xR) / 2, cy = (yB + yT) / 2, span = Math.max(xR - xL, yT - yB);
+      const edge = xL < -0.95 || xR > 0.95 || yB < -0.95 || yT > 0.95;
+      cam.updateMatrixWorld(true);
+      right.setFromMatrixColumn(cam.matrixWorld, 0); up.setFromMatrixColumn(cam.matrixWorld, 1);
+      const halfH = orbit.state.radius * Math.tan(fovV / 2), halfW = halfH * aspect;
+      orbit.state.target.add(tmp.copy(right).multiplyScalar(cx * halfW * GAIN)).add(tmp.copy(up).multiplyScalar(cy * halfH * GAIN));
+      const zf = edge ? Math.max(span / WANT, 1.2) : span / WANT;
+      orbit.state.radius = clamp(orbit.state.radius * clamp(zf, 0.6, 1.6), 0.6, 25);
+      orbit.apply();
+      if (!edge && Math.abs(span - WANT) < 0.1 && Math.abs(cx) < 0.06 && Math.abs(cy) < 0.06) break;
+    }
+    this.grid.visible = gV; if (this.shadow) this.shadow.visible = sV; if (this.floorMesh) this.floorMesh.visible = fV;
+    this.drawFrame();
   }
 
   setTurntable(on: boolean) { this.turntable = on; }
@@ -437,29 +459,6 @@ export class CharacterEngine {
       }
     }
     return m;
-  }
-
-  /** True skinned/posed bounds of the body (Y extent + XZ centre) at the current pose. Unlike
-   *  bodyBounds (Box3.setFromObject, which ignores GPU skinning and returns the raw un-posed geometry
-   *  extent - often ~half the real height), this applies the bone transforms, so it's the ACTUAL
-   *  rendered silhouette. Used to fit the camera on mobile. */
-  private skinnedBounds(): { minY: number; maxY: number; cx: number; cz: number } | null {
-    let minY = Infinity, maxY = -Infinity, minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
-    const v = new THREE.Vector3();
-    for (const sm of this.bodyMeshes) {
-      const pos = sm.geometry.getAttribute('position');
-      if (!pos) continue;
-      sm.updateMatrixWorld(true);
-      for (let i = 0; i < pos.count; i++) {
-        v.fromBufferAttribute(pos as THREE.BufferAttribute, i);
-        sm.applyBoneTransform(i, v);
-        v.applyMatrix4(sm.matrixWorld);
-        if (v.y < minY) minY = v.y; if (v.y > maxY) maxY = v.y;
-        if (v.x < minX) minX = v.x; if (v.x > maxX) maxX = v.x;
-        if (v.z < minZ) minZ = v.z; if (v.z > maxZ) maxZ = v.z;
-      }
-    }
-    return Number.isFinite(minY) ? { minY, maxY, cx: (minX + maxX) / 2, cz: (minZ + maxZ) / 2 } : null;
   }
 
   /** Ground the rig set so the lowest posed sole rests on the grid. With a clip playing it samples
