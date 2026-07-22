@@ -91,6 +91,14 @@ function clipCategory(name: string): string {
   return 'Other';
 }
 
+// Lucide icons for the mobile canvas overlay buttons (Equipped = shirt, Scene = sun).
+function ShirtIcon({ size = 18 }: { size?: number }) {
+  return <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M20.38 3.46 16 2a4 4 0 0 1-8 0L3.62 3.46a2 2 0 0 0-1.34 2.23l.58 3.47a1 1 0 0 0 .99.84H6v10c0 1.1.9 2 2 2h8a2 2 0 0 0 2-2V10h2.15a1 1 0 0 0 .99-.84l.58-3.47a2 2 0 0 0-1.34-2.23z" /></svg>;
+}
+function SunIcon({ size = 18 }: { size?: number }) {
+  return <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4" /><path d="M12 2v2" /><path d="M12 20v2" /><path d="m4.93 4.93 1.41 1.41" /><path d="m17.66 17.66 1.41 1.41" /><path d="M2 12h2" /><path d="M20 12h2" /><path d="m6.34 17.66-1.41 1.41" /><path d="m19.07 4.93-1.41 1.41" /></svg>;
+}
+
 export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSignIn, uploads, displayNames }: { ctx: Ctx; index: unknown; onCharacterName?: (name: string | null) => void; auth: AuthState; onRequestSignIn: () => void; uploads: CloudUploads; displayNames: DisplayNames | null }) {
   const isMobile = useIsMobile();
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -630,10 +638,14 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
         </div>
         <div style={{ position: 'absolute', right: isMobile ? 8 : 12, top: isMobile ? 8 : 12, display: 'flex', flexDirection: 'column', gap: 8, alignItems: 'flex-end' }}>
           <div style={{ display: 'flex', gap: isMobile ? 6 : 8, alignItems: 'flex-start' }}>
-            <button className="secondary" title="Equipped items" onClick={() => { setEquipOpen((v) => !v); setSceneOpen(false); }}
-              style={{ borderRadius: 6, padding: isMobile ? '6px 9px' : '7px 12px', fontSize: isMobile ? 12 : 13, lineHeight: 1, border: '1px solid var(--line)', background: equipOpen ? 'var(--accent)' : 'var(--panel)', color: equipOpen ? '#fff' : 'var(--text)' }}>Equipped{equipList.length ? ` (${equipList.length})` : ''}</button>
-            <button data-tour="scenebtn" className="secondary" title="Scene, lighting & floor" onClick={() => { setSceneOpen((v) => !v); setEquipOpen(false); }}
-              style={{ borderRadius: 6, padding: isMobile ? '6px 9px' : '7px 12px', fontSize: isMobile ? 12 : 13, lineHeight: 1, border: '1px solid var(--line)', background: sceneOpen ? 'var(--accent)' : 'var(--panel)', color: sceneOpen ? '#fff' : 'var(--text)' }}>Scene</button>
+            <button className="secondary" title="Equipped items" aria-label="Equipped items" onClick={() => { setEquipOpen((v) => !v); setSceneOpen(false); }}
+              style={{ position: 'relative', borderRadius: 6, padding: isMobile ? 0 : '7px 12px', width: isMobile ? 36 : undefined, height: isMobile ? 36 : undefined, display: isMobile ? 'grid' : undefined, placeItems: isMobile ? 'center' : undefined, fontSize: 13, lineHeight: 1, border: '1px solid var(--line)', background: equipOpen ? 'var(--accent)' : 'var(--panel)', color: equipOpen ? '#fff' : 'var(--text)' }}>
+              {isMobile ? (<><ShirtIcon />{equipList.length > 0 && <span style={{ position: 'absolute', top: -6, right: -6, minWidth: 16, height: 16, padding: '0 4px', borderRadius: 999, background: 'var(--accent)', color: '#fff', fontSize: 10.5, fontWeight: 700, display: 'grid', placeItems: 'center', border: '1.5px solid #0e0e13' }}>{equipList.length}</span>}</>) : `Equipped${equipList.length ? ` (${equipList.length})` : ''}`}
+            </button>
+            <button data-tour="scenebtn" className="secondary" title="Scene, lighting & floor" aria-label="Scene, lighting and floor" onClick={() => { setSceneOpen((v) => !v); setEquipOpen(false); }}
+              style={{ borderRadius: 6, padding: isMobile ? 0 : '7px 12px', width: isMobile ? 36 : undefined, height: isMobile ? 36 : undefined, display: isMobile ? 'grid' : undefined, placeItems: isMobile ? 'center' : undefined, fontSize: 13, lineHeight: 1, border: '1px solid var(--line)', background: sceneOpen ? 'var(--accent)' : 'var(--panel)', color: sceneOpen ? '#fff' : 'var(--text)' }}>
+              {isMobile ? <SunIcon /> : 'Scene'}
+            </button>
             <div data-tour="camera" style={{ display: 'flex', border: '1px solid var(--line)', borderRadius: 6, overflow: 'hidden' }}>
               <button className="secondary" title="Free orbit" onClick={() => setCamPreset('orbit')}
                 style={{ borderRadius: 0, padding: isMobile ? '4px 9px' : '5px 11px', fontSize: isMobile ? 18 : 24, lineHeight: 1, background: camMode === 'orbit' ? 'var(--accent)' : 'var(--panel)', color: camMode === 'orbit' ? '#fff' : 'var(--text)' }}>⟳</button>
@@ -653,7 +665,7 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
           )}
         </div>
         {equipOpen && (
-          <div data-tour="equipmenu" style={{ position: 'absolute', right: isMobile ? 8 : 12, top: isMobile ? 48 : 54, width: isMobile ? 'min(264px, calc(100vw - 24px))' : 264, maxHeight: '68%', overflow: 'auto', background: '#0e0e13f2', border: '1px solid var(--line)', borderRadius: 8, padding: 8 }}>
+          <div data-tour="equipmenu" style={{ position: 'absolute', right: isMobile ? 6 : 12, top: isMobile ? 48 : 54, width: isMobile ? 'min(340px, calc(100vw - 12px))' : 264, maxHeight: isMobile ? '76%' : '68%', overflow: 'auto', background: '#0e0e13f2', border: '1px solid var(--line)', borderRadius: 8, padding: isMobile ? 10 : 8 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
               <span style={{ fontSize: 12, color: 'var(--muted)' }}>Equipped ({equipList.length})</span>
               <span role="button" onClick={() => setEquipOpen(false)} title="close" style={{ cursor: 'pointer', color: 'var(--muted)', padding: '0 4px' }}>✕</span>
@@ -662,33 +674,34 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
             {equipList.map((e) => {
               const slots = e.type === 'held' ? heldSlots.get(e.name) : undefined;
               const open = attachOpen === e.name;
-              const chip = (active: boolean): React.CSSProperties => ({ padding: '2px 8px', fontSize: 11, maxWidth: 118, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', background: active ? 'var(--accent)' : 'var(--panel)', color: active ? '#fff' : 'var(--text)' });
+              const chip = (active: boolean): React.CSSProperties => ({ padding: isMobile ? '9px 13px' : '2px 8px', fontSize: isMobile ? 13 : 11, maxWidth: isMobile ? 190 : 118, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', background: active ? 'var(--accent)' : 'var(--panel)', color: active ? '#fff' : 'var(--text)' });
+              const actBtn: React.CSSProperties = isMobile ? { padding: '8px 11px', fontSize: 13, lineHeight: 1, borderRadius: 6, flexShrink: 0 } : { padding: '2px 8px', fontSize: 11, flexShrink: 0 };
               return (
-                <div key={e.type + ':' + e.name}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 2px' }}>
-                    <span style={{ flex: 1, fontSize: 12, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', opacity: e.hidden ? 0.45 : 1 }} title={e.name}>{nameToLabel.get(e.name) ?? e.name}</span>
-                    <span style={{ fontSize: 9, color: 'var(--muted)', border: '1px solid var(--line)', borderRadius: 3, padding: '0 3px' }}>{e.type === 'held' ? 'held' : 'worn'}</span>
+                <div key={e.type + ':' + e.name} style={isMobile ? { borderBottom: '1px solid var(--line)', paddingBottom: 5, marginBottom: 5 } : undefined}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: isMobile ? 7 : 6, padding: isMobile ? '6px 2px' : '4px 2px' }}>
+                    <span style={{ flex: 1, minWidth: 0, fontSize: isMobile ? 13 : 12, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', opacity: e.hidden ? 0.45 : 1 }} title={e.name}>{nameToLabel.get(e.name) ?? e.name}</span>
+                    <span style={{ fontSize: 9, color: 'var(--muted)', border: '1px solid var(--line)', borderRadius: 3, padding: '0 3px', flexShrink: 0 }}>{e.type === 'held' ? 'held' : 'worn'}</span>
                     {e.type === 'held' && (
                       <button className="secondary" title={`held in ${e.hand === 'left' ? 'left' : 'right'} hand (click to switch)`}
                         onClick={() => setHeldHand(e.name, e.hand === 'left' ? 'right' : 'left')}
-                        style={{ padding: '2px 8px', fontSize: 11, minWidth: 26 }}>{e.hand === 'left' ? 'L' : 'R'}</button>
+                        style={{ ...actBtn, minWidth: isMobile ? 34 : 26 }}>{e.hand === 'left' ? 'L' : 'R'}</button>
                     )}
                     {!!slots?.length && (
                       <button className="secondary" title="attachments" onClick={() => setAttachOpen(open ? null : e.name)}
-                        style={{ padding: '2px 8px', fontSize: 13, lineHeight: 1, background: open ? 'var(--accent)' : 'var(--panel)', color: open ? '#fff' : 'var(--text)' }}>⛭</button>
+                        style={{ ...actBtn, fontSize: isMobile ? 15 : 13, background: open ? 'var(--accent)' : 'var(--panel)', color: open ? '#fff' : 'var(--text)' }}>⛭</button>
                     )}
-                    <button className="secondary" title={e.hidden ? 'show in scene' : 'hide from scene'} onClick={() => toggleHide(e.name, !e.hidden)} style={{ padding: '2px 8px', fontSize: 11, minWidth: 44 }}>{e.hidden ? 'show' : 'hide'}</button>
-                    <button className="secondary" title="remove (unequip)" onClick={() => removeEquip(e.name, e.type)} style={{ padding: '2px 8px', fontSize: 12, color: '#ff6b6b' }}>✕</button>
+                    <button className="secondary" title={e.hidden ? 'show in scene' : 'hide from scene'} onClick={() => toggleHide(e.name, !e.hidden)} style={{ ...actBtn, minWidth: isMobile ? 46 : 44 }}>{e.hidden ? 'show' : 'hide'}</button>
+                    <button className="secondary" title="remove (unequip)" aria-label="remove" onClick={() => removeEquip(e.name, e.type)} style={{ ...actBtn, fontSize: isMobile ? 14 : 12, color: '#ff6b6b', marginLeft: isMobile ? 5 : 0 }}>✕</button>
                   </div>
                   {open && slots && (
-                    <div style={{ padding: '2px 2px 8px 8px', margin: '0 0 4px 4px', borderLeft: '2px solid var(--accent)' }}>
+                    <div style={{ padding: isMobile ? '2px 2px 12px 10px' : '2px 2px 8px 8px', margin: '0 0 4px 4px', borderLeft: '2px solid var(--accent)' }}>
                       {slots.map((s) => {
                         void equipTick;
                         const cur = engineRef.current?.heldAttachment(e.name, s.slot) ?? null;
                         return (
-                          <div key={s.slot} style={{ marginTop: 6 }}>
-                            <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '.05em', color: 'var(--muted)', marginBottom: 3 }}>{s.slot}</div>
-                            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                          <div key={s.slot} style={{ marginTop: isMobile ? 11 : 6 }}>
+                            <div style={{ fontSize: isMobile ? 11 : 10, textTransform: 'uppercase', letterSpacing: '.05em', color: 'var(--muted)', marginBottom: isMobile ? 7 : 3 }}>{s.slot}</div>
+                            <div style={{ display: 'flex', flexWrap: 'wrap', gap: isMobile ? 8 : 4 }}>
                               <button className="secondary" onClick={() => setAttachment(e.name, s.slot, null)} style={chip(cur === null)}>None</button>
                               {s.options.map((o) => (
                                 <button key={o.partName} className="secondary" title={o.partName} onClick={() => setAttachment(e.name, s.slot, o)} style={chip(cur === o.partName)}>{o.partName}</button>
