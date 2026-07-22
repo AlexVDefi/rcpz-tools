@@ -737,7 +737,7 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
 
       {isMobile ? (
         // bottom tab bar: tapping a tab opens the drawer with that tab's content
-        <div style={{ display: 'flex', gap: 5, flexShrink: 0, background: 'var(--panel)', border: '1px solid var(--line)', borderRadius: 10, padding: 5 }}>
+        <div data-tour="tabs" style={{ display: 'flex', gap: 5, flexShrink: 0, background: 'var(--panel)', border: '1px solid var(--line)', borderRadius: 10, padding: 5 }}>
           {tabs.map(([t, label]) => (
             <button key={t} onClick={() => { setTab(t); setDrawerOpen(true); }}
               style={{ flex: 1, minWidth: 0, padding: '9px 2px', fontSize: 11.5, fontWeight: 600, borderRadius: 7, background: 'transparent', color: 'var(--text)', border: 'none', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{label}</button>

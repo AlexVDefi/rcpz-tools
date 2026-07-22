@@ -458,7 +458,7 @@ export function App() {
         {charName && !isMobile && <div title="Loaded character" style={{ position: 'absolute', left: '50%', top: '50%', transform: 'translate(-50%, -50%)', fontSize: 23, fontWeight: 600, color: 'var(--text)', pointerEvents: 'none', whiteSpace: 'nowrap', maxWidth: '40%', overflow: 'hidden', textOverflow: 'ellipsis' }}>{charName}</div>}
         {(index != null || auth.configured || steam.configured) && (
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: isMobile ? 'wrap' : undefined, justifyContent: isMobile ? 'flex-end' : undefined }}>
-            {(index != null || auth.user || steam.token) && view !== 'overview' && !mobileCharView && homeButton}
+            {view !== 'overview' && !mobileCharView && homeButton}
             {index != null && view !== 'character' && (
               <button onClick={() => setView('character')} style={{ height: NAV_H, padding: '0 18px', fontWeight: 600, boxShadow: '0 2px 10px #5b8cff55' }}>Character viewer →</button>
             )}
