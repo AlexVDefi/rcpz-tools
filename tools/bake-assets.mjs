@@ -32,6 +32,7 @@ import { fileURLToPath } from 'node:url';
 import { createNodeAssetSource } from '../shared/asset-source.js';
 import { buildAssetIndex } from '../shared/asset-index.js';
 import { createMeshConverter } from '../shared/mesh-converter.js';
+import { optimizeGlb } from './glb-optimize.mjs';
 import {
   listClothing, listHair, listHeldItems, listClips,
   resolveBody, resolveClothing, resolveHairStyle, resolveHeldItem, resolveAttachmentPart, resolveClip,
@@ -47,13 +48,15 @@ const mb = (n) => (n / 1048576).toFixed(1) + ' MB';
 
 // --- args ---
 function parseArgs(argv) {
-  const a = { install: null, version: 'unknown', out: null, limitClips: 0 };
+  const a = { install: null, version: 'unknown', out: null, limitClips: 0, compress: true, level: 'medium' };
   for (let i = 0; i < argv.length; i++) {
     const v = argv[i];
     if (v === '--install') a.install = argv[++i];
     else if (v === '--version') a.version = argv[++i];
     else if (v === '--out') a.out = argv[++i];
     else if (v === '--limit-clips') a.limitClips = parseInt(argv[++i], 10) || 0;
+    else if (v === '--level') a.level = argv[++i];
+    else if (v === '--no-compress') a.compress = false;
     else if (v === '-h' || v === '--help') a.help = true;
   }
   return a;
@@ -137,7 +140,8 @@ async function main() {
   const converter = createMeshConverter(); // real WASM converter, byte-identical to the browser's
   const files = {};                        // virtualPath -> { kind:'bin', hash, ext, size } | { kind:'text', text }
   const written = new Set();
-  const stat = { mesh: 0, clip: 0, texture: 0, other: 0, bytes: 0, failed: 0 };
+  const stat = { mesh: 0, clip: 0, texture: 0, other: 0, bytes: 0, failed: 0, glbRaw: 0, glbOut: 0, uncompressed: 0 };
+  console.log(args.compress ? `Converting + compressing (meshopt level=${args.level}) ...` : 'Converting (no compression) ...');
 
   let done = 0;
   for (const { realPath, bytes } of refs.values()) {
@@ -145,7 +149,13 @@ async function main() {
     let outBytes, outExt, virtualPath, kind;
     try {
       if (MESH_EXTS.has(e)) {
-        outBytes = await converter.convertToGlb(bytes, e.slice(1));
+        const glb = await converter.convertToGlb(bytes, e.slice(1));
+        stat.glbRaw += glb.length;
+        if (args.compress) {
+          const r = await optimizeGlb(glb, { level: args.level });
+          outBytes = r.bytes; if (!r.compressed) stat.uncompressed++;
+        } else outBytes = glb;
+        stat.glbOut += outBytes.length;
         outExt = 'glb';
         virtualPath = realPath.slice(0, realPath.length - e.length) + '.glb';
         kind = realPath.toLowerCase().includes('/anims_x/') ? 'clip' : 'mesh';
@@ -182,6 +192,10 @@ async function main() {
     generatedAt: new Date().toISOString(),
     assetBase: 'assets/',
     vanillaOnly: true,
+    // glbs are EXT_meshopt_compression when compression is on: the browser GLTFLoader needs
+    // a MeshoptDecoder to parse them (plain glbs still load without it).
+    meshopt: args.compress,
+    meshoptLevel: args.compress ? args.level : null,
     counts: {
       clothing: clothing.length, hair: hair.male.length + hair.female.length, beards: beards.length,
       held: held.length, clips: clipsToBake.length,
@@ -199,6 +213,10 @@ async function main() {
   console.log(`  meshes        ${stat.mesh}`);
   console.log(`  clip meshes   ${stat.clip}`);
   console.log(`  textures      ${stat.texture}`);
+  if (args.compress) {
+    const cut = stat.glbRaw ? (1 - stat.glbOut / stat.glbRaw) * 100 : 0;
+    console.log(`  glb meshopt   ${mb(stat.glbRaw)} -> ${mb(stat.glbOut)}  (${cut.toFixed(1)}% smaller${stat.uncompressed ? `, ${stat.uncompressed} left plain` : ''})`);
+  }
   console.log(`  unique assets ${written.size}  (${mb(stat.bytes)} on disk)`);
   console.log(`  inline text   ${manifest.counts.files - stat.mesh - stat.clip - stat.texture - stat.other} files (${mb(textBytes)})`);
   console.log(`  manifest.json ${mb(manifestSize)}`);
