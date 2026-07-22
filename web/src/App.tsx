@@ -11,6 +11,7 @@ import { CharacterViewer } from './CharacterViewer';
 import { SharedGallery } from './SharedGallery';
 import { ModderDashboard } from './ModderDashboard';
 import { useSteam } from './cloud/steam';
+import { fetchHostedMods, type HostedMod } from './cloud/hosted-mods';
 import { useAuth, type AuthState } from './cloud/auth';
 import { useCloudUploads } from './cloud/uploads';
 import { AuthModal } from './cloud/AuthModal';
@@ -63,6 +64,8 @@ async function looksLikePzInstall(dir: FileSystemDirectoryHandle): Promise<boole
 export function App() {
   const [phase, setPhase] = useState<Phase>(usable ? 'idle' : 'unsupported');
   const [assetSource, setAssetSource] = useState<'local' | 'hosted' | null>(null); // which path built the current index
+  const [hostedMods, setHostedMods] = useState<HostedMod[]>([]); // community mods available to layer over hosted vanilla
+  const [enabledMods, setEnabledMods] = useState<string[]>(() => { try { return JSON.parse(localStorage.getItem('pz-enabled-mods') || '[]'); } catch { return []; } });
   const [progress, setProgress] = useState('');
   const [scan, setScan] = useState<Scan | null>(null);
   const [overlay, setOverlay] = useState<'in' | 'out' | null>(null); // scan modal: fading in, fading out, or gone
@@ -150,23 +153,30 @@ export function App() {
   // Load a hosted asset bundle (tools/bake-assets.mjs) instead of a local install. Produces
   // the same index the FSA path does, so the rest of the app is unchanged. Reached via
   // ?assets=<baseUrl> for now; becomes the no-install default once R2-hosted.
-  const rebuildHosted = useCallback(async (baseUrl: string) => {
+  const rebuildHosted = useCallback(async (baseUrl: string, mods: HostedMod[] = []) => {
     if (fadeTimer.current) { clearTimeout(fadeTimer.current); fadeTimer.current = null; }
     setPhase('scanning'); setOverlay('in'); setError('');
     const t0 = performance.now();
     try {
-      const { source, manifest } = await loadHostedSource(baseUrl, { id: 'hosted' });
-      const idx = await buildAssetIndex([source], { onProgress: (p: Scan) => setScan(p) });
+      const { source: vanilla, manifest } = await loadHostedSource(baseUrl, { id: 'hosted' });
+      // Each enabled community mod is a higher-priority source layered over vanilla (mods override).
+      const modSources = [];
+      for (const m of mods) {
+        try { const { source } = await loadHostedSource(m.url, { id: `hostedmod:${m.modId}` }); modSources.push(source); }
+        catch { /* a mod bundle that fails to load is skipped, not fatal */ }
+      }
+      const idx = await buildAssetIndex([...modSources, vanilla], { onProgress: (p: Scan) => setScan(p) });
       const clothing = listClothing(idx);
       const { hair, beards } = listHair(idx);
       setCounts({
         clothing: clothing.length, clips: listClips(idx).length, held: listHeldItems(idx).length,
-        hairM: hair.male.length, hairF: hair.female.length, beards: beards.length, modClothing: 0,
+        hairM: hair.male.length, hairF: hair.female.length, beards: beards.length,
+        modClothing: clothing.filter((c: { isMod: boolean }) => c.isMod).length,
       });
       setIndex(idx);
       setAssetSource('hosted'); localStorage.setItem(SOURCE_KEY, 'hosted');
       setInstallHandle(null); setMods([]);
-      setProgress(`built-in assets (${manifest.version}) in ${((performance.now() - t0) / 1000).toFixed(1)}s`);
+      setProgress(`built-in assets${modSources.length ? ` + ${modSources.length} mod${modSources.length === 1 ? '' : 's'}` : ''} (${manifest.version}) in ${((performance.now() - t0) / 1000).toFixed(1)}s`);
       setPhase('ready');
     } catch (e) { setError(e instanceof Error ? e.message : String(e)); setPhase('error'); }
     finally {
@@ -176,7 +186,17 @@ export function App() {
   }, []);
 
   // Load the configured hosted bundle (the "Start now" / "built-in assets" path).
-  const useHosted = useCallback(() => { if (HOSTED_ASSETS_URL) rebuildHosted(HOSTED_ASSETS_URL); }, [rebuildHosted]);
+  const useHosted = useCallback(() => {
+    if (HOSTED_ASSETS_URL) rebuildHosted(HOSTED_ASSETS_URL, hostedMods.filter((m) => enabledMods.includes(m.modId)));
+  }, [rebuildHosted, hostedMods, enabledMods]);
+  // Enable/disable a community mod: persist the choice and, if we're on hosted assets, re-layer now.
+  const toggleHostedMod = useCallback((modId: string) => {
+    const next = enabledMods.includes(modId) ? enabledMods.filter((x) => x !== modId) : [...enabledMods, modId];
+    setEnabledMods(next); localStorage.setItem('pz-enabled-mods', JSON.stringify(next));
+    if (assetSource === 'hosted' && HOSTED_ASSETS_URL) rebuildHosted(HOSTED_ASSETS_URL, hostedMods.filter((m) => next.includes(m.modId)));
+  }, [enabledMods, hostedMods, assetSource, rebuildHosted]);
+  // Fetch the community mods available to layer, once, when a hosted bundle is configured.
+  useEffect(() => { if (hostedAvailable) fetchHostedMods().then(setHostedMods).catch(() => {}); }, []);
 
   // ?assets=<baseUrl> loads a hosted bundle (dev/validation override; prod uses HOSTED_ASSETS_URL).
   useEffect(() => {
@@ -380,18 +400,33 @@ export function App() {
               {phase === 'ready' && progress && <span style={{ color: 'var(--muted)', fontSize: 12.5, marginLeft: 'auto' }}>{progress}</span>}
             </div>
             {assetSource === 'hosted' ? (
-              <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-                <div style={{ flex: 1, minWidth: 240 }}>
-                  <div style={{ fontWeight: 600, fontSize: 13.5, display: 'flex', alignItems: 'center', gap: 7 }}>
-                    <span style={{ width: 8, height: 8, borderRadius: 999, background: '#4ac07a', display: 'inline-block' }} />
-                    Built-in vanilla assets
+              <>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+                  <div style={{ flex: 1, minWidth: 240 }}>
+                    <div style={{ fontWeight: 600, fontSize: 13.5, display: 'flex', alignItems: 'center', gap: 7 }}>
+                      <span style={{ width: 8, height: 8, borderRadius: 999, background: '#4ac07a', display: 'inline-block' }} />
+                      Built-in vanilla assets
+                    </div>
+                    <div style={{ color: 'var(--muted)', fontSize: 12.5, marginTop: 4 }}>
+                      Loaded from the hosted library, no game install needed.{fsaSupported ? ' Use your own game files for any mod not listed below.' : ''}
+                    </div>
                   </div>
-                  <div style={{ color: 'var(--muted)', fontSize: 12.5, marginTop: 4 }}>
-                    Loaded from the hosted library, no game install needed. Modded content needs your own game files.
-                  </div>
+                  {fsaSupported && <button className="secondary" onClick={pickInstall} disabled={phase === 'scanning'} style={{ padding: '7px 13px', fontSize: 12.5 }}>Use my game files instead</button>}
                 </div>
-                {fsaSupported && <button className="secondary" onClick={pickInstall} disabled={phase === 'scanning'} style={{ padding: '7px 13px', fontSize: 12.5 }}>Use my game files instead</button>}
-              </div>
+                {hostedMods.length > 0 && (
+                  <div style={{ marginTop: 14, borderTop: '1px solid var(--line)', paddingTop: 12 }}>
+                    <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 8 }}>Community mods <span style={{ color: 'var(--muted)', fontWeight: 400 }}>· hosted by their creators, no install needed</span></div>
+                    <div style={{ display: 'grid', gap: 7 }}>
+                      {hostedMods.map((m) => (
+                        <label key={m.modId} style={{ display: 'flex', alignItems: 'center', gap: 9, fontSize: 13, cursor: phase === 'scanning' ? 'wait' : 'pointer' }}>
+                          <input type="checkbox" checked={enabledMods.includes(m.modId)} disabled={phase === 'scanning'} onChange={() => toggleHostedMod(m.modId)} />
+                          <span>{m.title}</span>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </>
             ) : (
               <>
                 <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>

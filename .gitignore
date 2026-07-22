@@ -16,3 +16,6 @@ asset-bake/
 
 # Modder-hosting backend runtime env (lives on the VPS). Never commit.
 tools/modhost/.env
+
+# Supabase service_role key (backend only) for the modhost .env. Never commit.
+.supabase.env

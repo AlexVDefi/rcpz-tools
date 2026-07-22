@@ -50,6 +50,7 @@ export default {
     if (request.method === 'GET' && url.pathname === '/steam/mods') return withCors(await steamMods(request, env), corsHeaders);
     if (request.method === 'GET' && url.pathname === '/steam/permissions') return withCors(await steamPermissions(request, env), corsHeaders);
     if (request.method === 'POST' && url.pathname === '/steam/permission') return withCors(await steamPermission(request, env), corsHeaders);
+    if (request.method === 'GET' && url.pathname === '/mods/hosted') return withCors(await hostedMods(env), corsHeaders);
     return withCors(json({ error: 'Not found' }, 404), corsHeaders);
   },
 };
@@ -387,7 +388,11 @@ async function steamPermission(request: Request, env: Env): Promise<Response> {
     title = String(f.title || '');
   } catch { return json({ error: 'Steam verification failed' }, 502); }
 
-  const row = { steamid, publishedfileid: id, title, status: body.allow ? 'allowed' : 'revoked', consented_at: new Date().toISOString(), terms_version: 1, updated_at: new Date().toISOString() };
+  const now = new Date().toISOString();
+  const row: Record<string, unknown> = { steamid, publishedfileid: id, title, status: body.allow ? 'allowed' : 'revoked', consented_at: now, terms_version: 1, updated_at: now };
+  // Re-allowing resets the hosting state so the backend reprocesses (after a prior failure, or a
+  // revoke). Revoking leaves host_status as-is so the remove sweep (revoked + hosted) still fires.
+  if (body.allow) { row.host_status = null; row.host_attempts = 0; row.host_error = null; }
   const res = await fetch(`${env.SUPABASE_URL}/rest/v1/mod_permissions?on_conflict=steamid,publishedfileid`, {
     method: 'POST',
     headers: { ...svc(env), 'Content-Type': 'application/json', Prefer: 'resolution=merge-duplicates,return=minimal' },
@@ -405,6 +410,20 @@ async function steamPermission(request: Request, env: Env): Promise<Response> {
     } catch { /* backend polls anyway */ }
   }
   return json({ ok: true, id, status: row.status });
+}
+
+// Public: the mods whose assets are currently hosted, for the app to offer. Aggregates the `hosted`
+// bundle list across every allowed+hosted consent row.
+async function hostedMods(env: Env): Promise<Response> {
+  const res = await fetch(`${env.SUPABASE_URL}/rest/v1/mod_permissions?status=eq.allowed&host_status=eq.hosted&select=title,hosted`, { headers: svc(env) });
+  if (!res.ok) return json({ error: 'query failed' }, 502);
+  const rows = (await res.json()) as { title?: string; hosted?: { modId?: string; url?: string }[] }[];
+  const seen = new Set<string>();
+  const mods: { modId: string; title: string; url: string }[] = [];
+  for (const r of rows) for (const h of r.hosted || []) {
+    if (h.modId && h.url && !seen.has(h.modId)) { seen.add(h.modId); mods.push({ modId: h.modId, title: r.title || h.modId, url: h.url }); }
+  }
+  return json({ mods });
 }
 
 // Verify a Supabase access token by asking Supabase who it belongs to. Returns the user id or null.
