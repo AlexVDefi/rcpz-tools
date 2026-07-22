@@ -841,7 +841,8 @@ function LocalPoster({ handle }: { handle?: FileSystemFileHandle }) {
     : <div style={{ width: '100%', height: '100%', display: 'grid', placeItems: 'center', color: '#3a3a44' }}>◈</div>;
 }
 
-const MODS_PER_PAGE = 12;
+const GRID_PER_PAGE = 8;  // 2 rows of 4, so the pager stays in view without scrolling
+const LIST_PER_PAGE = 10; // compact rows fit more per page
 type ModItem = { id: string; title: string; author?: string | null; enabled: boolean; preview?: string | null; poster?: FileSystemFileHandle };
 type ModTab = { key: string; label: string; items: ModItem[]; onToggle: (id: string) => void; note?: ReactNode; controls?: ReactNode; empty?: ReactNode };
 
@@ -858,11 +859,14 @@ function ModsPanel({ tabs, busy }: { tabs: ModTab[]; busy: boolean }) {
   const [active, setActive] = useState(0);
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState<'all' | 'on' | 'off'>('all');
+  const [view, setView] = useState<'grid' | 'list'>(() => (localStorage.getItem('pz-mods-view') === 'list' ? 'list' : 'grid'));
   const [page, setPage] = useState(0);
   const idx = Math.min(active, tabs.length - 1);
   const tab = tabs[idx];
   const items = tab.items;
-  useEffect(() => { setPage(0); }, [idx, query, filter, items.length]); // any of these invalidates the current page
+  const perPage = view === 'grid' ? GRID_PER_PAGE : LIST_PER_PAGE;
+  useEffect(() => { setPage(0); }, [idx, query, filter, items.length, perPage]); // any of these invalidates the current page
+  const chooseView = (v: 'grid' | 'list') => { setView(v); localStorage.setItem('pz-mods-view', v); };
 
   const q = query.trim().toLowerCase();
   const enabledCount = items.filter((m) => m.enabled).length;
@@ -871,9 +875,9 @@ function ModsPanel({ tabs, busy }: { tabs: ModTab[]; busy: boolean }) {
     if (filter === 'off' && m.enabled) return false;
     return !q || `${m.title} ${m.author || ''}`.toLowerCase().includes(q);
   });
-  const pages = Math.max(1, Math.ceil(filtered.length / MODS_PER_PAGE));
+  const pages = Math.max(1, Math.ceil(filtered.length / perPage));
   const p = Math.min(page, pages - 1);
-  const shown = filtered.slice(p * MODS_PER_PAGE, p * MODS_PER_PAGE + MODS_PER_PAGE);
+  const shown = filtered.slice(p * perPage, p * perPage + perPage);
   const inputStyle = { padding: '7px 10px', fontSize: 12.5, background: '#14141a', border: '1px solid var(--line)', borderRadius: 7, color: 'var(--text)' } as const;
 
   return (
@@ -903,22 +907,44 @@ function ModsPanel({ tabs, busy }: { tabs: ModTab[]; busy: boolean }) {
               <option value="on">Enabled ({enabledCount})</option>
               <option value="off">Disabled ({items.length - enabledCount})</option>
             </select>
+            <div style={{ display: 'inline-flex', border: '1px solid var(--line)', borderRadius: 7, overflow: 'hidden', flexShrink: 0 }}>
+              {(['grid', 'list'] as const).map((v) => (
+                <button key={v} onClick={() => chooseView(v)} title={v === 'grid' ? 'Grid view' : 'List view'} style={{
+                  padding: '7px 12px', fontSize: 12.5, cursor: 'pointer', border: 'none',
+                  background: view === v ? 'var(--accent)' : 'transparent', color: view === v ? '#fff' : 'var(--muted)',
+                }}>{v === 'grid' ? 'Grid' : 'List'}</button>
+              ))}
+            </div>
           </div>
           {shown.length === 0 ? (
             <div style={{ color: 'var(--muted)', fontSize: 12.5, padding: '8px 0 4px' }}>No mods match your search.</div>
-          ) : (
-            <div style={{ display: 'grid', gap: 10, gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))' }}>
+          ) : view === 'grid' ? (
+            // Every card is the same shape: fixed 16/9 thumbnail (cover-cropped) + a 2-line title slot.
+            <div style={{ display: 'grid', gap: 10, gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', alignItems: 'start' }}>
               {shown.map((m) => (
                 <div key={m.id} className="card" style={{ padding: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column', borderColor: m.enabled ? 'var(--accent)' : 'var(--line)' }}>
-                  <div style={{ aspectRatio: '16 / 9', background: '#0e0e12' }}><ModThumb preview={m.preview} poster={m.poster} /></div>
-                  <div style={{ padding: '8px 10px 10px', display: 'flex', flexDirection: 'column', gap: 8, flex: 1 }}>
-                    <div style={{ fontSize: 12.5, fontWeight: 600, lineHeight: 1.3, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>{m.title}</div>
-                    <label style={{ marginTop: 'auto', display: 'flex', alignItems: 'center', gap: 8, cursor: busy ? 'wait' : 'pointer' }}>
+                  <div style={{ aspectRatio: '16 / 9', background: '#0e0e12', flexShrink: 0 }}><ModThumb preview={m.preview} poster={m.poster} /></div>
+                  <div style={{ padding: '8px 10px 10px', display: 'flex', flexDirection: 'column', gap: 7 }}>
+                    <div style={{ fontSize: 12.5, fontWeight: 600, lineHeight: 1.3, height: '2.6em', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>{m.title}</div>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: busy ? 'wait' : 'pointer' }}>
                       <span style={{ flex: 1, minWidth: 0, color: 'var(--muted)', fontSize: 11.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{m.author ? `by ${m.author}` : ''}</span>
                       <input type="checkbox" checked={m.enabled} disabled={busy} onChange={() => tab.onToggle(m.id)} style={{ width: 17, height: 17, accentColor: 'var(--accent)', flexShrink: 0 }} />
                     </label>
                   </div>
                 </div>
+              ))}
+            </div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {shown.map((m) => (
+                <label key={m.id} className="card" style={{ display: 'flex', alignItems: 'center', gap: 11, padding: '7px 10px', borderColor: m.enabled ? 'var(--accent)' : 'var(--line)', cursor: busy ? 'wait' : 'pointer' }}>
+                  <div style={{ width: 54, height: 32, flexShrink: 0, borderRadius: 4, overflow: 'hidden', background: '#0e0e12' }}><ModThumb preview={m.preview} poster={m.poster} /></div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 12.5, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{m.title}</div>
+                    {m.author && <div style={{ color: 'var(--muted)', fontSize: 11.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>by {m.author}</div>}
+                  </div>
+                  <input type="checkbox" checked={m.enabled} disabled={busy} onChange={() => tab.onToggle(m.id)} style={{ width: 17, height: 17, accentColor: 'var(--accent)', flexShrink: 0 }} />
+                </label>
               ))}
             </div>
           )}
