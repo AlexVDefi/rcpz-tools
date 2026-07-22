@@ -689,10 +689,10 @@ function TermsGate({ onAgree }: { onAgree: () => void }) {
       <div className="card" style={{ maxWidth: 500, width: '100%' }}>
         <b style={{ fontSize: 17 }}>Welcome to PZ Survivor Studio</b>
         <p style={{ color: 'var(--muted)', fontSize: 13.5, lineHeight: 1.65, margin: '12px 0 0' }}>
-          PZ Survivor Studio is a fan-made, unofficial tool with <b style={{ color: 'var(--text)' }}>no affiliation or connection to The Indie Stone</b>.
+          PZ Survivor Studio is a fan-made, unofficial app made for non-commercial purposes, with <b style={{ color: 'var(--text)' }}>no affiliation or connection to The Indie Stone</b>.
         </p>
         <p style={{ color: 'var(--muted)', fontSize: 13.5, lineHeight: 1.65, margin: '10px 0 0' }}>
-          Thanks to The Indie Stone for creating <a href="https://projectzomboid.com/" target="_blank" rel="noopener noreferrer" style={link}>Project Zomboid</a>, which made this possible. This is an unofficial fan production for non-commercial purposes, made under the Indie Stone Terms.
+          Thanks to The Indie Stone for creating <a href="https://projectzomboid.com/" target="_blank" rel="noopener noreferrer" style={link}>Project Zomboid</a>, which made this app possible.
         </p>
         <p style={{ color: 'var(--muted)', fontSize: 13.5, lineHeight: 1.65, margin: '10px 0 0' }}>
           By using this app and the Project Zomboid assets it needs, you agree to the <a href={TERMS} target="_blank" rel="noopener noreferrer" style={link}>Indie Stone Terms &amp; Conditions</a>. Any project you create using these assets must also comply with those Terms.
