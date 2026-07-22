@@ -243,6 +243,35 @@ async function main() {
   if (!modBake && index.hairXml) addText('media/hairstyles/hairstyles.xml', index.hairXml);
   if (!modBake && index.beardXml) addText('media/hairstyles/beardstyles.xml', index.beardXml);
 
+  // --- per-language item-name translations (media/lua/shared/Translate/<LANG>/ItemName.json | .txt) ---
+  // Added as hashed binaries, not inline: all languages total a few MB, so the browser fetches only
+  // the one it needs (via the hosted source's readText, which falls through to a CDN fetch). This is
+  // what lets the built-in-assets version show localized clothing/item names + offer a language picker.
+  const transRoots = modBake ? modRoots(args.mod) : (install ? [install] : []);
+  let transCount = 0;
+  for (const root of transRoots) {
+    const tRoot = path.join(root, 'media', 'lua', 'shared', 'Translate');
+    let langDirs = [];
+    try { langDirs = fs.readdirSync(tRoot, { withFileTypes: true }).filter((e) => e.isDirectory()); } catch { continue; }
+    for (const ld of langDirs) {
+      const langDir = path.join(tRoot, ld.name);
+      let inner = [];
+      try { inner = fs.readdirSync(langDir); } catch { continue; }
+      const file = inner.find((n) => /^itemname\.json$/i.test(n)) || inner.find((n) => /^itemname_.*\.txt$/i.test(n));
+      if (!file) continue;
+      const virtualPath = `media/lua/shared/Translate/${ld.name}/${file}`;
+      if (files[virtualPath.toLowerCase?.() ?? virtualPath] || files[virtualPath]) continue; // vanilla wins if a mod re-ships a language
+      const bytes = fs.readFileSync(path.join(langDir, file));
+      const outExt = ext(file).slice(1) || 'bin';
+      const hash = sha16(bytes);
+      const fname = `${hash}.${outExt}`;
+      if (!written.has(hash)) { fs.writeFileSync(path.join(assetsDir, fname), bytes); written.add(hash); stat.bytes += bytes.length; }
+      files[virtualPath] = { kind: 'bin', hash, ext: outExt, size: bytes.length };
+      transCount++;
+    }
+  }
+  if (transCount) console.log(`Translations : ${transCount} language ItemName files`);
+
   const manifest = {
     schema: 1,
     game: 'ProjectZomboid',
