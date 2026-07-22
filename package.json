@@ -3,7 +3,7 @@
   "version": "1.3.0",
   "description": "Render Project Zomboid 3D item models to inventory icons that match the in-game look.",
   "author": "AlexVDefi",
-  "license": "GPL-3.0-or-later",
+  "license": "MIT",
   "homepage": "https://github.com/AlexVDefi/rcpz-tools",
   "repository": {
     "type": "git",

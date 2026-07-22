@@ -1,7 +1,8 @@
 # Third-party notices
 
-pz-icon-maker is licensed under the GNU General Public License v3.0 or later
-(see `LICENSE`). It bundles and/or depends on the following third-party software.
+rcpz-tools (PZ Icon Maker and PZ Survivor Studio) is licensed under the MIT
+License (see `LICENSE`). It bundles and/or depends on the following third-party
+software.
 
 | Component | License | Notes |
 |---|---|---|

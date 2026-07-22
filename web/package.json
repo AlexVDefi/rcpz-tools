@@ -2,6 +2,7 @@
   "name": "pz-character-studio",
   "private": true,
   "version": "0.0.0",
+  "license": "MIT",
   "type": "module",
   "description": "PZ Survivor Studio: a Chromium web app that reads your local Project Zomboid install + workshop mods via the File System Access API to browse, dress, pose, animate and export characters, and import a look from a save. Fully client-side.",
   "scripts": {
