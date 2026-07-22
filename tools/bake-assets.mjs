@@ -33,6 +33,7 @@ import { createNodeAssetSource } from '../shared/asset-source.js';
 import { buildAssetIndex } from '../shared/asset-index.js';
 import { createMeshConverter } from '../shared/mesh-converter.js';
 import { optimizeGlb } from './glb-optimize.mjs';
+import { buildMinimalFloorPack, FLOOR_PACK_VPATH, FLOOR_TILES } from './floor-pack.mjs';
 import {
   listClothing, listHair, listHeldItems, listClips,
   resolveBody, resolveClothing, resolveHairStyle, resolveHeldItem, resolveAttachmentPart, resolveClip,
@@ -271,6 +272,20 @@ async function main() {
     }
   }
   if (transCount) console.log(`Translations : ${transCount} language ItemName files`);
+
+  // --- scene-view floor tiles (media/texturepacks/tiles2x.floor.pack, minimal) ---
+  // Only the ~30 sprites the six floor presets use, repacked into one sub-MB atlas (see floor-pack.mjs),
+  // registered as an on-demand binary so the hosted app's Scene > Floor options work with tile blending.
+  if (!modBake && install) {
+    try {
+      const packBytes = await buildMinimalFloorPack(install);
+      const hash = sha16(packBytes);
+      const fname = `${hash}.pack`;
+      if (!written.has(hash)) { fs.writeFileSync(path.join(assetsDir, fname), packBytes); written.add(hash); stat.bytes += packBytes.length; }
+      files[FLOOR_PACK_VPATH] = { kind: 'bin', hash, ext: 'pack', size: packBytes.length };
+      console.log(`Floor pack   : ${FLOOR_TILES.length} preset tiles (${(packBytes.length / 1048576).toFixed(2)} MB)`);
+    } catch (e) { console.warn(`Floor pack   : skipped (${e.message})`); }
+  }
 
   const manifest = {
     schema: 1,
