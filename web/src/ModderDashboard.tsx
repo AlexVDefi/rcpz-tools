@@ -16,8 +16,6 @@ export function ModderDashboard({ steam }: { steam: SteamState }) {
   const [busy, setBusy] = useState<Record<string, boolean>>({});
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [confirmMod, setConfirmMod] = useState<SteamMod | null>(null); // pending single allow, awaiting co-contributor confirmation
-  const [confirmAll, setConfirmAll] = useState<string[] | null>(null); // pending bulk allow (Select all)
 
   const load = useCallback(async () => {
     if (!token) return;
@@ -44,16 +42,11 @@ export function ModderDashboard({ steam }: { steam: SteamState }) {
     finally { setBusy((b) => ({ ...b, [id]: false })); }
   }, [token, perm]);
 
-  // A card's checkbox: revoke immediately, but allowing opens the co-contributor confirmation first.
-  const onToggle = useCallback((id: string) => {
-    if (perm[id] === 'allowed') toggle(id, false);
-    else { const m = mods?.find((x) => x.id === id); if (m) setConfirmMod(m); }
-  }, [perm, toggle, mods]);
-  // Select all / Deselect all over the filtered set: revoking is immediate, allowing confirms once.
+  // Toggle a mod's hosting consent (the header line carries the blanket "you have the right" confirmation).
+  const onToggle = useCallback((id: string) => { toggle(id, perm[id] !== 'allowed'); }, [perm, toggle]);
+  // Select all / Deselect all over the filtered set: only flip the ones not already in the target state.
   const onSetMany = useCallback((ids: string[], enable: boolean) => {
-    if (!enable) { ids.forEach((id) => { if (perm[id] === 'allowed') toggle(id, false); }); return; }
-    const toAllow = ids.filter((id) => perm[id] !== 'allowed');
-    if (toAllow.length) setConfirmAll(toAllow);
+    ids.forEach((id) => { if ((perm[id] === 'allowed') !== enable) toggle(id, enable); });
   }, [perm, toggle]);
 
   const contact = (
@@ -113,7 +106,7 @@ export function ModderDashboard({ steam }: { steam: SteamState }) {
           <button className="secondary" onClick={steam.signOut} style={{ padding: '6px 12px', fontSize: 12.5 }}>Sign out</button>
         </div>
         <p style={{ color: 'var(--muted)', fontSize: 12.5, lineHeight: 1.6, margin: '12px 0 0' }}>
-          You confirm you have the right to allow hosting for each mod. {contact}
+          By allowing a mod you confirm you have the right to host all of its assets - including any parts made by other contributors, if it has them. {contact}
         </p>
         {error && <p style={{ color: '#ff8a8a', margin: '10px 0 0' }}>{error}</p>}
       </div>
@@ -124,42 +117,6 @@ export function ModderDashboard({ steam }: { steam: SteamState }) {
       )}
       {mods && mods.length > 0 && (
         <div className="card"><ModsPanel tabs={[tab]} busy={loading} divided={false} /></div>
-      )}
-
-      {confirmMod && (
-        <div onClick={() => setConfirmMod(null)} style={{ position: 'fixed', inset: 0, background: '#000a', display: 'grid', placeItems: 'center', zIndex: 100, padding: 20 }}>
-          <div className="card" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 440, width: '100%' }}>
-            <b style={{ fontSize: 15 }}>Allow hosting for this mod?</b>
-            <p style={{ color: 'var(--muted)', fontSize: 13.5, lineHeight: 1.6, margin: '10px 0 6px' }}>
-              You're about to let <b style={{ color: 'var(--text)' }}>{confirmMod.title || `Workshop item ${confirmMod.id}`}</b> be hosted so anyone can use it in the studio with no install.
-            </p>
-            <p style={{ color: 'var(--muted)', fontSize: 13.5, lineHeight: 1.6, margin: '0 0 18px' }}>
-              If <b style={{ color: 'var(--text)' }}>anyone else contributed</b> to this mod, make sure you have <b style={{ color: 'var(--text)' }}>their permission</b> first. By continuing you confirm you have the right to host all of its assets.
-            </p>
-            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-              <button className="secondary" onClick={() => setConfirmMod(null)} style={{ padding: '8px 14px' }}>Cancel</button>
-              <button onClick={() => { const m = confirmMod; setConfirmMod(null); toggle(m.id, true); }} style={{ padding: '8px 14px' }}>I have permission, allow</button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {confirmAll && (
-        <div onClick={() => setConfirmAll(null)} style={{ position: 'fixed', inset: 0, background: '#000a', display: 'grid', placeItems: 'center', zIndex: 100, padding: 20 }}>
-          <div className="card" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 440, width: '100%' }}>
-            <b style={{ fontSize: 15 }}>Allow hosting for {confirmAll.length} mod{confirmAll.length === 1 ? '' : 's'}?</b>
-            <p style={{ color: 'var(--muted)', fontSize: 13.5, lineHeight: 1.6, margin: '10px 0 6px' }}>
-              Their assets will be downloaded from the Workshop and hosted so anyone can use them in the studio with no install.
-            </p>
-            <p style={{ color: 'var(--muted)', fontSize: 13.5, lineHeight: 1.6, margin: '0 0 18px' }}>
-              If <b style={{ color: 'var(--text)' }}>anyone else contributed</b> to any of them, make sure you have <b style={{ color: 'var(--text)' }}>their permission</b> first. By continuing you confirm you have the right to host all of their assets.
-            </p>
-            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-              <button className="secondary" onClick={() => setConfirmAll(null)} style={{ padding: '8px 14px' }}>Cancel</button>
-              <button onClick={() => { const ids = confirmAll; setConfirmAll(null); ids.forEach((id) => toggle(id, true)); }} style={{ padding: '8px 14px' }}>I have permission, allow all</button>
-            </div>
-          </div>
-        </div>
       )}
     </div>
   );
