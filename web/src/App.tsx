@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { buildAssetIndex } from '@shared/asset-index.js';
 import { listClothing, listClips, listHair, listHeldItems } from '@shared/character-core.js';
 import { createFsaAssetSource } from './platform/fsa-source';
+import { loadHostedSource } from './platform/hosted-source';
 import { discoverWorkshopMods, modSources, type DiscoveredMod } from './platform/mod-discovery';
 import { idbCache, hasPermission, requestPermission, storageUsage } from './platform/idb';
 import { pickDirectory, saveDir, loadDir, fileAccessSupported, isDesktop } from './platform/platform';
@@ -133,9 +134,42 @@ export function App() {
     }
   }, []);
 
+  // Load a hosted asset bundle (tools/bake-assets.mjs) instead of a local install. Produces
+  // the same index the FSA path does, so the rest of the app is unchanged. Reached via
+  // ?assets=<baseUrl> for now; becomes the no-install default once R2-hosted.
+  const rebuildHosted = useCallback(async (baseUrl: string) => {
+    if (fadeTimer.current) { clearTimeout(fadeTimer.current); fadeTimer.current = null; }
+    setPhase('scanning'); setOverlay('in'); setError('');
+    const t0 = performance.now();
+    try {
+      const { source, manifest } = await loadHostedSource(baseUrl, { id: 'hosted' });
+      const idx = await buildAssetIndex([source], { onProgress: (p: Scan) => setScan(p) });
+      const clothing = listClothing(idx);
+      const { hair, beards } = listHair(idx);
+      setCounts({
+        clothing: clothing.length, clips: listClips(idx).length, held: listHeldItems(idx).length,
+        hairM: hair.male.length, hairF: hair.female.length, beards: beards.length, modClothing: 0,
+      });
+      setIndex(idx);
+      setProgress(`hosted assets (${manifest.version}) in ${((performance.now() - t0) / 1000).toFixed(1)}s`);
+      setPhase('ready');
+    } catch (e) { setError(e instanceof Error ? e.message : String(e)); setPhase('error'); }
+    finally {
+      setOverlay('out');
+      fadeTimer.current = window.setTimeout(() => { setOverlay(null); setScan(null); fadeTimer.current = null; }, 480);
+    }
+  }, []);
+
+  // ?assets=<baseUrl> loads a hosted bundle (validation entry point).
+  useEffect(() => {
+    const url = new URLSearchParams(window.location.search).get('assets');
+    if (url) rebuildHosted(url);
+  }, [rebuildHosted]);
+
   // restore install (+ workshop mods) on load
   useEffect(() => {
     if (!fsaSupported) return;
+    if (new URLSearchParams(window.location.search).get('assets')) return; // hosted path owns this load
     (async () => {
       const inst = await loadDir(INSTALL_KEY);
       if (!inst) return;

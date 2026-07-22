@@ -1,18 +1,25 @@
-// Shared glb optimizer for the bake pipeline. Two steps, both safe because the app assigns
-// its own ShaderMaterial to every loaded mesh and ignores the glb's material:
-//   1. stripExternalRefs - drop the dangling external material/texture/image refs assimp
-//      emits (they point at textures we ship separately), which also unblocks the reader.
-//   2. resample + meshopt - drop redundant animation keyframes (lossless) and quantize +
-//      compress geometry and animation buffers into EXT_meshopt_compression. The browser
-//      decodes these with MeshoptDecoder; plain (uncompressed) glbs still load without it,
-//      so a fallback that only strips is always safe.
+// Shared glb optimizer for the bake pipeline.
 //
-// PZ uses tiled UVs, so meshopt leaves TEXCOORD_0 unquantized (accurate mapping) - that is
-// the "out of [0,1] range" notice, not an error.
+//   1. stripExternalRefs - drop the dangling external material/texture/image refs assimp
+//      emits (they point at textures we ship separately). Safe: the app assigns its own
+//      ShaderMaterial to every loaded mesh and never reads the glb's material. Also unblocks
+//      the gltf-transform reader.
+//   2. dedup + prune + resample - lossless: merge duplicate accessors, drop unused data, and
+//      remove redundant animation keyframes.
+//   3. EXT_meshopt_compression with the FILTER method - and crucially NOT quantize().
+//      This app does its own character rig retargeting that reads the RAW inverse-bind
+//      matrices and bone rotations (see render/anim.js bindWorldFromSkin), so quantization -
+//      which rescales geometry into a quantization volume and folds the factor into the skin
+//      IBMs - corrupts the bind pose and mis-orients everything. The FILTER method keeps the
+//      IBM values intact (verified byte-for-byte) while still compressing ~60%, and its output
+//      supercompresses (gzip/brotli) better than QUANTIZE would.
+//
+// The browser decodes these with MeshoptDecoder; a fallback that only strips is a valid plain
+// glb that loads without it.
 
 import { NodeIO } from '@gltf-transform/core';
-import { ALL_EXTENSIONS } from '@gltf-transform/extensions';
-import { dedup, prune, resample, meshopt } from '@gltf-transform/functions';
+import { ALL_EXTENSIONS, EXTMeshoptCompression } from '@gltf-transform/extensions';
+import { dedup, prune, resample } from '@gltf-transform/functions';
 import { MeshoptEncoder, MeshoptDecoder } from 'meshoptimizer';
 
 const GLB_MAGIC = 0x46546c67, JSON_TYPE = 0x4e4f534a, BIN_TYPE = 0x004e4942;
@@ -59,12 +66,14 @@ async function getIO() {
  * failure so the output is always a valid, loadable glb.
  * @returns {Promise<{ bytes: Uint8Array, compressed: boolean }>}
  */
-export async function optimizeGlb(glbBytes, { level = 'medium' } = {}) {
+export async function optimizeGlb(glbBytes) {
   const stripped = stripExternalRefs(glbBytes);
   try {
     const io = await getIO();
     const doc = await io.readBinary(stripped);
-    await doc.transform(dedup(), prune(), resample(), meshopt({ encoder: MeshoptEncoder, level }));
+    await doc.transform(dedup(), prune(), resample());
+    doc.createExtension(EXTMeshoptCompression).setRequired(true)
+      .setEncoderOptions({ method: EXTMeshoptCompression.EncoderMethod.FILTER });
     return { bytes: await io.writeBinary(doc), compressed: true };
   } catch {
     return { bytes: stripped, compressed: false };

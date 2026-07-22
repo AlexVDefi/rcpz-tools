@@ -48,14 +48,13 @@ const mb = (n) => (n / 1048576).toFixed(1) + ' MB';
 
 // --- args ---
 function parseArgs(argv) {
-  const a = { install: null, version: 'unknown', out: null, limitClips: 0, compress: true, level: 'medium' };
+  const a = { install: null, version: 'unknown', out: null, limitClips: 0, compress: true };
   for (let i = 0; i < argv.length; i++) {
     const v = argv[i];
     if (v === '--install') a.install = argv[++i];
     else if (v === '--version') a.version = argv[++i];
     else if (v === '--out') a.out = argv[++i];
     else if (v === '--limit-clips') a.limitClips = parseInt(argv[++i], 10) || 0;
-    else if (v === '--level') a.level = argv[++i];
     else if (v === '--no-compress') a.compress = false;
     else if (v === '-h' || v === '--help') a.help = true;
   }
@@ -141,27 +140,32 @@ async function main() {
   const files = {};                        // virtualPath -> { kind:'bin', hash, ext, size } | { kind:'text', text }
   const written = new Set();
   const stat = { mesh: 0, clip: 0, texture: 0, other: 0, bytes: 0, failed: 0, glbRaw: 0, glbOut: 0, uncompressed: 0 };
-  console.log(args.compress ? `Converting + compressing (meshopt level=${args.level}) ...` : 'Converting (no compression) ...');
+  console.log(args.compress ? 'Converting + compressing (meshopt FILTER, lossless rig) ...' : 'Converting (no compression) ...');
 
   let done = 0;
   for (const { realPath, bytes } of refs.values()) {
     const e = ext(realPath);
+    const isClip = realPath.toLowerCase().includes('/anims_x/');
     let outBytes, outExt, virtualPath, kind;
     try {
-      if (MESH_EXTS.has(e)) {
+      // Meshes (models_x) -> glb + meshopt. Animation CLIPS stay in their native format:
+      // the app routes clips by extension, and only the native (.x) path plays vanilla clips
+      // upright - a pre-converted .glb clip takes the foreign-skeleton retarget path and
+      // mis-orients. Clips convert to glb in-browser on play, exactly like a local install.
+      if (MESH_EXTS.has(e) && !isClip) {
         const glb = await converter.convertToGlb(bytes, e.slice(1));
         stat.glbRaw += glb.length;
         if (args.compress) {
-          const r = await optimizeGlb(glb, { level: args.level });
+          const r = await optimizeGlb(glb);
           outBytes = r.bytes; if (!r.compressed) stat.uncompressed++;
         } else outBytes = glb;
         stat.glbOut += outBytes.length;
         outExt = 'glb';
         virtualPath = realPath.slice(0, realPath.length - e.length) + '.glb';
-        kind = realPath.toLowerCase().includes('/anims_x/') ? 'clip' : 'mesh';
+        kind = 'mesh';
       } else {
         outBytes = bytes; outExt = e.slice(1) || 'bin'; virtualPath = realPath;
-        kind = e === '.png' ? 'texture' : 'other';
+        kind = isClip ? 'clip' : (e === '.png' ? 'texture' : 'other');
       }
     } catch (err) { stat.failed++; errors.push(`convert ${realPath}: ${err.message}`); continue; }
 
@@ -195,7 +199,7 @@ async function main() {
     // glbs are EXT_meshopt_compression when compression is on: the browser GLTFLoader needs
     // a MeshoptDecoder to parse them (plain glbs still load without it).
     meshopt: args.compress,
-    meshoptLevel: args.compress ? args.level : null,
+    meshoptMethod: args.compress ? 'filter' : null,
     counts: {
       clothing: clothing.length, hair: hair.male.length + hair.female.length, beards: beards.length,
       held: held.length, clips: clipsToBake.length,
@@ -210,8 +214,8 @@ async function main() {
 
   const manifestSize = fs.statSync(manifestPath).size;
   console.log('\nBaked:');
-  console.log(`  meshes        ${stat.mesh}`);
-  console.log(`  clip meshes   ${stat.clip}`);
+  console.log(`  meshes        ${stat.mesh}  (glb + meshopt)`);
+  console.log(`  clips         ${stat.clip}  (native .x, in-browser convert)`);
   console.log(`  textures      ${stat.texture}`);
   if (args.compress) {
     const cut = stat.glbRaw ? (1 - stat.glbOut / stat.glbRaw) * 100 : 0;

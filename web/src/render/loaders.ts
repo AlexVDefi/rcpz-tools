@@ -1,6 +1,7 @@
 // Byte -> three loaders (browser). Replaces renderCore.js's file:// loaders.
 import * as THREE from 'three';
 import { GLTFLoader, type GLTF } from 'three/addons/loaders/GLTFLoader.js';
+import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
 
 // assimp's glb export references each material's ORIGINAL texture by bare filename
 // (e.g. "MaleBody02a.png"). We never use those - every mesh's material is replaced with
@@ -11,6 +12,9 @@ const BLANK_PX = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAf
 const manager = new THREE.LoadingManager();
 manager.setURLModifier((url) => (/\.(png|jpe?g|tga|bmp|dds|gif)$/i.test(url) ? BLANK_PX : url));
 const gltfLoader = new GLTFLoader(manager);
+// Hosted bundles ship EXT_meshopt_compression glbs; the decoder is only invoked when the
+// extension is present, so uncompressed (local) glbs are unaffected.
+gltfLoader.setMeshoptDecoder(MeshoptDecoder);
 
 /** Parse self-contained glb bytes (from the WASM converter) into a GLTF result. */
 export function glbToGltf(bytes: Uint8Array): Promise<GLTF> {
