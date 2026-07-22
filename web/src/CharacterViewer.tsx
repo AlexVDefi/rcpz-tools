@@ -50,6 +50,10 @@ type CharPreset = {
   held: { name: string; hand: 'right' | 'left'; hidden: boolean; attachments: { slot: string; option: AttachOption }[] }[];
   scene: ScenePreset;
 };
+// Auto-saved working character (localStorage). Stored WITHOUT the thumb data-URL, so it stays a few
+// KB - no bloat - and a single key that's overwritten, never accumulated. Restored on next open.
+const AUTOSAVE_KEY = 'pz-char-autosave';
+const readAutosave = (): CharPreset | null => { try { const r = localStorage.getItem(AUTOSAVE_KEY); return r ? (JSON.parse(r) as CharPreset) : null; } catch { return null; } };
 const favKey = (kind: FavKind, name: string) => `${kind}:${name}`;
 // Curated material presets: each scatters random variants into a baked, non-repetitive floor.
 // blends_natural_01 is grouped in 16-index material blocks; the SOLID tiles are at offsets
@@ -114,8 +118,11 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
   const charNameRef = useRef<string | null>(null);
   const emitCharName = (n: string | null) => { charNameRef.current = n; onCharacterName?.(n); };
   const [importOpen, setImportOpen] = useState(false);
-  const [gender, setGender] = useState<'male' | 'female'>('male');
-  const [skin, setSkin] = useState<string>((SKIN_TONES as Record<string, string[]>).male[0]);
+  // Restore the last worked-on character: seed gender/skin from the autosave so the first body load
+  // frames the right body, and queue the full look as a pending preset the load effect applies.
+  const bootChar = useRef<CharPreset | null>(readAutosave());
+  const [gender, setGender] = useState<'male' | 'female'>(bootChar.current?.gender || 'male');
+  const [skin, setSkin] = useState<string>(bootChar.current?.skin || (SKIN_TONES as Record<string, string[]>)[bootChar.current?.gender || 'male'][0]);
   const tones = (SKIN_TONES as Record<string, string[]>)[gender];
   const [status, setStatus] = useState('loading body…');
   const [nowPlaying, setNowPlaying] = useState('');
@@ -162,8 +169,10 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
   const [presets, setPresets] = useState<Record<string, CharPreset>>(() => { try { return JSON.parse(localStorage.getItem('pz-char-presets') || '{}'); } catch { return {}; } });
   useEffect(() => { localStorage.setItem('pz-char-presets', JSON.stringify(presets)); }, [presets]);
   const [presetsOpen, setPresetsOpen] = useState(false);
-  const pendingPresetRef = useRef<CharPreset | null>(null);
+  const pendingPresetRef = useRef<CharPreset | null>(bootChar.current); // restore the autosaved look on first load
   const applyPresetLookRef = useRef<((p: CharPreset) => Promise<void>) | null>(null);
+  const initedGenderRef = useRef<string | null>(null); // gender whose body has had its look applied (avoids a re-run wiping it)
+  const bootedRef = useRef(false); // first body load + restore done -> safe to start auto-saving
   const scrubRef = useRef<HTMLInputElement>(null);
   const scrubbingRef = useRef(false);
 
@@ -254,7 +263,9 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
         setStatus(''); setEquipTick((t) => t + 1);
         if (pendingImportRef.current) { const p = pendingImportRef.current; pendingImportRef.current = null; await applyLookRef.current?.(p); }
         else if (pendingPresetRef.current) { const p = pendingPresetRef.current; pendingPresetRef.current = null; await applyPresetLookRef.current?.(p); }
-        else setSkin((SKIN_TONES as Record<string, string[]>)[gender][0]); // gender load resets to the default tone
+        else if (initedGenderRef.current !== gender) setSkin((SKIN_TONES as Record<string, string[]>)[gender][0]); // fresh gender -> default tone
+        // (same gender re-run, e.g. when the idle clip finishes loading, leaves the current look alone)
+        initedGenderRef.current = gender; bootedRef.current = true;
         if (!startedRef.current && idleClip) {
           startedRef.current = true;
           try { await eng.playClip(idleClip); setPlaying(true); } catch { /* non-fatal */ }
@@ -422,7 +433,7 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
   };
   const cloud: CloudCtl = {
     signedIn: !!auth.user, ready: auth.ready, onSignIn: onRequestSignIn,
-    share: shareExport, sharing, shareUrl, sharePlayerUrl: shareKey ? playerUrl(shareKey) : null,
+    share: shareExport, sharing, shareUrl, shareKey, sharePlayerUrl: shareKey ? playerUrl(shareKey) : null,
     shareErr, clearResult: () => { setShareUrl(null); setShareKey(null); setShareErr(''); },
     used: cloudUploads.used, limit: cloudUploads.limit, rows: cloudUploads.rows, removeUpload: cloudUploads.remove,
   };
@@ -515,6 +526,33 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
   };
   const savePreset = async (name: string) => { const n = name.trim(); if (!n) return; const thumb = capturePreview(); setPresets((p) => ({ ...p, [n]: { ...buildPreset(n), thumb } })); emitCharName(n); };
   const deletePreset = (name: string) => setPresets((p) => { const n = { ...p }; delete n[name]; return n; });
+  const duplicatePreset = (preset: CharPreset) => setPresets((p) => {
+    const base = preset.name.replace(/ copy( \d+)?$/, '') + ' copy';
+    let name = base, i = 2; while (p[name]) name = `${base} ${i++}`;
+    return { ...p, [name]: { ...preset, name } };
+  });
+  // Auto-save the working character (debounced) after any change, once the initial load/restore is
+  // done. buildPreset carries no thumb, so the payload is small and the single key is overwritten.
+  useEffect(() => {
+    if (!bootedRef.current || status) return;
+    const id = setTimeout(() => {
+      try { localStorage.setItem(AUTOSAVE_KEY, JSON.stringify(buildPreset(charNameRef.current || ''))); } catch { /* quota/serialise - ignore */ }
+    }, 500);
+    return () => clearTimeout(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [gender, skin, hairSel, hairColor, beardSel, beardColor, equipTick, bg, turntable, camPreset, studioAspect, facing, floorSel, light, grid, shadow, status]);
+  // Clear the current character to a clean default (keeps gender + scene): the "New character" button.
+  const newCharacter = async () => {
+    const eng = engineRef.current; if (!eng) return;
+    setHairSel('None'); setHairColor('#5a3a20'); setBeardSel('None'); setBeardColor('#5a3a20');
+    await eng.applyPart('hair', { name: 'None' }, null).catch(() => {});
+    await eng.applyPart('beard', { name: 'None' }, null).catch(() => {});
+    await eng.clearAllClothing().catch(() => {});
+    await eng.clearAllHeld().catch(() => {});
+    const tone0 = (SKIN_TONES as Record<string, string[]>)[gender][0];
+    setSkin(tone0); await eng.setSkin(tone0).catch(() => {});
+    setEquipTick((t) => t + 1); emitCharName(null); setNowPlaying('new character');
+  };
   const applyPresetLook = async (preset: CharPreset) => {
     const eng = engineRef.current; if (!eng) return;
     setSkin(preset.skin); await eng.setSkin(preset.skin).catch(() => {});
@@ -530,8 +568,8 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
     for (const h of preset.held) { const item = held.find((x) => x.name === h.name); if (item) { try { await eng.toggleHeld(item, h.hand); for (const a of h.attachments) await eng.setHeldAttachment(h.name, a.slot, a.option); if (h.hidden) await eng.setItemHidden(h.name, true); } catch { /* skip */ } } }
     applyScene(preset.scene);
     setEquipTick((t) => t + 1);
-    setNowPlaying(`loaded ${preset.name}`);
-    emitCharName(preset.name);
+    setNowPlaying(preset.name ? `loaded ${preset.name}` : ''); // an unnamed look is the restored working char
+    emitCharName(preset.name || null);
   };
   applyPresetLookRef.current = applyPresetLook;
   const applyPreset = async (preset: CharPreset) => {
@@ -615,7 +653,7 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
           }}
           renderThumb={(it) => <Thumb depKey={`h:${it.name}`} getUrl={() => thumbs.held(it)} />} />
       )}
-      {tab === 'character' && <CharacterTab hairData={hairData} gender={gender} setGender={setGender} skin={skin} tones={tones} onSkin={(t) => { setSkin(t); engineRef.current?.setSkin(t); }} thumbs={thumbs} hairSel={hairSel} beardSel={beardSel} hairColor={hairColor} beardColor={beardColor} onPickPart={applyHairPart} onRecolour={recolourPart} favs={favs} onToggleFav={toggleFav} onImport={() => setImportOpen(true)}
+      {tab === 'character' && <CharacterTab hairData={hairData} gender={gender} setGender={setGender} skin={skin} tones={tones} onSkin={(t) => { setSkin(t); engineRef.current?.setSkin(t); }} thumbs={thumbs} hairSel={hairSel} beardSel={beardSel} hairColor={hairColor} beardColor={beardColor} onPickPart={applyHairPart} onRecolour={recolourPart} favs={favs} onToggleFav={toggleFav} onImport={() => setImportOpen(true)} onNew={() => { void newCharacter(); }}
         savedCount={Object.keys(presets).length} onOpenSaved={() => setPresetsOpen(true)} />}
       {tab === 'export' && (
         <div style={{ padding: 12, overflow: 'auto', height: '100%' }}>
@@ -629,7 +667,7 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
   return (
     <div ref={containerRef} style={{ display: 'flex', flexDirection: isMobile ? 'column' : 'row', gap: isMobile ? 8 : 0, height: isMobile ? (mobileViewH || '80vh') : 'calc(100vh - 128px)', minHeight: isMobile ? 0 : 460 }}>
       {importOpen && <ImportModal onClose={() => setImportOpen(false)} onImport={applyImport} />}
-      {presetsOpen && <PresetsModal presets={presets} onClose={() => setPresetsOpen(false)} onSave={savePreset} onLoad={(p) => { void applyPreset(p); setPresetsOpen(false); }} onDelete={deletePreset} />}
+      {presetsOpen && <PresetsModal presets={presets} onClose={() => setPresetsOpen(false)} onSave={savePreset} onLoad={(p) => { void applyPreset(p); setPresetsOpen(false); }} onDelete={deletePreset} onDuplicate={duplicatePreset} />}
       <div style={{ flex: 1, minHeight: 0, minWidth: isMobile ? 0 : 320, position: 'relative', background: '#14141a', border: '1px solid var(--line)', borderRadius: 8, overflow: 'hidden' }}>
         {/* studio layer: background sits behind the (transparent) WebGL canvas. With a framing
             aspect it's clipped to the viewfinder rect (outside stays the neutral letterbox); in
@@ -963,7 +1001,7 @@ interface CloudCtl {
   signedIn: boolean; ready: boolean; onSignIn: () => void;
   share: (kind: 'png' | 'gif' | 'mp4') => void;
   sharing: { phase: 'render' | 'upload'; progress: number } | null;
-  shareUrl: string | null; sharePlayerUrl: string | null; shareErr: string; clearResult: () => void;
+  shareUrl: string | null; shareKey: string | null; sharePlayerUrl: string | null; shareErr: string; clearResult: () => void;
   used: number; limit: number; rows: UploadRow[]; removeUpload: (key: string) => void;
 }
 
@@ -1082,6 +1120,13 @@ function ExportSection({ studio, cloud }: { studio: StudioCtl; cloud: CloudCtl }
 // explainer, and the user's list of shares.
 function ShareSection({ cloud, busy, label }: { cloud: CloudCtl; busy: boolean; label: React.CSSProperties }) {
   const over = cloud.used >= cloud.limit;
+  // The most recent share: the one just made this session, else the newest stored row (rows are
+  // newest-first), so its links persist across reloads. The full history lives in the Shared tab.
+  const latest = cloud.shareUrl
+    ? { url: cloud.shareUrl, player: cloud.sharePlayerUrl, key: cloud.shareKey }
+    : cloud.rows[0]
+      ? { url: cloud.rows[0].url, player: playerUrl(cloud.rows[0].key), key: cloud.rows[0].key }
+      : null;
   return (
     <div style={{ marginTop: 20, paddingTop: 12, borderTop: '1px solid var(--line)' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -1112,15 +1157,13 @@ function ShareSection({ cloud, busy, label }: { cloud: CloudCtl; busy: boolean; 
               </span>
             )}
           </div>
-          {over && <div style={{ color: '#ffb454', fontSize: 11.5, marginTop: 6 }}>You are at your storage limit. Delete a share below to free space.</div>}
+          {over && <div style={{ color: '#ffb454', fontSize: 11.5, marginTop: 6 }}>You are at your storage limit. Delete a share to free space.</div>}
           {cloud.shareErr && <div style={{ color: '#ff8a8a', fontSize: 12, marginTop: 6 }}>{cloud.shareErr}</div>}
-          {cloud.shareUrl && <ShareResult url={cloud.shareUrl} playerUrl={cloud.sharePlayerUrl} onClose={cloud.clearResult} />}
+          {latest && <ShareResult url={latest.url} playerUrl={latest.player} onDelete={async () => { if (latest.key) await cloud.removeUpload(latest.key); cloud.clearResult(); }} />}
 
           <div style={{ color: 'var(--muted)', fontSize: 11, lineHeight: 1.55, marginTop: 10 }}>
-            Each account gets 100 MB of cloud storage. This is a free web app and I can't afford much storage, so the cap keeps it sustainable. You can always export locally (above) and upload it wherever you like to share it.
+            Each account gets 100 MB of cloud storage. This is a free web app and I can't afford much storage, so the cap keeps it sustainable. Manage all your shares in the Shared tab; you can always export locally (above) too.
           </div>
-
-          {cloud.rows.length > 0 && <MyShares rows={cloud.rows} onRemove={cloud.removeUpload} />}
         </>
       )}
     </div>
@@ -1143,18 +1186,21 @@ function UsageBar({ used, limit }: { used: number; limit: number }) {
   );
 }
 
-function ShareResult({ url, playerUrl, onClose }: { url: string; playerUrl: string | null; onClose: () => void }) {
+function ShareResult({ url, playerUrl, onDelete }: { url: string; playerUrl: string | null; onDelete: () => Promise<void> }) {
   const [copied, setCopied] = useState<'' | 'file' | 'player'>('');
+  const [deleting, setDeleting] = useState(false);
   const copy = async (which: 'file' | 'player', value: string) => { try { await navigator.clipboard.writeText(value); setCopied(which); setTimeout(() => setCopied(''), 1500); } catch { /* clipboard blocked */ } };
+  const del = async () => { setDeleting(true); try { await onDelete(); } catch { setDeleting(false); } };
   const openBtn = { padding: '6px 10px', fontSize: 12, textDecoration: 'none', display: 'inline-flex', alignItems: 'center', borderRadius: 6, border: '1px solid var(--line)', background: 'var(--panel)', color: 'var(--text)' } as const;
   const inputStyle = { flex: 1, minWidth: 0, background: '#14141a', color: 'var(--text)', border: '1px solid var(--line)', borderRadius: 6, padding: '6px 8px', fontSize: 12 } as const;
   const linkLabel = { width: 92, flexShrink: 0, whiteSpace: 'nowrap', fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.02em' } as const;
   return (
     <div style={{ marginTop: 10, background: '#0e1524', border: '1px solid #2a3a5a', borderRadius: 8, padding: 10 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8, marginBottom: 8 }}>
-        <span style={{ fontSize: 12, color: '#7ea6ff', fontWeight: 600, lineHeight: 1.45 }}>Share just the raw media file, or a detailed view that shows the equipped gear.</span>
-        <span role="button" onClick={onClose} title="dismiss" style={{ cursor: 'pointer', color: 'var(--muted)', flexShrink: 0 }}>✕</span>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+        <span style={{ fontSize: 10.5, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.05em', color: 'var(--accent)' }}>Most recent share</span>
+        <button className="secondary" disabled={deleting} onClick={del} title="delete this share" style={{ padding: '2px 8px', fontSize: 11, color: '#ff6b6b', flexShrink: 0 }}>{deleting ? '…' : 'Delete'}</button>
       </div>
+      <div style={{ fontSize: 12, color: '#7ea6ff', fontWeight: 600, lineHeight: 1.45, marginBottom: 8 }}>Share just the raw media file, or a detailed view that shows the equipped gear.</div>
       <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
         <span style={{ ...linkLabel, color: 'var(--muted)' }} title="The raw image or video file on its own">File</span>
         <input readOnly value={url} onFocus={(e) => e.currentTarget.select()} style={inputStyle} />
@@ -1173,28 +1219,6 @@ function ShareResult({ url, playerUrl, onClose }: { url: string; playerUrl: stri
   );
 }
 
-function MyShares({ rows, onRemove }: { rows: UploadRow[]; onRemove: (key: string) => void }) {
-  const [busyKey, setBusyKey] = useState<string | null>(null);
-  const del = async (key: string) => { setBusyKey(key); try { await onRemove(key); } catch { /* surfaced elsewhere */ } finally { setBusyKey(null); } };
-  const copy = (url: string) => { navigator.clipboard?.writeText(url).catch(() => {}); };
-  return (
-    <div style={{ marginTop: 12 }}>
-      <div style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '.05em', color: 'var(--muted)', marginBottom: 6 }}>Your shares ({rows.length})</div>
-      <div style={{ display: 'grid', gap: 4, maxHeight: 210, overflow: 'auto' }}>
-        {rows.map((r) => (
-          <div key={r.id} style={{ display: 'flex', alignItems: 'center', gap: 6, background: '#14141a', border: '1px solid var(--line)', borderRadius: 7, padding: '5px 8px' }}>
-            <span style={{ fontSize: 9, color: 'var(--muted)', border: '1px solid var(--line)', borderRadius: 3, padding: '0 4px', textTransform: 'uppercase' }}>{r.kind || '?'}</span>
-            <span style={{ flex: 1, minWidth: 0, fontSize: 11.5, color: 'var(--muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={r.url}>{new Date(r.created_at).toLocaleDateString()} · {fmtBytes(r.size)}</span>
-            <button className="secondary" onClick={() => copy(r.url)} title="copy link" style={{ padding: '2px 8px', fontSize: 11 }}>Copy</button>
-            <a href={r.url} target="_blank" rel="noopener noreferrer" title="open" style={{ padding: '2px 8px', fontSize: 11, textDecoration: 'none', border: '1px solid var(--line)', borderRadius: 6, color: 'var(--text)', display: 'inline-flex', alignItems: 'center' }}>Open</a>
-            <button className="secondary" disabled={busyKey === r.key} onClick={() => del(r.key)} title="delete" style={{ padding: '2px 8px', fontSize: 12, color: '#ff6b6b' }}>{busyKey === r.key ? '…' : '✕'}</button>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
 const hexRgb = (hex: string) => { const n = parseInt(hex.slice(1), 16); return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255]; };
 const toHairItem = (s: HairStyle): HairItem => ({ ...s, key: s.name, label: s.name, facet: firstLetter(s.name), isMod: false });
 const NONE_HAIR: HairItem = { name: 'None', key: 'None', label: 'None', facet: '·', isMod: false };
@@ -1202,7 +1226,7 @@ const NONE_HAIR: HairItem = { name: 'None', key: 'None', label: 'None', facet: '
 // Character tab: identity (gender + skin texture) as a compact header, then a browsable
 // thumbnail grid for the active appearance kind (Hair or Beard) filling the rest. Selection
 // and colour are lifted to the parent so the Favorites tab stays in sync.
-function CharacterTab({ hairData, gender, setGender, skin, tones, onSkin, thumbs, hairSel, beardSel, hairColor, beardColor, onPickPart, onRecolour, favs, onToggleFav, onImport, savedCount, onOpenSaved }: {
+function CharacterTab({ hairData, gender, setGender, skin, tones, onSkin, thumbs, hairSel, beardSel, hairColor, beardColor, onPickPart, onRecolour, favs, onToggleFav, onImport, onNew, savedCount, onOpenSaved }: {
   hairData: HairData;
   gender: 'male' | 'female';
   setGender: (g: 'male' | 'female') => void;
@@ -1219,6 +1243,7 @@ function CharacterTab({ hairData, gender, setGender, skin, tones, onSkin, thumbs
   favs: Set<string>;
   onToggleFav: (kind: FavKind, name: string) => void;
   onImport: () => void;
+  onNew: () => void;
   savedCount: number;
   onOpenSaved: () => void;
 }) {
@@ -1240,11 +1265,14 @@ function CharacterTab({ hairData, gender, setGender, skin, tones, onSkin, thumbs
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
       <div style={{ padding: 12, borderBottom: '1px solid var(--line)' }}>
         <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
-          <button className="secondary" onClick={onOpenSaved} style={{ flex: 1, padding: '8px 12px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}>
-            <span style={{ fontSize: 14 }}>★</span> Saved characters{savedCount ? ` (${savedCount})` : ''}
+          <button className="secondary" onClick={onOpenSaved} style={{ flex: 1, minWidth: 0, padding: '8px 12px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}>
+            <span style={{ fontSize: 14 }}>★</span> Saved{savedCount ? ` (${savedCount})` : ''}
           </button>
-          {!isMobile && <button className="secondary" onClick={onImport} style={{ flex: 1, padding: '8px 12px', background: 'var(--accent)', color: '#fff' }}>Import from a PZ save file…</button>}
+          <button className="secondary" onClick={onNew} title="Start a fresh, clean character" style={{ flex: 1, minWidth: 0, padding: '8px 12px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}>
+            <span style={{ fontSize: 15, lineHeight: 1 }}>＋</span> New character
+          </button>
         </div>
+        {!isMobile && <button className="secondary" onClick={onImport} style={{ width: '100%', padding: '8px 12px', marginBottom: 12, background: 'var(--accent)', color: '#fff' }}>Import from a PZ save file…</button>}
         <label style={{ color: 'var(--muted)', fontSize: 12 }}>Gender</label>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', margin: '4px 0 12px' }}>
           <div style={{ display: 'flex', border: '1px solid var(--line)', borderRadius: 6, overflow: 'hidden' }}>
@@ -1287,12 +1315,13 @@ function CharacterTab({ hairData, gender, setGender, skin, tones, onSkin, thumbs
 }
 
 // Modal: gallery of saved characters, each with a preview snapshot; save the current one, load or delete.
-function PresetsModal({ presets, onClose, onSave, onLoad, onDelete }: {
+function PresetsModal({ presets, onClose, onSave, onLoad, onDelete, onDuplicate }: {
   presets: Record<string, CharPreset>;
   onClose: () => void;
   onSave: (name: string) => Promise<void>;
   onLoad: (preset: CharPreset) => void;
   onDelete: (name: string) => void;
+  onDuplicate: (preset: CharPreset) => void;
 }) {
   const [name, setName] = useState('');
   const [saving, setSaving] = useState(false);
@@ -1324,6 +1353,7 @@ function PresetsModal({ presets, onClose, onSave, onLoad, onDelete }: {
                     </button>
                     <div className="preset-foot">
                       <span className="preset-name" title={p.name}>{p.name}</span>
+                      <button className="preset-del" title="duplicate" onClick={() => onDuplicate(p)} style={{ color: 'var(--muted)' }}>⧉</button>
                       <button className="preset-del" title="delete" onClick={() => onDelete(p.name)}>✕</button>
                     </div>
                   </div>
