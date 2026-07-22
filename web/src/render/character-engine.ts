@@ -191,6 +191,19 @@ export class CharacterEngine {
     this.onCamMode?.('orbit');
   }
 
+  /** Reset the free-orbit camera to the default centred framing (whole body, straight-on) - the same
+   *  view a freshly loaded body gets. Re-clicking the orbit button uses this for a quick reset after
+   *  panning / zooming / rotating. On mobile (autoFrame) it finishes with the tight silhouette fit. */
+  recenter() {
+    this.camMode = 'orbit'; this.preset = 'orbit'; this.camera = this.perspCam;
+    const b = this.bodyBounds, st = this.orbit.state;
+    const cy = b ? (b.minY + b.maxY) / 2 : 0.5, h = b ? b.maxY - b.minY : 1;
+    st.theta = Math.PI / 2; st.phi = Math.PI * 0.42; st.radius = Math.max(h, 1) * 1.9;
+    this.orbit.setTarget(new THREE.Vector3(0, cy, 0)); // copies + applies
+    this.onCamMode?.('orbit');
+    if (this.autoFrame && this.bodyMeshes.length) this.frameToBody();
+  }
+
   /** Fit the whole body in view, centered, keeping the current orbit angle. This rig's retarget
    *  skinning renders the mesh nowhere near what Box3/skeleton report (bind bounds are ~half height and
    *  the wrong centre; a plain offscreen render also mis-skins it), so we render the real frame

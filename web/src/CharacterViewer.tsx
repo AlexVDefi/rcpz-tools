@@ -305,6 +305,9 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
     const e = engineRef.current; e?.applyCameraPreset(p);
     if (p === 'front' || p === 'portrait') { setFacing(0); e?.setFacing(0); }
   };
+  // Re-clicking the orbit button (already in orbit) snaps back to the default centred view - a quick
+  // reset after panning/zooming. Restores auto-framing so mobile gets the tight silhouette fit again.
+  const recenterView = () => { setCamPreset('orbit'); const e = engineRef.current; if (!e) return; e.setAutoFrame(isMobile); e.recenter(); };
   useEffect(() => { engineRef.current?.setTurntable(turntable); }, [turntable]);
 
   // ---- first-time guided tour ----
@@ -659,10 +662,10 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
               {isMobile ? <SunIcon /> : 'Scene'}
             </button>
             <div data-tour="camera" style={{ display: 'flex', border: '1px solid var(--line)', borderRadius: 6, overflow: 'hidden', height: isMobile ? 36 : undefined }}>
-              <button className="secondary" title="Free orbit" onClick={() => applyCam('orbit')}
+              <button className="secondary" title={camMode === 'orbit' ? 'Free orbit (click again to recenter)' : 'Free orbit'} onClick={() => { if (camMode === 'orbit') recenterView(); else applyCam('orbit'); }}
                 style={{ borderRadius: 0, padding: isMobile ? 0 : '5px 11px', width: isMobile ? 36 : undefined, height: isMobile ? '100%' : undefined, display: isMobile ? 'grid' : undefined, placeItems: isMobile ? 'center' : undefined, fontSize: isMobile ? 20 : 24, lineHeight: 1, ...(isMobile ? { border: 'none' } : null), background: camMode === 'orbit' ? 'var(--accent)' : 'var(--panel)', color: camMode === 'orbit' ? '#fff' : 'var(--text)' }}>⟳</button>
               <button className="secondary" title={camMode === 'iso' && isMobile ? (isoMenuOpen ? 'PZ iso (tap to collapse the compass)' : 'PZ iso (tap to open the compass)') : 'PZ iso'}
-                onClick={() => { if (camMode !== 'iso') { applyCam('iso'); setIsoMenuOpen(true); } else if (isMobile) { setIsoMenuOpen((v) => !v); } else { applyCam('iso'); } }}
+                onClick={() => { if (camMode !== 'iso') { applyCam('iso'); } else if (isMobile) { setIsoMenuOpen((v) => !v); } else { applyCam('iso'); } }}
                 style={{ borderRadius: 0, padding: isMobile ? 0 : '5px 11px', width: isMobile ? 36 : undefined, height: isMobile ? '100%' : undefined, display: isMobile ? 'grid' : undefined, placeItems: isMobile ? 'center' : undefined, fontSize: isMobile ? 20 : 24, lineHeight: 1, ...(isMobile ? { border: 'none', borderLeft: '1px solid var(--line)' } : null), background: camMode === 'iso' ? 'var(--accent)' : 'var(--panel)', color: camMode === 'iso' ? '#fff' : 'var(--text)' }}>◈</button>
             </div>
           </div>
