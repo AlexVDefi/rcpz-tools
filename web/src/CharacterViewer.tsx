@@ -634,7 +634,7 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
         <div style={{ position: 'absolute', left: isMobile ? 8 : 12, top: isMobile ? 8 : 12, display: 'flex', gap: isMobile ? 6 : 8, alignItems: 'center', maxWidth: isMobile ? '58%' : undefined }}>
           {status && !isMobile && <span style={{ color: 'var(--muted)', background: '#00000099', padding: '4px 8px', borderRadius: 6 }}>{status}</span>}
           <span style={{ color: 'var(--muted)', background: '#00000099', padding: '4px 8px', borderRadius: 6, fontSize: isMobile ? 11.5 : undefined, maxWidth: isMobile ? '100%' : 340, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{nowPlaying || 'pick a clip →'}</span>
-          {idleClip && <button data-tour="idle" className="secondary" title="Reset to idle animation" onClick={() => playClip(idleClip)} style={{ padding: '4px 10px', fontSize: 12, lineHeight: 1, flexShrink: 0 }}>↺ Idle</button>}
+          {idleClip && <button data-tour="idle" className="secondary" title="Reset to idle animation" onClick={() => playClip(idleClip)} style={{ padding: isMobile ? '9px 14px' : '4px 10px', fontSize: isMobile ? 14 : 12, lineHeight: 1, flexShrink: 0 }}>↺ Idle</button>}
         </div>
         <div style={{ position: 'absolute', right: isMobile ? 8 : 12, top: isMobile ? 8 : 12, display: 'flex', flexDirection: 'column', gap: 8, alignItems: 'flex-end' }}>
           <div style={{ display: 'flex', gap: isMobile ? 6 : 8, alignItems: 'flex-start' }}>
@@ -646,11 +646,11 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
               style={{ borderRadius: 6, padding: isMobile ? 0 : '7px 12px', width: isMobile ? 36 : undefined, height: isMobile ? 36 : undefined, display: isMobile ? 'grid' : undefined, placeItems: isMobile ? 'center' : undefined, fontSize: 13, lineHeight: 1, border: '1px solid var(--line)', background: sceneOpen ? 'var(--accent)' : 'var(--panel)', color: sceneOpen ? '#fff' : 'var(--text)' }}>
               {isMobile ? <SunIcon /> : 'Scene'}
             </button>
-            <div data-tour="camera" style={{ display: 'flex', border: '1px solid var(--line)', borderRadius: 6, overflow: 'hidden' }}>
+            <div data-tour="camera" style={{ display: 'flex', border: '1px solid var(--line)', borderRadius: 6, overflow: 'hidden', height: isMobile ? 36 : undefined }}>
               <button className="secondary" title="Free orbit" onClick={() => setCamPreset('orbit')}
-                style={{ borderRadius: 0, padding: isMobile ? '4px 9px' : '5px 11px', fontSize: isMobile ? 18 : 24, lineHeight: 1, background: camMode === 'orbit' ? 'var(--accent)' : 'var(--panel)', color: camMode === 'orbit' ? '#fff' : 'var(--text)' }}>⟳</button>
+                style={{ borderRadius: 0, padding: isMobile ? 0 : '5px 11px', width: isMobile ? 36 : undefined, height: isMobile ? '100%' : undefined, display: isMobile ? 'grid' : undefined, placeItems: isMobile ? 'center' : undefined, fontSize: isMobile ? 20 : 24, lineHeight: 1, ...(isMobile ? { border: 'none' } : null), background: camMode === 'orbit' ? 'var(--accent)' : 'var(--panel)', color: camMode === 'orbit' ? '#fff' : 'var(--text)' }}>⟳</button>
               <button className="secondary" title="PZ iso" onClick={() => setCamPreset('iso')}
-                style={{ borderRadius: 0, padding: isMobile ? '4px 9px' : '5px 11px', fontSize: isMobile ? 18 : 24, lineHeight: 1, background: camMode === 'iso' ? 'var(--accent)' : 'var(--panel)', color: camMode === 'iso' ? '#fff' : 'var(--text)' }}>◈</button>
+                style={{ borderRadius: 0, padding: isMobile ? 0 : '5px 11px', width: isMobile ? 36 : undefined, height: isMobile ? '100%' : undefined, display: isMobile ? 'grid' : undefined, placeItems: isMobile ? 'center' : undefined, fontSize: isMobile ? 20 : 24, lineHeight: 1, ...(isMobile ? { border: 'none', borderLeft: '1px solid var(--line)' } : null), background: camMode === 'iso' ? 'var(--accent)' : 'var(--panel)', color: camMode === 'iso' ? '#fff' : 'var(--text)' }}>◈</button>
             </div>
           </div>
           {/* Facing compass: only meaningful under the fixed PZ iso camera, so it appears
@@ -727,16 +727,16 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
               scene={{ light, setL, grid, setGrid: (v) => { setGrid(v); engineRef.current?.setGridVisible(v); }, shadow, setShadow: (v) => { setShadow(v); engineRef.current?.setShadowVisible(v); }, onReset: resetScene }} />
           </div>
         )}
-        <div style={{ position: 'absolute', left: 12, bottom: 12, right: 12, display: 'flex', gap: 8, alignItems: 'center', background: '#000000aa', borderRadius: 8, padding: '6px 10px' }}>
-          <button className="secondary" onClick={togglePlay} style={{ padding: '4px 12px' }}>{playing ? '❚❚' : '▶'}</button>
+        <div style={{ position: 'absolute', left: 12, bottom: 12, right: 12, display: 'flex', gap: isMobile ? 6 : 8, alignItems: 'center', background: '#000000aa', borderRadius: 8, padding: isMobile ? '6px 8px' : '6px 10px' }}>
+          <button className="secondary" onClick={togglePlay} style={{ padding: isMobile ? '4px 10px' : '4px 12px', flexShrink: 0 }}>{playing ? '❚❚' : '▶'}</button>
           <input ref={scrubRef} type="range" min={0} max={1000} defaultValue={0}
             onMouseDown={() => { scrubbingRef.current = true; }} onMouseUp={() => { scrubbingRef.current = false; }}
             onInput={(e) => engineRef.current?.seek(Number((e.target as HTMLInputElement).value) / 1000)}
-            style={{ flex: 1, accentColor: '#5b8cff' }} />
+            style={{ flex: 1, minWidth: 0, accentColor: '#5b8cff' }} />
           <button className="secondary" onClick={() => { const n = !loop; setLoop(n); engineRef.current?.setLoop(n); }}
-            style={{ padding: '4px 10px', background: loop ? 'var(--accent)' : 'var(--panel)', color: loop ? '#fff' : 'var(--text)' }}>loop</button>
+            style={{ padding: isMobile ? '4px 9px' : '4px 10px', flexShrink: 0, background: loop ? 'var(--accent)' : 'var(--panel)', color: loop ? '#fff' : 'var(--text)' }}>loop</button>
           <select value={speed} onChange={(e) => { const s = Number(e.target.value); setSpeed(s); engineRef.current?.setSpeed(s); }}
-            style={{ background: 'var(--panel)', color: 'var(--text)', border: '1px solid var(--line)', borderRadius: 6, padding: '4px 6px' }}>
+            style={{ background: 'var(--panel)', color: 'var(--text)', border: '1px solid var(--line)', borderRadius: 6, padding: '4px 6px', flexShrink: 0 }}>
             {[0.25, 0.5, 1, 2].map((s) => <option key={s} value={s}>{s}×</option>)}
           </select>
         </div>
