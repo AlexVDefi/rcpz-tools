@@ -409,19 +409,6 @@ export function App() {
   const isMobile = useIsMobile();
   const canUseLocal = fsaSupported && !isMobile;
 
-  // On mobile, skip the source-choice screen entirely: once the terms are accepted, load the hosted
-  // built-in assets automatically so the user lands straight in the studio / community mods.
-  const mobileAutoLoaded = useRef(false);
-  useEffect(() => {
-    if (mobileAutoLoaded.current) return;
-    // returning hosted users are already handled by the restore effect; only drive the FIRST visit here
-    if (localStorage.getItem(SOURCE_KEY) === 'hosted') { mobileAutoLoaded.current = true; return; }
-    if (isMobile && hostedAvailable && agreedTerms && firstRun && phase === 'idle' && !overlay) {
-      mobileAutoLoaded.current = true;
-      useHosted();
-    }
-  }, [isMobile, agreedTerms, firstRun, phase, overlay, useHosted]);
-
   // "Made by RedChili" + Ko-fi: a fixed corner chip on desktop, folded into the Help popout on mobile.
   const creditLinks = (
     <>
@@ -491,7 +478,20 @@ export function App() {
         </div>
       )}
 
-      {phase !== 'unsupported' && view === 'overview' && firstRun && !pendingLocal && (
+      {phase !== 'unsupported' && view === 'overview' && firstRun && !pendingLocal && isMobile && (
+        <section style={{ display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', textAlign: 'center', gap: 22, minHeight: 'calc(100dvh - 140px)', padding: '0 6px' }}>
+          <div>
+            <h2 style={{ fontSize: 24, margin: '0 0 14px', lineHeight: 1.25 }}>Bring your survivors to life in the browser</h2>
+            <p style={{ color: 'var(--muted)', fontSize: 14.5, lineHeight: 1.65, margin: 0 }}>
+              Browse every outfit, weapon and animation, dress and pose a character, and export stills, GIFs and MP4s - right in your browser, nothing to install.
+            </p>
+          </div>
+          <button onClick={() => useHosted()} style={{ padding: '13px 30px', fontSize: 16, fontWeight: 600 }}>Enter app</button>
+          {error && <p style={{ color: '#ff8a8a', margin: 0 }}>Error: {error}</p>}
+        </section>
+      )}
+
+      {phase !== 'unsupported' && view === 'overview' && firstRun && !pendingLocal && !isMobile && (
         <section style={{ marginTop: 40, maxWidth: 760, marginInline: 'auto' }}>
           <div style={{ textAlign: 'center', marginBottom: 26 }}>
             <h2 style={{ fontSize: 26, margin: '0 0 12px', lineHeight: 1.2 }}>Bring your survivors to life in the browser</h2>
