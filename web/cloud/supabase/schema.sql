@@ -27,3 +27,25 @@ create policy uploads_own_select on public.uploads
 -- No insert/update/delete policies on purpose: all writes go through the Worker using the
 -- service_role key (which bypasses RLS). A client can never forge a size, insert a row for
 -- another user, or delete someone else's share.
+
+
+-- Modder hosting: a modder's consent to have their Workshop mod's assets hosted. Keyed by their
+-- SteamID64 (from Steam sign-in), one row per (steamid, mod). Written ONLY by the Worker after it
+-- re-verifies Steam ownership; the browser never touches this table (no RLS policies = no client
+-- access), it reads/writes through the Worker's /steam/permission(s) endpoints.
+create table if not exists public.mod_permissions (
+  id              uuid primary key default gen_random_uuid(),
+  steamid         text not null,                 -- SteamID64 of the verified mod owner
+  publishedfileid text not null,                 -- Steam Workshop item id
+  title           text,                          -- mod title (from Steam, not the client)
+  status          text not null default 'allowed', -- 'allowed' | 'revoked'
+  terms_version   int  not null default 1,
+  consented_at    timestamptz not null default now(),
+  updated_at      timestamptz not null default now(),
+  unique (steamid, publishedfileid)              -- upsert target for /steam/permission
+);
+
+create index if not exists mod_permissions_steamid_idx on public.mod_permissions(steamid);
+
+alter table public.mod_permissions enable row level security;
+-- No policies on purpose: only the Worker (service_role) reads/writes this table.

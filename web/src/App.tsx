@@ -9,6 +9,8 @@ import { pickDirectory, saveDir, loadDir, fileAccessSupported, isDesktop } from 
 import { converter } from './render/converter';
 import { CharacterViewer } from './CharacterViewer';
 import { SharedGallery } from './SharedGallery';
+import { ModderDashboard } from './ModderDashboard';
+import { useSteam } from './cloud/steam';
 import { useAuth, type AuthState } from './cloud/auth';
 import { useCloudUploads } from './cloud/uploads';
 import { AuthModal } from './cloud/AuthModal';
@@ -33,7 +35,7 @@ const hostedAvailable = !!HOSTED_ASSETS_URL;
 const usable = fsaSupported || hostedAvailable; // the app is usable if either path is available
 
 type Phase = 'unsupported' | 'idle' | 'need-permission' | 'scanning' | 'ready' | 'error';
-type View = 'overview' | 'character' | 'shared';
+type View = 'overview' | 'character' | 'shared' | 'mods';
 type ScanStep = 'scripts' | 'clothing' | 'anims';
 type Scan = { source: number; total: number; step: ScanStep; count: number; name: string };
 const SCAN_STEPS: ScanStep[] = ['scripts', 'clothing', 'anims'];
@@ -74,6 +76,9 @@ export function App() {
   const [mods, setMods] = useState<DiscoveredMod[]>([]);
   const [activeKeys, setActiveKeys] = useState<string[]>(() => { try { return JSON.parse(localStorage.getItem(ACTIVE_KEY) || '[]'); } catch { return []; } });
   const auth = useAuth();
+  const steam = useSteam();
+  // Land on the Mods view right after returning from Steam sign-in.
+  useEffect(() => { if (steam.justArrived) setView('mods'); }, [steam.justArrived]);
   const [authOpen, setAuthOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [changePwOpen, setChangePwOpen] = useState(false);
@@ -268,9 +273,9 @@ export function App() {
           </div>
         </div>
         {charName && <div title="Loaded character" style={{ position: 'absolute', left: '50%', top: '50%', transform: 'translate(-50%, -50%)', fontSize: 23, fontWeight: 600, color: 'var(--text)', pointerEvents: 'none', whiteSpace: 'nowrap', maxWidth: '40%', overflow: 'hidden', textOverflow: 'ellipsis' }}>{charName}</div>}
-        {(index != null || auth.configured) && (
+        {(index != null || auth.configured || steam.configured) && (
           <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-            {(index != null || auth.user) && view !== 'overview' && (
+            {(index != null || auth.user || steam.token) && view !== 'overview' && (
               <button className="secondary" onClick={() => setView('overview')} style={{ height: NAV_H, padding: '0 14px' }}>Overview</button>
             )}
             {index != null && view !== 'character' && (
@@ -278,6 +283,9 @@ export function App() {
             )}
             {auth.user && (
               <button className="secondary" onClick={() => setView('shared')} style={{ height: NAV_H, padding: '0 14px', borderColor: view === 'shared' ? 'var(--accent)' : 'var(--line)', color: view === 'shared' ? '#fff' : 'var(--text)' }}>Shared</button>
+            )}
+            {steam.configured && view !== 'mods' && (
+              <button className="secondary" onClick={() => setView('mods')} title="Host your Workshop mods" style={{ height: NAV_H, padding: '0 14px' }}>Mods</button>
             )}
             {auth.configured && <AccountChip auth={auth} onSignIn={() => setAuthOpen(true)} onChangePassword={() => setChangePwOpen(true)} onDeleteAccount={() => setDeleteOpen(true)} />}
             {index != null && langs.length > 1 && <LanguageSelect langs={langs} value={itemLang} onChange={setItemLang} loading={langLoading} />}
@@ -472,6 +480,8 @@ export function App() {
       )}
 
       {view === 'shared' && auth.user && <SharedGallery uploads={uploads} />}
+
+      {view === 'mods' && steam.configured && <ModderDashboard steam={steam} />}
 
       <div className="credit">
         <a className="watermark" href="https://steamcommunity.com/id/mreastman/myworkshopfiles/?appid=108600"

@@ -46,6 +46,8 @@ export default {
     if (request.method === 'GET' && url.pathname === '/steam/login') return steamLogin(url, env);
     if (request.method === 'GET' && url.pathname === '/steam/callback') return steamCallback(url, env);
     if (request.method === 'GET' && url.pathname === '/steam/mods') return withCors(await steamMods(request, env), corsHeaders);
+    if (request.method === 'GET' && url.pathname === '/steam/permissions') return withCors(await steamPermissions(request, env), corsHeaders);
+    if (request.method === 'POST' && url.pathname === '/steam/permission') return withCors(await steamPermission(request, env), corsHeaders);
     return withCors(json({ error: 'Not found' }, 404), corsHeaders);
   },
 };
@@ -354,6 +356,43 @@ async function steamMods(request: Request, env: Env): Promise<Response> {
     }));
     return json({ steamid, mods });
   } catch { return json({ error: 'Steam lookup failed' }, 502); }
+}
+
+// A modder's current hosting consents (from Supabase, keyed by their session SteamID).
+async function steamPermissions(request: Request, env: Env): Promise<Response> {
+  const steamid = await steamSessionId(bearer(request), env);
+  if (!steamid) return json({ error: 'Unauthorized' }, 401);
+  const res = await fetch(`${env.SUPABASE_URL}/rest/v1/mod_permissions?steamid=eq.${steamid}&select=publishedfileid,title,status,consented_at`, { headers: svc(env) });
+  if (!res.ok) return json({ error: 'Query failed' }, 502);
+  return json({ permissions: await res.json() });
+}
+
+// Grant or revoke hosting consent for one mod. Ownership is RE-verified server-side against Steam
+// (never trust the client's mod id), and the title is taken from Steam, not the client.
+async function steamPermission(request: Request, env: Env): Promise<Response> {
+  const steamid = await steamSessionId(bearer(request), env);
+  if (!steamid) return json({ error: 'Unauthorized' }, 401);
+  let body: { id?: string; allow?: boolean };
+  try { body = await request.json(); } catch { return json({ error: 'Bad request' }, 400); }
+  const id = String(body.id || '');
+  if (!/^\d+$/.test(id)) return json({ error: 'Bad mod id' }, 400);
+
+  let title = '';
+  try {
+    const det = await steamApi('IPublishedFileService/GetDetails/v1', { 'publishedfileids[0]': id }, env);
+    const f = det.response?.publishedfiledetails?.[0];
+    if (!f || String(f.creator) !== steamid) return json({ error: 'You are not the owner of that mod' }, 403);
+    title = String(f.title || '');
+  } catch { return json({ error: 'Steam verification failed' }, 502); }
+
+  const row = { steamid, publishedfileid: id, title, status: body.allow ? 'allowed' : 'revoked', consented_at: new Date().toISOString(), terms_version: 1, updated_at: new Date().toISOString() };
+  const res = await fetch(`${env.SUPABASE_URL}/rest/v1/mod_permissions?on_conflict=steamid,publishedfileid`, {
+    method: 'POST',
+    headers: { ...svc(env), 'Content-Type': 'application/json', Prefer: 'resolution=merge-duplicates,return=minimal' },
+    body: JSON.stringify(row),
+  });
+  if (!res.ok) return json({ error: 'Could not save your choice' }, 500);
+  return json({ ok: true, id, status: row.status });
 }
 
 // Verify a Supabase access token by asking Supabase who it belongs to. Returns the user id or null.
