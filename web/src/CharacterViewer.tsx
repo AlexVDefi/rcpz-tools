@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { listClips, listClothing, listHeldItems, listHair, clothingGroup, CLOTHING_GROUP_ORDER, HELD_GROUP_ORDER, SKIN_TONES } from '@shared/character-core.js';
 import { CharacterEngine, type Ctx, type AttachOption } from './render/character-engine';
 
@@ -339,7 +339,7 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
     { target: '[data-tour="equipmenu"]', title: tourItem ? `Equipped ${tourItem.label}` : 'The Equipped panel',
       body: 'We just equipped an item for you. The Equipped panel lists everything worn or held, and lets you switch hands, add attachments, hide, or unequip each one.' },
     { target: '[data-tour="scenemenu"]', title: 'Scene, lighting & floor',
-      body: 'The Scene menu sets the lighting, drops a floor under your character, toggles the grid and shadow, and resets everything - all live in the view.' },
+      body: 'Lighting, a floor, and the grid and shadow toggles - all adjustable live here.' },
   ], [tourItem]);
 
   // start the tour once, for first-time visitors, after the scene is ready. The started latch is
@@ -871,18 +871,20 @@ function ViewerTour({ steps, step, onNext, onSkip }: { steps: TourStep[]; step: 
 
   const clamp = (v: number, lo: number, hi: number) => Math.min(Math.max(v, lo), hi);
   const vw = window.innerWidth, vh = window.innerHeight;
-  const cardW = 320, cardH = 200; // cardH is an estimate used only for placement clamping
-  let cardLeft = vw / 2 - cardW / 2, cardTop = vh / 2 - cardH / 2, transform = 'none';
+  const cardW = Math.min(320, vw - 24);
+  const cardRef = useRef<HTMLDivElement>(null);
+  const [cardH, setCardH] = useState(200); // real measured height, so placement never crops the card
+  useLayoutEffect(() => { const h = cardRef.current?.offsetHeight; if (h) setCardH(h); }, [cur, cardW]);
+  let cardLeft = vw / 2 - cardW / 2, cardTop = vh / 2 - cardH / 2;
   if (rect) {
-    if (vh - rect.bottom > cardH + 24) { // below
-      cardTop = rect.bottom + 14; cardLeft = clamp(rect.left + rect.width / 2 - cardW / 2, 12, vw - cardW - 12);
-    } else if (rect.left > cardW + 24) { // to the left
-      cardLeft = rect.left - cardW - 14; cardTop = clamp(rect.top, 12, vh - cardH - 12);
-    } else if (vw - rect.right > cardW + 24) { // to the right
-      cardLeft = rect.right + 14; cardTop = clamp(rect.top, 12, vh - cardH - 12);
-    } else { // above
-      cardTop = rect.top - 14; transform = 'translateY(-100%)'; cardLeft = clamp(rect.left + rect.width / 2 - cardW / 2, 12, vw - cardW - 12);
-    }
+    const cx = rect.left + rect.width / 2, gap = 22;
+    if (vh - rect.bottom >= cardH + gap) { cardTop = rect.bottom + 14; cardLeft = cx - cardW / 2; }          // below the target
+    else if (rect.left >= cardW + gap) { cardLeft = rect.left - cardW - 14; cardTop = rect.top; }            // left
+    else if (vw - rect.right >= cardW + gap) { cardLeft = rect.right + 14; cardTop = rect.top; }             // right
+    else if (rect.top >= cardH + gap) { cardTop = rect.top - 14 - cardH; cardLeft = cx - cardW / 2; }        // above the target
+    else { cardTop = vh - cardH - 12; cardLeft = cx - cardW / 2; }                                           // tall target (Scene menu): pin near the bottom
+    cardLeft = clamp(cardLeft, 12, vw - cardW - 12);
+    cardTop = clamp(cardTop, 12, Math.max(12, vh - cardH - 12));               // always fully on-screen
   }
 
   return (
@@ -905,8 +907,8 @@ function ViewerTour({ steps, step, onNext, onSkip }: { steps: TourStep[]; step: 
       {rect && <div style={{ position: 'fixed', left: rect.left - 6, top: rect.top - 6, width: rect.width + 12, height: rect.height + 12,
         borderRadius: 10, boxShadow: '0 0 0 9999px rgba(8, 9, 13, 0.66)', outline: '2px solid var(--accent)', outlineOffset: 2,
         pointerEvents: 'none', transition: 'left .2s ease, top .2s ease, width .2s ease, height .2s ease' }} />}
-      <div style={{ position: 'fixed', left: cardLeft, top: cardTop, width: cardW, transform, pointerEvents: 'auto' }}>
-        <div className="tour-card" style={{ background: 'linear-gradient(180deg, #23232b, #1b1b21)', border: '1px solid var(--line)', borderRadius: 12, padding: '16px 16px 12px', boxShadow: '0 18px 50px #000000aa' }}>
+      <div style={{ position: 'fixed', left: cardLeft, top: cardTop, width: cardW, pointerEvents: 'auto' }}>
+        <div ref={cardRef} className="tour-card" style={{ background: 'linear-gradient(180deg, #23232b, #1b1b21)', border: '1px solid var(--line)', borderRadius: 12, padding: '16px 16px 12px', boxShadow: '0 18px 50px #000000aa' }}>
           <div style={{ fontSize: 11, color: 'var(--muted)', letterSpacing: '.04em', marginBottom: 6 }}>STEP {step + 1} OF {steps.length}</div>
           <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 6 }}>{cur?.title}</div>
           <div style={{ fontSize: 13, color: 'var(--muted)', lineHeight: 1.55 }}>{cur?.body}</div>
