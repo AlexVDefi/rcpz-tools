@@ -106,7 +106,7 @@ function ChevronIcon({ dir, size = 16 }: { dir: 'up' | 'down'; size?: number }) 
   return <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.4} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={dir === 'up' ? 'm18 15-6-6-6 6' : 'm6 9 6 6 6-6'} /></svg>;
 }
 
-export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSignIn, uploads, displayNames }: { ctx: Ctx; index: unknown; onCharacterName?: (name: string | null) => void; auth: AuthState; onRequestSignIn: () => void; uploads: CloudUploads; displayNames: DisplayNames | null }) {
+export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSignIn, uploads, displayNames, onOpenShared }: { ctx: Ctx; index: unknown; onCharacterName?: (name: string | null) => void; auth: AuthState; onRequestSignIn: () => void; uploads: CloudUploads; displayNames: DisplayNames | null; onOpenShared?: () => void }) {
   const isMobile = useIsMobile();
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const engineRef = useRef<CharacterEngine | null>(null);
@@ -436,6 +436,7 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
     share: shareExport, sharing, shareUrl, shareKey, sharePlayerUrl: shareKey ? playerUrl(shareKey) : null,
     shareErr, clearResult: () => { setShareUrl(null); setShareKey(null); setShareErr(''); },
     used: cloudUploads.used, limit: cloudUploads.limit, rows: cloudUploads.rows, removeUpload: cloudUploads.remove,
+    openShared: onOpenShared,
   };
 
   // ---- import a character look from a save ----
@@ -1003,6 +1004,7 @@ interface CloudCtl {
   sharing: { phase: 'render' | 'upload'; progress: number } | null;
   shareUrl: string | null; shareKey: string | null; sharePlayerUrl: string | null; shareErr: string; clearResult: () => void;
   used: number; limit: number; rows: UploadRow[]; removeUpload: (key: string) => void;
+  openShared?: () => void;
 }
 
 // Scene / lighting / floor controls, shown in the pop-over menu over the display view. Compact and
@@ -1161,8 +1163,14 @@ function ShareSection({ cloud, busy, label }: { cloud: CloudCtl; busy: boolean; 
           {cloud.shareErr && <div style={{ color: '#ff8a8a', fontSize: 12, marginTop: 6 }}>{cloud.shareErr}</div>}
           {latest && <ShareResult url={latest.url} playerUrl={latest.player} onDelete={async () => { if (latest.key) await cloud.removeUpload(latest.key); cloud.clearResult(); }} />}
 
+          {cloud.openShared && (
+            <button className="secondary" onClick={cloud.openShared} style={{ marginTop: 12, padding: '8px 14px', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+              View all your shares →
+            </button>
+          )}
+
           <div style={{ color: 'var(--muted)', fontSize: 11, lineHeight: 1.55, marginTop: 10 }}>
-            Each account gets 100 MB of cloud storage. This is a free web app and I can't afford much storage, so the cap keeps it sustainable. Manage all your shares in the Shared tab; you can always export locally (above) too.
+            Each account gets 100 MB of cloud storage. This is a free web app and I can't afford much storage, so the cap keeps it sustainable. Manage all your shares on the Shared page; you can always export locally (above) too.
           </div>
         </>
       )}

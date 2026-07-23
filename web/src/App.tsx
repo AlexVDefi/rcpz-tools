@@ -712,7 +712,7 @@ export function App() {
       )}
 
       {index != null && view === 'character' && ctx && (
-        <div style={{ marginTop: 12 }}><CharacterViewer ctx={ctx} index={index} onCharacterName={setCharName} auth={auth} onRequestSignIn={() => setAuthOpen(true)} uploads={uploads} displayNames={displayNames} /></div>
+        <div style={{ marginTop: 12 }}><CharacterViewer ctx={ctx} index={index} onCharacterName={setCharName} auth={auth} onRequestSignIn={() => setAuthOpen(true)} uploads={uploads} displayNames={displayNames} onOpenShared={() => setView('shared')} /></div>
       )}
 
       {view === 'shared' && auth.user && <SharedGallery uploads={uploads} />}
