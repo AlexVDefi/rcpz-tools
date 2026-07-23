@@ -312,14 +312,16 @@ export function App() {
     if (url) rebuildHosted(url);
   }, [rebuildHosted]);
 
-  // Restore the last session on load: a granted local install (Chromium), else the hosted
-  // bundle if that was the last choice. First-time visitors get the source-choice screen.
+  // Restore the last session on load, honouring the LAST-USED source: if they last chose the built-in
+  // assets, load those (even when a local install is still granted); otherwise restore a granted local
+  // install (Chromium). First-time visitors get the source-choice screen.
   useEffect(() => {
     if (restoredRef.current) return; // run once; not on every rebuild/useHosted identity change
     restoredRef.current = true;
     if (new URLSearchParams(window.location.search).get('assets')) return; // ?assets= effect owns this load
     (async () => {
-      if (fsaSupported) {
+      const lastHosted = hostedAvailable && localStorage.getItem(SOURCE_KEY) === 'hosted';
+      if (fsaSupported && !lastHosted) {
         const inst = await loadDir(INSTALL_KEY);
         if (inst) {
           if (!(await hasPermission(inst))) { setInstallHandle(inst); setNeedPerm(true); return; }
@@ -337,7 +339,7 @@ export function App() {
           return;
         }
       }
-      if (hostedAvailable && localStorage.getItem(SOURCE_KEY) === 'hosted') {
+      if (lastHosted) {
         // Returning hosted user: also restore the mods folder they had loaded. If its read permission
         // survived the reload, re-discover silently; otherwise remember the handle for a one-click reconnect.
         let localMods: DiscoveredMod[] = [];
