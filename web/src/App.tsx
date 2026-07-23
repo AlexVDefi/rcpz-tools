@@ -446,8 +446,8 @@ export function App() {
                 <>
                   {index != null && view !== 'character' && (
                     <button onClick={() => setView('character')} title="Open the character studio"
-                      style={{ height: NAV_H, width: NAV_H, padding: 0, boxShadow: '0 2px 10px #5b8cff55', display: 'grid', placeItems: 'center' }}>
-                      <PersonStandingIcon />
+                      style={{ height: NAV_H, padding: '0 16px', fontWeight: 600, boxShadow: '0 2px 10px #5b8cff55' }}>
+                      Start
                     </button>
                   )}
                   <MobileMenu auth={auth} steam={steam} view={view} setView={setView} onSignIn={() => setAuthOpen(true)} onChangePassword={() => setChangePwOpen(true)} onDeleteAccount={() => setDeleteOpen(true)} />
@@ -568,9 +568,9 @@ export function App() {
       )}
 
       {phase !== 'unsupported' && view === 'overview' && (!firstRun || pendingLocal) && (
-        <div className="overview-enter" style={{ marginTop: 18, display: 'grid', gap: 14 }}>
+        <div className="overview-enter" style={{ marginTop: 18, display: 'grid', gap: 14, gridTemplateColumns: 'minmax(0, 1fr)' }}>
           <div className="card">
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
               <b style={{ fontSize: 13 }}>Sources</b>
               {phase === 'scanning' && <span style={{ color: 'var(--muted)', fontSize: 12.5 }}><span className="spinner" /> scanning…</span>}
               {/* top-right: on hosted show what loaded; on the local path offer a way back to built-in */}
@@ -815,14 +815,6 @@ function BurgerIcon({ size = 18 }: { size?: number }) {
     </svg>
   );
 }
-function PersonStandingIcon({ size = 18 }: { size?: number }) {
-  return (
-    <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <circle cx="12" cy="5" r="1" /><path d="m9 20 3-6 3 6" /><path d="m6 8 6 2 6-2" /><path d="M12 10v4" />
-    </svg>
-  );
-}
-
 // Mobile header overflow menu: Sign in / account + Modders + Shared, tucked behind a burger so the
 // top row stays compact.
 function MobileMenu({ auth, steam, view, setView, onSignIn, onChangePassword, onDeleteAccount }: {
