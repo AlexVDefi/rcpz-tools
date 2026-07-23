@@ -31,6 +31,7 @@ export type ModTab = {
   onSetMany?: (ids: string[], enabled: boolean) => void; // present => show Select all / Deselect all
   onLabel?: string;   // filter wording for enabled items, default "Enabled"
   offLabel?: string;  // filter wording for disabled items, default "Disabled"
+  title?: string;     // section heading shown when this is the only tab (no tab-bar to label it)
   note?: ReactNode;
   controls?: ReactNode;
   empty?: ReactNode;
@@ -105,6 +106,7 @@ export function ModsPanel({ tabs, busy, onTab, divided = true }: { tabs: ModTab[
           {tab.controls && <span style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>{tab.controls}</span>}
         </div>
       )}
+      {tabs.length === 1 && tab.title && <div style={{ fontSize: 14, fontWeight: 600, margin: '2px 0 0' }}>{tab.title}</div>}
       {tab.note && <div style={{ color: 'var(--muted)', fontSize: 12, margin: '9px 0 0', display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>{tab.note}</div>}
 
       {items.length === 0 ? (

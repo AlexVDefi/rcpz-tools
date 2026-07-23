@@ -77,7 +77,7 @@ export function App() {
   const [relayering, setRelayering] = useState(false); // a debounced mod-toggle re-layer is pending/running (shows a small spinner, not the full modal)
   const [agreedTerms, setAgreedTerms] = useState(() => localStorage.getItem('pz-terms-agreed') === '1'); // first-visit Indie Stone terms gate
   const [pendingLocal, setPendingLocal] = useState(false); // user chose "use my game files" from hosted but hasn't picked an install yet
-  const [progress, setProgress] = useState('');
+  const [, setProgress] = useState(''); // load/scan status string (kept for its side effects; no longer shown)
   const [scan, setScan] = useState<Scan | null>(null);
   const [overlay, setOverlay] = useState<'in' | 'out' | null>(null); // scan modal: fading in, fading out, or gone
   const [scanHosted, setScanHosted] = useState(false); // the in-progress load is hosted assets (CDN), not local files
@@ -457,7 +457,7 @@ export function App() {
             </div>
           )}
         </div>
-        {charName && !isMobile && <div title="Loaded character" style={{ position: 'absolute', left: '50%', top: '50%', transform: 'translate(-50%, -50%)', fontSize: 23, fontWeight: 600, color: 'var(--text)', pointerEvents: 'none', whiteSpace: 'nowrap', maxWidth: '40%', overflow: 'hidden', textOverflow: 'ellipsis' }}>{charName}</div>}
+        {charName && !isMobile && view === 'character' && <div title="Loaded character" style={{ position: 'absolute', left: '50%', top: '50%', transform: 'translate(-50%, -50%)', fontSize: 23, fontWeight: 600, color: 'var(--text)', pointerEvents: 'none', whiteSpace: 'nowrap', maxWidth: '40%', overflow: 'hidden', textOverflow: 'ellipsis' }}>{charName}</div>}
         {!isMobile && (index != null || auth.configured || steam.configured) && (
           <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
             {view !== 'overview' && !mobileCharView && homeButton}
@@ -494,7 +494,8 @@ export function App() {
       )}
 
       {phase !== 'unsupported' && view === 'overview' && firstRun && !pendingLocal && isMobile && (
-        <section style={{ display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', textAlign: 'center', gap: 22, minHeight: 'calc(100dvh - 140px)', padding: '0 6px' }}>
+        <section style={{ display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', textAlign: 'center', gap: 20, minHeight: 'calc(100dvh - 140px)', padding: '0 6px' }}>
+          <img src={`${import.meta.env.BASE_URL}pz-character-2026-07-23T09-04-53.png`} alt="A rendered Project Zomboid survivor" style={{ width: 'auto', maxWidth: 'min(70%, 300px)', maxHeight: '38vh', objectFit: 'contain', filter: 'drop-shadow(0 10px 26px #000a)' }} />
           <div>
             <h2 style={{ fontSize: 24, margin: '0 0 14px', lineHeight: 1.25 }}>Bring your survivors to life in the browser</h2>
             <p style={{ color: 'var(--muted)', fontSize: 14.5, lineHeight: 1.65, margin: 0 }}>
@@ -573,10 +574,10 @@ export function App() {
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
               <b style={{ fontSize: 13 }}>Sources</b>
               {phase === 'scanning' && <span style={{ color: 'var(--muted)', fontSize: 12.5 }}><span className="spinner" /> scanning…</span>}
-              {/* top-right: on hosted show what loaded; on the local path offer a way back to built-in */}
-              {assetSource === 'hosted' && (relayering
-                ? <span style={{ marginLeft: 'auto', color: 'var(--muted)', fontSize: 12.5, display: 'inline-flex', alignItems: 'center', gap: 6 }}><span className="spinner" /> updating…</span>
-                : (phase === 'ready' && progress && <span style={{ color: 'var(--muted)', fontSize: 12.5, marginLeft: 'auto' }}>{progress}</span>))}
+              {/* top-right: a transient "updating…" while re-layering; on the local path, a way back to built-in */}
+              {assetSource === 'hosted' && relayering && (
+                <span style={{ marginLeft: 'auto', color: 'var(--muted)', fontSize: 12.5, display: 'inline-flex', alignItems: 'center', gap: 6 }}><span className="spinner" /> updating…</span>
+              )}
               {phase !== 'scanning' && assetSource !== 'hosted' && hostedAvailable && (
                 <button className="secondary" onClick={() => useHosted()} style={{ marginLeft: 'auto', height: 28, padding: '0 12px', fontSize: 12.5 }}>Switch to built-in assets</button>
               )}
@@ -598,9 +599,8 @@ export function App() {
                   const busy = phase === 'scanning';
                   const tabs: ModTab[] = [];
                   if (hostedMods.length > 0) tabs.push({
-                    key: 'community', label: 'Community mods', onToggle: toggleHostedMod, onSetMany: setManyHostedMods,
+                    key: 'community', label: 'Community mods', title: 'Community Mods', onToggle: toggleHostedMod, onSetMany: setManyHostedMods,
                     items: hostedMods.map((m) => ({ id: m.modId, title: m.title, author: m.author, enabled: enabledMods.includes(m.modId), preview: m.preview })),
-                    note: 'Hosted by their creators. Optional - enable any to use its assets in the studio, no install needed.',
                   });
                   if (canUseLocal) tabs.push({
                     key: 'local', label: 'Your installed mods', onToggle: toggleLocalMod, onSetMany: setManyLocalMods,
