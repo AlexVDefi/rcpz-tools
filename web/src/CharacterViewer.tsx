@@ -102,6 +102,9 @@ function ShirtIcon({ size = 18 }: { size?: number }) {
 function SunIcon({ size = 18 }: { size?: number }) {
   return <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4" /><path d="M12 2v2" /><path d="M12 20v2" /><path d="m4.93 4.93 1.41 1.41" /><path d="m17.66 17.66 1.41 1.41" /><path d="M2 12h2" /><path d="M20 12h2" /><path d="m6.34 17.66-1.41 1.41" /><path d="m19.07 4.93-1.41 1.41" /></svg>;
 }
+function EyeIcon({ size = 20 }: { size?: number }) {
+  return <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M2.06 12.35a1 1 0 0 1 0-.7 10.75 10.75 0 0 1 19.88 0 1 1 0 0 1 0 .7 10.75 10.75 0 0 1-19.88 0" /><circle cx="12" cy="12" r="3" /></svg>;
+}
 function ChevronIcon({ dir, size = 16 }: { dir: 'up' | 'down'; size?: number }) {
   return <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.4} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={dir === 'up' ? 'm18 15-6-6-6 6' : 'm6 9 6 6 6-6'} /></svg>;
 }
@@ -134,6 +137,8 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
   // mobile: the tabbed panel is a bottom drawer over a full-height canvas; keep the latest isMobile in
   // a ref so the async body-load can frame the camera for the current form factor without re-running.
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [peeking, setPeeking] = useState(false); // press-and-hold to momentarily hide the drawer and see the character
+  useEffect(() => { if (!drawerOpen) setPeeking(false); }, [drawerOpen]);
   const [mobileViewH, setMobileViewH] = useState(0);
   const isMobileRef = useRef(isMobile); isMobileRef.current = isMobile;
   const [clothOnBody, setClothOnBody] = useState(true);
@@ -828,7 +833,17 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
       )}
 
       {isMobile && drawerOpen && (
-        <div onClick={() => setDrawerOpen(false)} style={{ position: 'fixed', inset: 0, zIndex: 70, background: '#0007', display: 'flex', flexDirection: 'column', justifyContent: 'flex-end' }}>
+        <>
+        {/* Press-and-hold to momentarily hide the whole drawer and see the character (e.g. the item you
+            just equipped); releasing brings it back. Pointer-captured so the release always lands here. */}
+        <button
+          onPointerDown={(e) => { e.preventDefault(); try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* not supported */ } setPeeking(true); }}
+          onPointerUp={() => setPeeking(false)} onPointerCancel={() => setPeeking(false)} onLostPointerCapture={() => setPeeking(false)}
+          aria-label="Hold to peek at your character" title="Hold to hide this panel and see your character"
+          style={{ position: 'fixed', left: 14, bottom: 'calc(env(safe-area-inset-bottom, 0px) + 14px)', zIndex: 72, width: 48, height: 48, borderRadius: 999, display: 'grid', placeItems: 'center', touchAction: 'none', userSelect: 'none', WebkitUserSelect: 'none', background: peeking ? 'var(--accent)' : '#0e0e13e6', color: peeking ? '#fff' : 'var(--text)', border: '1px solid var(--line)', boxShadow: '0 6px 20px #000a' }}>
+          <EyeIcon />
+        </button>
+        <div onClick={() => setDrawerOpen(false)} style={{ position: 'fixed', inset: 0, zIndex: 70, background: '#0007', display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', opacity: peeking ? 0 : 1, pointerEvents: peeking ? 'none' : 'auto', transition: 'opacity .12s ease' }}>
           <div onClick={(e) => e.stopPropagation()} style={{ height: 'min(80vh, 680px)', display: 'flex', flexDirection: 'column', background: 'var(--panel)', borderTop: '1px solid var(--line)', borderRadius: '14px 14px 0 0', overflow: 'hidden', boxShadow: '0 -14px 44px #000a', paddingBottom: 'env(safe-area-inset-bottom)' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: 8, borderBottom: '1px solid var(--line)', flexShrink: 0 }}>
               <div className="tabstrip" style={{ display: 'flex', gap: 4, flex: 1, overflowX: 'auto' }}>
@@ -842,6 +857,7 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
             {panelBody}
           </div>
         </div>
+        </>
       )}
 
       {tourStep !== null && <ViewerTour steps={tourSteps} step={tourStep} onNext={advanceTour} onSkip={skipTour} />}
