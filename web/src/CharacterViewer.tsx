@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { listClips, listClothing, listHeldItems, listHair, clothingGroup, CLOTHING_GROUP_ORDER, HELD_GROUP_ORDER, SKIN_TONES } from '@shared/character-core.js';
+import { listClips, listClothing, listHeldItems, listHair, clothingGroup, CLOTHING_GROUP_ORDER, HELD_GROUP_ORDER, SKIN_TONES, attachmentProviders } from '@shared/character-core.js';
+import { SLOTS, bodyAttachOptions, slotsFromWorn } from '@shared/attachments.js';
 import { CharacterEngine, type Ctx, type AttachOption } from './render/character-engine';
 
 type AttachSlot = { slot: string; options: AttachOption[] };
@@ -48,6 +49,9 @@ type CharPreset = {
   hair: { sel: string; color: string }; beard: { sel: string; color: string };
   clothing: { name: string; tint: number[] | null; hidden: boolean }[];
   held: { name: string; hand: 'right' | 'left'; hidden: boolean; attachments: { slot: string; option: AttachOption }[] }[];
+  // items attached to the body (gun in a holster, weapon on back/belt, light on webbing, ...). Stored
+  // minimally as slot+name; the exact location/transform is recomputed from the item + worn clothing on load.
+  bodyAttachments?: { slot: string; name: string }[];
   scene: ScenePreset;
 };
 // Auto-saved working character (localStorage). Stored WITHOUT the thumb data-URL, so it stays a few
@@ -105,8 +109,20 @@ function SunIcon({ size = 18 }: { size?: number }) {
 function EyeIcon({ size = 20 }: { size?: number }) {
   return <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M2.06 12.35a1 1 0 0 1 0-.7 10.75 10.75 0 0 1 19.88 0 1 1 0 0 1 0 .7 10.75 10.75 0 0 1-19.88 0" /><circle cx="12" cy="12" r="3" /></svg>;
 }
+function EyeOffIcon({ size = 20 }: { size?: number }) {
+  return <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M9.88 9.88a3 3 0 1 0 4.24 4.24" /><path d="M10.73 5.08A10.43 10.43 0 0 1 12 5c7 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68" /><path d="M6.61 6.61A13.526 13.526 0 0 0 2 12s3 7 10 7a9.74 9.74 0 0 0 5.39-1.61" /><line x1="2" x2="22" y1="2" y2="22" /></svg>;
+}
+function BodyIcon({ size = 16 }: { size?: number }) {
+  return <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><circle cx="12" cy="4.5" r="1.6" /><path d="m9 20 3-6 3 6" /><path d="m5.5 8.5 6.5 2 6.5-2" /><path d="M12 10.5v3.5" /></svg>;
+}
+function GearIcon({ size = 16 }: { size?: number }) {
+  return <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" /><circle cx="12" cy="12" r="3" /></svg>;
+}
 function ChevronIcon({ dir, size = 16 }: { dir: 'up' | 'down'; size?: number }) {
   return <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.4} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={dir === 'up' ? 'm18 15-6-6-6 6' : 'm6 9 6 6 6-6'} /></svg>;
+}
+function RestartIcon({ size = 16 }: { size?: number }) {
+  return <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" /><path d="M3 3v5h5" /></svg>;
 }
 
 export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSignIn, uploads, displayNames, onOpenShared }: { ctx: Ctx; index: unknown; onCharacterName?: (name: string | null) => void; auth: AuthState; onRequestSignIn: () => void; uploads: CloudUploads; displayNames: DisplayNames | null; onOpenShared?: () => void }) {
@@ -190,12 +206,61 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
   const clothing = useMemo(() => (listClothing(index) as Array<{ name: string; kind: string; location: string; isMod: boolean; modName?: string | null }>)
     .map((c) => { const display = displayNames?.get(c.name, c.modName) || undefined; const label = display || c.name;
       return { ...c, key: c.name, label, display, search: `${label} ${c.name} ${c.modName || ''}`.toLowerCase(), facet: clothingGroup(c), source: c.modName || 'Vanilla' }; }), [index, displayNames]);
-  const held = useMemo(() => (listHeldItems(index) as Array<{ name: string; isMod?: boolean; modName?: string | null; group: string; tags: string[]; attachSlots?: AttachSlot[] }>)
+  const held = useMemo(() => (listHeldItems(index) as Array<{ name: string; mesh: string; texture?: string; scale?: number; isMod?: boolean; modName?: string | null; group: string; tags: string[]; attachSlots?: AttachSlot[]; attachmentType?: string | null; allAttachments?: Record<string, { offset: number[]; rotate: number[]; scale?: number }> }>)
     .map((h) => { const display = displayNames?.get(h.name, h.modName) || undefined; const label = display || h.name;
       return { ...h, key: h.name, label, display, search: `${label} ${h.name} ${h.modName || ''} ${(h.tags || []).join(' ')}`.toLowerCase(), facet: h.group, isMod: !!h.isMod, source: h.modName || 'Vanilla' }; }), [index, displayNames]);
   // raw item/model name -> shown label, so the Equipped panel and shares can display translated names too
   const nameToLabel = useMemo(() => { const m = new Map<string, string>(); for (const c of clothing) m.set(c.name, c.label); for (const h of held) m.set(h.name, h.label); return m; }, [clothing, held]);
   const heldSlots = useMemo(() => { const m = new Map<string, AttachSlot[]>(); for (const h of held) if (h.attachSlots?.length) m.set(h.name, h.attachSlots); return m; }, [held]);
+
+  // ---- body attachments (weapons/gear on the player: bat on back, gun in a worn holster, ...) ----
+  // A held-capable item can sit in a hand OR at a body location. The placement control lives on the
+  // item itself (Equipped panel + Held browser), mirroring the L/R hand toggle - there is no separate
+  // "attach" panel; picking a location just moves the item there.
+  type HeldItem = (typeof held)[number];
+  type BodyOpt = { slotType: string; slotName: string; location: string; attachmentName: string; transform: { bone: string; offset: number[]; rotate: number[]; scale?: number } };
+  const [cardLoc, setCardLoc] = useState<{ item: HeldItem; x: number; y: number } | null>(null); // Held-card location popout
+  const providers = useMemo(() => attachmentProviders(index) as Map<string, { provided: string[]; replacement: string | null }>, [index]);
+  // Which slots are on the body: Back always, the rest only when the worn clothing provides them.
+  // Studio deviation: the small-belt slots are always available too. In the game they need a worn belt
+  // (only ~7 belt/tool-rig items provide them), but for a posing tool we always allow belt-valid tools
+  // (hammer/knife/screwdriver/wrench/...) on the belt. Item-type validity still applies (a bat can't
+  // belt), and holster/webbing/bedroll stay gated behind their items.
+  const worn = useMemo(() => {
+    const w = slotsFromWorn((engineRef.current?.clothingState() || []).map((c: { name: string }) => c.name), providers);
+    w.provided.add('SmallBeltLeft'); w.provided.add('SmallBeltRight');
+    return w;
+  }, [providers, equipTick]);
+  const availableSlots = useMemo(() => Object.entries(SLOTS).filter(([type, s]) => (s as { always?: boolean }).always || worn.provided.has(type)) as [string, { name: string; always?: boolean }][], [worn]);
+  const heldByName = useMemo(() => { const m = new Map<string, HeldItem>(); for (const h of held) m.set(h.name, h); return m; }, [held]);
+  // Valid body locations for each held item under the currently-worn clothing (items with none omitted).
+  const optsByItem = useMemo(() => {
+    const m = new Map<string, BodyOpt[]>();
+    for (const h of held) {
+      if (!h.attachmentType) continue;
+      const opts = bodyAttachOptions(h.attachmentType, { provided: worn.provided, hasBag: worn.hasBag, gender }) as BodyOpt[];
+      if (opts.length) m.set(h.name, opts);
+    }
+    return m;
+  }, [held, worn, gender]);
+  // Taking off the clothing that provided a slot removes whatever was attached there (like the game).
+  useEffect(() => {
+    const avail = new Set(availableSlots.map(([t]) => t));
+    for (const b of engineRef.current?.bodyAttachState() ?? []) if (!avail.has(b.slotType)) engineRef.current?.detachFromBody(b.slotType);
+  }, [availableSlots]);
+  // Move an item to a body location (leaving the hand if it was held there, like the game).
+  const placeOnBody = (item: HeldItem, slotType: string) => guard(async () => {
+    const opt = (optsByItem.get(item.name) || (bodyAttachOptions(item.attachmentType!, { provided: worn.provided, hasBag: worn.hasBag, gender }) as BodyOpt[])).find((o) => o.slotType === slotType);
+    if (!opt) return;
+    if (engineRef.current!.isHeld(item.name)) await engineRef.current!.toggleHeld(item); // take it out of the hand first
+    await engineRef.current!.attachToBody(item, slotType, opt.attachmentName, opt.transform);
+  });
+  // Return a body-attached item to the hand.
+  const returnToHand = (item: HeldItem, slotType: string) => guard(async () => {
+    engineRef.current!.detachFromBody(slotType);
+    if (!engineRef.current!.isHeld(item.name)) await engineRef.current!.toggleHeld(item);
+  });
+  const detachBody = (slotType: string) => guard(async () => { engineRef.current!.detachFromBody(slotType); });
   const hairData = useMemo(() => listHair(index) as HairData, [index]);
 
   const idleClip = useMemo(() =>
@@ -227,7 +292,8 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
   useEffect(() => {
     const eng = new CharacterEngine(canvasRef.current!, ctx);
     eng.onClipName = setNowPlaying;
-    eng.onFrame = (t, dur) => { const el = scrubRef.current; if (el && !scrubbingRef.current) el.value = String(dur ? ((t % dur) / dur) * 1000 : 0); };
+    eng.onFrame = (t, dur) => { const el = scrubRef.current; if (el && !scrubbingRef.current) el.value = String(dur ? (Math.min(t, dur) / dur) * 1000 : 0); };
+    eng.onPlaying = setPlaying; // a one-shot clip finishing flips the play/pause button back to play
     eng.onCamMode = setCamMode; // keep the Scene-tab toggle in sync with auto-switches
     eng.onViewfinder = setViewfinder; // studio letterbox rect (CSS px)
     engineRef.current = eng;
@@ -524,6 +590,7 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
     hair: { sel: hairSel, color: hairColor }, beard: { sel: beardSel, color: beardColor },
     clothing: engineRef.current?.clothingState() ?? [],
     held: engineRef.current?.heldState() ?? [],
+    bodyAttachments: (engineRef.current?.bodyAttachState() ?? []).map((b) => ({ slot: b.slotType, name: b.itemName })),
     scene: { bg, turntable, camPreset, studioAspect, facing, floor: floorSel, light, grid, shadow },
   });
   // Front-35mm portrait snapshot of the current character (facing the camera), for the preset card.
@@ -555,6 +622,7 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
     await eng.applyPart('beard', { name: 'None' }, null).catch(() => {});
     await eng.clearAllClothing().catch(() => {});
     await eng.clearAllHeld().catch(() => {});
+    eng.clearBodyAttachments();
     const tone0 = (SKIN_TONES as Record<string, string[]>)[gender][0];
     setSkin(tone0); await eng.setSkin(tone0).catch(() => {});
     setEquipTick((t) => t + 1); emitCharName(null); setNowPlaying('new character');
@@ -572,6 +640,18 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
     for (const cl of preset.clothing) { const item = clothing.find((x) => x.name === cl.name); if (item) { try { await eng.toggleClothing(item, cl.tint); if (cl.hidden) await eng.setItemHidden(cl.name, true); } catch { /* skip */ } } }
     await eng.clearAllHeld();
     for (const h of preset.held) { const item = held.find((x) => x.name === h.name); if (item) { try { await eng.toggleHeld(item, h.hand); for (const a of h.attachments) await eng.setHeldAttachment(h.name, a.slot, a.option); if (h.hidden) await eng.setItemHidden(h.name, true); } catch { /* skip */ } } }
+    // body attachments (gun in holster, weapon on back/belt, light on webbing, ...). Slots depend on the
+    // just-restored clothing, so read it straight off the engine (the `worn` memo is stale in this async
+    // flow) and recompute each item's location/transform for the restored gender.
+    eng.clearBodyAttachments();
+    const wornNow = slotsFromWorn((eng.clothingState() || []).map((c: { name: string }) => c.name), providers);
+    wornNow.provided.add('SmallBeltLeft'); wornNow.provided.add('SmallBeltRight'); // studio: belt always available
+    for (const b of preset.bodyAttachments || []) {
+      const item = heldByName.get(b.name);
+      if (!item || !item.attachmentType) continue;
+      const opt = (bodyAttachOptions(item.attachmentType, { provided: wornNow.provided, hasBag: wornNow.hasBag, gender: preset.gender }) as BodyOpt[]).find((o) => o.slotType === b.slot);
+      if (opt) { try { await eng.attachToBody(item, b.slot, opt.attachmentName, opt.transform); } catch { /* skip */ } }
+    }
     applyScene(preset.scene);
     setEquipTick((t) => t + 1);
     setNowPlaying(preset.name ? `loaded ${preset.name}` : ''); // an unnamed look is the restored working char
@@ -606,6 +686,8 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
   const segBtn = (on: boolean) => ({ borderRadius: 0, padding: '6px 9px', background: on ? 'var(--accent)' : 'var(--panel)', color: on ? '#fff' : 'var(--muted)' }) as const;
   void equipTick; // re-read equipped state on every equip change
   const equipList = engineRef.current?.equippedList() ?? [];
+  void equipTick; // body-attach state below is read fresh each render; equipTick drives re-render
+  const bodyEquip = engineRef.current?.bodyAttachState() ?? [];
 
   // the active tab's content - rendered in the side panel on desktop, in a bottom drawer on mobile
   const panelBody = (
@@ -640,7 +722,7 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
           items={held as (typeof held[number] & GridItem)[]}
           facetLabel="types"
           facetOrder={HELD_GROUP_ORDER as string[]}
-          active={(it) => { void equipTick; return !!engineRef.current?.isHeld(it.name); }}
+          active={(it) => { void equipTick; return !!engineRef.current?.isHeld(it.name) || bodyEquip.some((b) => b.itemName === it.name); }}
           onPick={(it) => toggleHeld(it)}
           favActive={(it) => favs.has(favKey('held', it.name))}
           onToggleFav={(it) => toggleFav('held', it.name)}
@@ -648,13 +730,26 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
           overlay={(it) => {
             void equipTick;
             const hand = engineRef.current?.heldHand(it.name);
-            if (!hand) return null; // only once the item is actually held
+            const hasLoc = optsByItem.has(it.name); // has valid body location(s) under the worn clothing
+            const onBody = bodyEquip.some((b) => b.itemName === it.name);
+            if (!hand && !hasLoc) return null;
             return (
-              <span role="button" title={`held in ${hand} hand (click to switch)`}
-                onClick={(e) => { e.stopPropagation(); setHeldHand(it.name, hand === 'left' ? 'right' : 'left'); }}
-                style={{ position: 'absolute', bottom: 4, right: 4, minWidth: 18, textAlign: 'center', padding: '1px 5px', fontSize: 11, fontWeight: 700, lineHeight: 1.4, borderRadius: 4, cursor: 'pointer', background: 'var(--accent)', color: '#fff', textShadow: '0 1px 2px #000' }}>
-                {hand === 'left' ? 'L' : 'R'}
-              </span>
+              <>
+                {hasLoc && (
+                  <span role="button" title="Attach to a body location"
+                    onClick={(e) => { e.stopPropagation(); const r = (e.currentTarget as HTMLElement).getBoundingClientRect(); setCardLoc({ item: it, x: r.left, y: r.bottom + 4 }); }}
+                    style={{ position: 'absolute', bottom: 4, left: 4, display: 'grid', placeItems: 'center', width: 24, height: 24, borderRadius: 5, cursor: 'pointer', background: onBody ? 'var(--accent)' : '#0e0e13cc', color: '#fff', border: '1px solid ' + (onBody ? 'var(--accent)' : 'var(--line)'), boxShadow: '0 1px 2px #000' }}>
+                    <BodyIcon size={15} />
+                  </span>
+                )}
+                {hand && (
+                  <span role="button" title={`held in ${hand} hand (click to switch)`}
+                    onClick={(e) => { e.stopPropagation(); setHeldHand(it.name, hand === 'left' ? 'right' : 'left'); }}
+                    style={{ position: 'absolute', bottom: 4, right: 4, display: 'grid', placeItems: 'center', width: 24, height: 24, fontSize: 13, fontWeight: 700, lineHeight: 1, borderRadius: 5, cursor: 'pointer', background: 'var(--accent)', color: '#fff', textShadow: '0 1px 2px #000' }}>
+                    {hand === 'left' ? 'L' : 'R'}
+                  </span>
+                )}
+              </>
             );
           }}
           renderThumb={(it) => <Thumb depKey={`h:${it.name}`} getUrl={() => thumbs.held(it)} />} />
@@ -674,6 +769,28 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
     <div ref={containerRef} style={{ display: 'flex', flexDirection: isMobile ? 'column' : 'row', gap: isMobile ? 8 : 0, height: isMobile ? (mobileViewH || '80vh') : 'calc(100vh - 128px)', minHeight: isMobile ? 0 : 460 }}>
       {importOpen && <ImportModal onClose={() => setImportOpen(false)} onImport={applyImport} />}
       {presetsOpen && <PresetsModal presets={presets} onClose={() => setPresetsOpen(false)} onSave={savePreset} onLoad={(p) => { void applyPreset(p); setPresetsOpen(false); }} onDelete={deletePreset} onDuplicate={duplicatePreset} />}
+      {/* Held-browser location popout: a small menu anchored to the card's attach badge. Fixed-position
+          so it never clips inside the grid; a backdrop catches outside clicks. */}
+      {cardLoc && (() => {
+        const opts = optsByItem.get(cardLoc.item.name) || [];
+        const attachedSlot = bodyEquip.find((b) => b.itemName === cardLoc.item.name)?.slotType || null;
+        const menuW = 190, rowH = 38;
+        const left = Math.max(6, Math.min(cardLoc.x, window.innerWidth - menuW - 6));
+        const top = Math.max(6, Math.min(cardLoc.y, window.innerHeight - (opts.length + 1) * rowH - 40));
+        return (
+          <div onClick={() => setCardLoc(null)} style={{ position: 'fixed', inset: 0, zIndex: 80 }}>{/* above the mobile drawer (z70) so the popout isn't hidden under it */}
+            <div onClick={(ev) => ev.stopPropagation()} style={{ position: 'fixed', left, top, width: menuW, background: '#0e0e13f5', border: '1px solid var(--line)', borderRadius: 8, padding: 6, boxShadow: '0 6px 24px #000a' }}>
+              <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '.05em', color: 'var(--muted)', padding: '2px 4px 6px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>Attach {nameToLabel.get(cardLoc.item.name) ?? cardLoc.item.name}</div>
+              <button className="secondary" onClick={() => { if (attachedSlot) void returnToHand(cardLoc.item, attachedSlot); setCardLoc(null); }}
+                style={{ width: '100%', textAlign: 'left', padding: '9px 10px', marginBottom: 4, fontSize: 12.5, background: attachedSlot ? 'var(--panel)' : 'var(--accent)', color: attachedSlot ? 'var(--text)' : '#fff' }}>In hands</button>
+              {opts.map((o) => (
+                <button key={o.slotType} className="secondary" title={o.location} onClick={() => { void placeOnBody(cardLoc.item, o.slotType); setCardLoc(null); }}
+                  style={{ width: '100%', textAlign: 'left', padding: '9px 10px', marginBottom: 4, fontSize: 12.5, background: o.slotType === attachedSlot ? 'var(--accent)' : 'var(--panel)', color: o.slotType === attachedSlot ? '#fff' : 'var(--text)' }}>{o.slotName}</button>
+              ))}
+            </div>
+          </div>
+        );
+      })()}
       <div style={{ flex: 1, minHeight: 0, minWidth: isMobile ? 0 : 320, position: 'relative', background: '#14141a', border: '1px solid var(--line)', borderRadius: 8, overflow: 'hidden' }}>
         {/* studio layer: background sits behind the (transparent) WebGL canvas. With a framing
             aspect it's clipped to the viewfinder rect (outside stays the neutral letterbox); in
@@ -699,7 +816,7 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
           <div style={{ display: 'flex', gap: isMobile ? 6 : 8, alignItems: 'flex-start' }}>
             <button className="secondary" title="Equipped items" aria-label="Equipped items" onClick={() => { setEquipOpen((v) => !v); setSceneOpen(false); }}
               style={{ position: 'relative', borderRadius: 6, padding: isMobile ? 0 : '7px 12px', width: isMobile ? 36 : undefined, height: isMobile ? 36 : undefined, display: isMobile ? 'grid' : undefined, placeItems: isMobile ? 'center' : undefined, fontSize: 13, lineHeight: 1, border: '1px solid var(--line)', background: equipOpen ? 'var(--accent)' : 'var(--panel)', color: equipOpen ? '#fff' : 'var(--text)' }}>
-              {isMobile ? (<><ShirtIcon />{equipList.length > 0 && <span style={{ position: 'absolute', top: -6, right: -6, minWidth: 16, height: 16, padding: '0 4px', borderRadius: 999, background: 'var(--accent)', color: '#fff', fontSize: 10.5, fontWeight: 700, display: 'grid', placeItems: 'center', border: '1.5px solid #0e0e13' }}>{equipList.length}</span>}</>) : `Equipped${equipList.length ? ` (${equipList.length})` : ''}`}
+              {isMobile ? (<><ShirtIcon />{(equipList.length + bodyEquip.length) > 0 && <span style={{ position: 'absolute', top: -6, right: -6, minWidth: 16, height: 16, padding: '0 4px', borderRadius: 999, background: 'var(--accent)', color: '#fff', fontSize: 10.5, fontWeight: 700, display: 'grid', placeItems: 'center', border: '1.5px solid #0e0e13' }}>{equipList.length + bodyEquip.length}</span>}</>) : `Equipped${(equipList.length + bodyEquip.length) ? ` (${equipList.length + bodyEquip.length})` : ''}`}
             </button>
             <button data-tour="scenebtn" className="secondary" title="Scene, lighting & floor" aria-label="Scene, lighting and floor" onClick={() => { setSceneOpen((v) => !v); setEquipOpen(false); }}
               style={{ borderRadius: 6, padding: isMobile ? 0 : '7px 12px', width: isMobile ? 36 : undefined, height: isMobile ? 36 : undefined, display: isMobile ? 'grid' : undefined, placeItems: isMobile ? 'center' : undefined, fontSize: 13, lineHeight: 1, border: '1px solid var(--line)', background: sceneOpen ? 'var(--accent)' : 'var(--panel)', color: sceneOpen ? '#fff' : 'var(--text)' }}>
@@ -736,41 +853,59 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
         {equipOpen && (
           <div data-tour="equipmenu" style={{ position: 'absolute', right: isMobile ? 6 : 12, top: isMobile ? 48 : 54, width: isMobile ? 'min(340px, calc(100% - 12px))' : 264, maxHeight: isMobile ? '76%' : '68%', overflow: 'auto', background: '#0e0e13f2', border: '1px solid var(--line)', borderRadius: 8, padding: isMobile ? 10 : 8 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
-              <span style={{ fontSize: 12, color: 'var(--muted)' }}>Equipped ({equipList.length})</span>
+              <span style={{ fontSize: 12, color: 'var(--muted)' }}>Equipped ({equipList.length + bodyEquip.length})</span>
               <span role="button" onClick={() => setEquipOpen(false)} title="close" style={{ cursor: 'pointer', color: 'var(--muted)', padding: '0 4px' }}>✕</span>
             </div>
-            {!equipList.length && <div style={{ color: 'var(--muted)', fontSize: 12, padding: '8px 4px' }}>Nothing equipped.</div>}
+            {!equipList.length && !bodyEquip.length && <div style={{ color: 'var(--muted)', fontSize: 12, padding: '8px 4px' }}>Nothing equipped.</div>}
             {equipList.map((e) => {
               const slots = e.type === 'held' ? heldSlots.get(e.name) : undefined;
+              const locs = e.type === 'held' ? optsByItem.get(e.name) : undefined;
               const open = attachOpen === e.name;
               const chip = (active: boolean): React.CSSProperties => ({ padding: isMobile ? '9px 13px' : '2px 8px', fontSize: isMobile ? 13 : 11, maxWidth: isMobile ? 190 : 118, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', background: active ? 'var(--accent)' : 'var(--panel)', color: active ? '#fff' : 'var(--text)' });
               const actBtn: React.CSSProperties = isMobile ? { padding: '8px 11px', fontSize: 13, lineHeight: 1, borderRadius: 6, flexShrink: 0 } : { padding: '2px 8px', fontSize: 11, flexShrink: 0 };
+              const iconBtn: React.CSSProperties = { ...actBtn, display: 'grid', placeItems: 'center', width: isMobile ? 36 : 28, height: isMobile ? 34 : 24, padding: 0 };
+              const secLabel: React.CSSProperties = { fontSize: isMobile ? 11 : 10, textTransform: 'uppercase', letterSpacing: '.05em', color: 'var(--muted)', marginBottom: isMobile ? 7 : 3 };
+              const chipRow: React.CSSProperties = { display: 'flex', flexWrap: 'wrap', gap: isMobile ? 8 : 4 };
               return (
                 <div key={e.type + ':' + e.name} style={isMobile ? { borderBottom: '1px solid var(--line)', paddingBottom: 5, marginBottom: 5 } : undefined}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: isMobile ? 7 : 6, padding: isMobile ? '6px 2px' : '4px 2px' }}>
                     <span style={{ flex: 1, minWidth: 0, fontSize: isMobile ? 13 : 12, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', opacity: e.hidden ? 0.45 : 1 }} title={e.name}>{nameToLabel.get(e.name) ?? e.name}</span>
                     <span style={{ fontSize: 9, color: 'var(--muted)', border: '1px solid var(--line)', borderRadius: 3, padding: '0 3px', flexShrink: 0 }}>{e.type === 'held' ? 'held' : 'worn'}</span>
                     {e.type === 'held' && (
-                      <button className="secondary" title={`held in ${e.hand === 'left' ? 'left' : 'right'} hand (click to switch)`}
-                        onClick={() => setHeldHand(e.name, e.hand === 'left' ? 'right' : 'left')}
-                        style={{ ...actBtn, minWidth: isMobile ? 34 : 26 }}>{e.hand === 'left' ? 'L' : 'R'}</button>
+                      <button className="secondary" title="Hand, body location and attachments" aria-label="Options" onClick={() => setAttachOpen(open ? null : e.name)}
+                        style={{ ...iconBtn, background: open ? 'var(--accent)' : 'var(--panel)', color: open ? '#fff' : 'var(--text)' }}><GearIcon size={isMobile ? 16 : 14} /></button>
                     )}
-                    {!!slots?.length && (
-                      <button className="secondary" title="attachments" onClick={() => setAttachOpen(open ? null : e.name)}
-                        style={{ ...actBtn, fontSize: isMobile ? 15 : 13, background: open ? 'var(--accent)' : 'var(--panel)', color: open ? '#fff' : 'var(--text)' }}>⛭</button>
-                    )}
-                    <button className="secondary" title={e.hidden ? 'show in scene' : 'hide from scene'} onClick={() => toggleHide(e.name, !e.hidden)} style={{ ...actBtn, minWidth: isMobile ? 46 : 44 }}>{e.hidden ? 'show' : 'hide'}</button>
-                    <button className="secondary" title="remove (unequip)" aria-label="remove" onClick={() => removeEquip(e.name, e.type)} style={{ ...actBtn, fontSize: isMobile ? 14 : 12, color: '#ff6b6b', marginLeft: isMobile ? 5 : 0 }}>✕</button>
+                    <button className="secondary" title={e.hidden ? 'Show in scene' : 'Hide from scene'} aria-label={e.hidden ? 'show' : 'hide'} onClick={() => toggleHide(e.name, !e.hidden)}
+                      style={{ ...iconBtn, color: e.hidden ? 'var(--muted)' : 'var(--text)' }}>{e.hidden ? <EyeOffIcon size={isMobile ? 16 : 14} /> : <EyeIcon size={isMobile ? 16 : 14} />}</button>
+                    <button className="secondary" title="remove (unequip)" aria-label="remove" onClick={() => removeEquip(e.name, e.type)} style={{ ...iconBtn, fontSize: isMobile ? 14 : 12, color: '#ff6b6b' }}>✕</button>
                   </div>
-                  {open && slots && (
+                  {open && e.type === 'held' && (
                     <div style={{ padding: isMobile ? '2px 2px 12px 10px' : '2px 2px 8px 8px', margin: '0 0 4px 4px', borderLeft: '2px solid var(--accent)' }}>
-                      {slots.map((s) => {
+                      <div style={{ marginTop: isMobile ? 4 : 2 }}>
+                        <div style={secLabel}>Hand</div>
+                        <div style={chipRow}>
+                          <button className="secondary" onClick={() => setHeldHand(e.name, 'right')} style={chip(e.hand !== 'left')}>Right</button>
+                          <button className="secondary" onClick={() => setHeldHand(e.name, 'left')} style={chip(e.hand === 'left')}>Left</button>
+                        </div>
+                      </div>
+                      {locs && locs.length > 0 && (
+                        <div style={{ marginTop: isMobile ? 11 : 6 }}>
+                          <div style={secLabel}>Body location</div>
+                          <div style={chipRow}>
+                            <button className="secondary" onClick={() => setAttachOpen(null)} style={chip(true)}>In hands</button>
+                            {locs.map((o) => (
+                              <button key={o.slotType} className="secondary" title={o.location} onClick={() => { const item = heldByName.get(e.name); if (item) void placeOnBody(item, o.slotType); setAttachOpen(null); }} style={chip(false)}>{o.slotName}</button>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                      {slots && slots.map((s) => {
                         void equipTick;
                         const cur = engineRef.current?.heldAttachment(e.name, s.slot) ?? null;
                         return (
                           <div key={s.slot} style={{ marginTop: isMobile ? 11 : 6 }}>
-                            <div style={{ fontSize: isMobile ? 11 : 10, textTransform: 'uppercase', letterSpacing: '.05em', color: 'var(--muted)', marginBottom: isMobile ? 7 : 3 }}>{s.slot}</div>
-                            <div style={{ display: 'flex', flexWrap: 'wrap', gap: isMobile ? 8 : 4 }}>
+                            <div style={secLabel}>{s.slot}</div>
+                            <div style={chipRow}>
                               <button className="secondary" onClick={() => setAttachment(e.name, s.slot, null)} style={chip(cur === null)}>None</button>
                               {s.options.map((o) => (
                                 <button key={o.partName} className="secondary" title={o.partName} onClick={() => setAttachment(e.name, s.slot, o)} style={chip(cur === o.partName)}>{o.partName}</button>
@@ -779,6 +914,42 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
                           </div>
                         );
                       })}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+            {bodyEquip.map((b) => {
+              const it = heldByName.get(b.itemName);
+              const slotName = (SLOTS as Record<string, { name: string }>)[b.slotType]?.name || b.slotType;
+              const open = attachOpen === 'body:' + b.slotType;
+              const chip = (active: boolean): React.CSSProperties => ({ padding: isMobile ? '9px 13px' : '2px 8px', fontSize: isMobile ? 13 : 11, maxWidth: isMobile ? 190 : 118, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', background: active ? 'var(--accent)' : 'var(--panel)', color: active ? '#fff' : 'var(--text)' });
+              const actBtn: React.CSSProperties = isMobile ? { padding: '8px 11px', fontSize: 13, lineHeight: 1, borderRadius: 6, flexShrink: 0 } : { padding: '2px 8px', fontSize: 11, flexShrink: 0 };
+              const iconBtn: React.CSSProperties = { ...actBtn, display: 'grid', placeItems: 'center', width: isMobile ? 36 : 28, height: isMobile ? 34 : 24, padding: 0 };
+              const secLabel: React.CSSProperties = { fontSize: isMobile ? 11 : 10, textTransform: 'uppercase', letterSpacing: '.05em', color: 'var(--muted)', marginBottom: isMobile ? 7 : 3 };
+              const chipRow: React.CSSProperties = { display: 'flex', flexWrap: 'wrap', gap: isMobile ? 8 : 4 };
+              return (
+                <div key={'body:' + b.slotType} style={isMobile ? { borderBottom: '1px solid var(--line)', paddingBottom: 5, marginBottom: 5 } : undefined}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: isMobile ? 7 : 6, padding: isMobile ? '6px 2px' : '4px 2px' }}>
+                    <span style={{ flex: 1, minWidth: 0, fontSize: isMobile ? 13 : 12, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={b.itemName}>{nameToLabel.get(b.itemName) ?? b.itemName}</span>
+                    <span title={slotName} style={{ fontSize: 9, color: 'var(--muted)', border: '1px solid var(--line)', borderRadius: 3, padding: '0 3px', flexShrink: 0, maxWidth: 96, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{slotName}</span>
+                    {it && optsByItem.has(b.itemName) && (
+                      <button className="secondary" title="Change hand or body location" aria-label="Placement" onClick={() => setAttachOpen(open ? null : 'body:' + b.slotType)}
+                        style={{ ...iconBtn, background: open ? 'var(--accent)' : 'var(--panel)', color: open ? '#fff' : 'var(--text)' }}><GearIcon size={isMobile ? 16 : 14} /></button>
+                    )}
+                    <button className="secondary" title="remove (detach)" aria-label="remove" onClick={() => detachBody(b.slotType)} style={{ ...iconBtn, fontSize: isMobile ? 14 : 12, color: '#ff6b6b' }}>✕</button>
+                  </div>
+                  {open && it && (
+                    <div style={{ padding: isMobile ? '2px 2px 12px 10px' : '2px 2px 8px 8px', margin: '0 0 4px 4px', borderLeft: '2px solid var(--accent)' }}>
+                      <div style={{ marginTop: isMobile ? 4 : 2 }}>
+                        <div style={secLabel}>Placement</div>
+                        <div style={chipRow}>
+                          <button className="secondary" onClick={() => { void returnToHand(it, b.slotType); setAttachOpen(null); }} style={chip(false)}>In hands</button>
+                          {(optsByItem.get(b.itemName) || []).map((o) => (
+                            <button key={o.slotType} className="secondary" title={o.location} onClick={() => { void placeOnBody(it, o.slotType); setAttachOpen(null); }} style={chip(o.slotType === b.slotType)}>{o.slotName}</button>
+                          ))}
+                        </div>
+                      </div>
                     </div>
                   )}
                 </div>
@@ -798,6 +969,8 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
         )}
         <div style={{ position: 'absolute', left: 12, bottom: 12, right: 12, display: 'flex', gap: isMobile ? 6 : 8, alignItems: 'center', background: '#000000aa', borderRadius: 8, padding: isMobile ? '6px 8px' : '6px 10px' }}>
           <button className="secondary" onClick={togglePlay} style={{ padding: isMobile ? '4px 10px' : '4px 12px', flexShrink: 0 }}>{playing ? '❚❚' : '▶'}</button>
+          <button className="secondary" title="Play from the start" aria-label="Replay from start" onClick={() => { engineRef.current?.replay(); setPlaying(true); }}
+            style={{ padding: 0, width: isMobile ? 32 : 30, height: isMobile ? 30 : 28, display: 'grid', placeItems: 'center', flexShrink: 0 }}><RestartIcon size={isMobile ? 16 : 15} /></button>
           <input ref={scrubRef} type="range" min={0} max={1000} defaultValue={0}
             onMouseDown={() => { scrubbingRef.current = true; }} onMouseUp={() => { scrubbingRef.current = false; }}
             onInput={(e) => engineRef.current?.seek(Number((e.target as HTMLInputElement).value) / 1000)}
@@ -1367,7 +1540,7 @@ function PresetsModal({ presets, onClose, onSave, onLoad, onDelete, onDuplicate 
         </div>
         <div style={{ padding: 14, overflow: 'auto' }}>
           {!saved.length
-            ? <div style={{ color: 'var(--muted)', fontSize: 13, textAlign: 'center', padding: '44px 12px', lineHeight: 1.6 }}>No saved characters yet.<br />Dress a survivor, name it above and hit <b>Save current</b> — a preview snapshot is stored with each.</div>
+            ? <div style={{ color: 'var(--muted)', fontSize: 13, textAlign: 'center', padding: '44px 12px', lineHeight: 1.6 }}>No saved characters yet.<br />Dress a survivor, name it above and hit <b>Save current</b>. A preview snapshot is stored with each.</div>
             : (
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(132px, 1fr))', gap: 12 }}>
                 {saved.map((p) => (

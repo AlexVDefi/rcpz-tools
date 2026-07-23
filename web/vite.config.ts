@@ -5,7 +5,7 @@ import { fileURLToPath, URL } from 'node:url';
 const originOf = (u?: string) => { if (!u) return null; try { return new URL(u).origin; } catch { return null; } };
 
 // A strict Content-Security-Policy, injected into the built index.html (production only, so
-// Vite's dev server — which needs inline/eval for HMR — keeps working). The key line is
+// Vite's dev server, which needs inline/eval for HMR, keeps working). The key line is
 // `connect-src`: the browser BLOCKS any network request (fetch/XHR/WebSocket) to anywhere but
 // this app's own origin, so no game file, save or mod can ever be uploaded, even by a bug. When
 // the optional online-sharing feature is configured, connect-src is widened to exactly the

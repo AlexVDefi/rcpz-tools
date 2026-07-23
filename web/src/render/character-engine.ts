@@ -4,7 +4,7 @@
 // viewer creates one of these and calls its methods; all Three.js lives here.
 import { resolveBody, resolveClip, resolveClothing, resolveHeldItem, resolveHairStyle, resolveAttachmentPart } from '@shared/character-core.js';
 import { THREE, makeSkinnedMaterial, makeMaterial, CHAR_LIGHTING, partMatrix, makeOrbit } from './three-core';
-import { glbToGltf, bytesToTexture, sourceToTexture } from './loaders';
+import { glbToGltf, isolateSubMesh, bytesToTexture, sourceToTexture } from './loaders';
 import { normaliseClip, retargetAttachments, boneRestMap, normalizeClothingRig, captureSkeletonBind, type SkeletonBind } from './anim';
 import { composeBody } from './canvas-image-ops';
 import { RigSet } from './rigset';
@@ -12,8 +12,13 @@ import { RigSet } from './rigset';
 export interface Ctx { resolver: unknown; converter: unknown; }
 type Clip = { id: string; name: string; format: string; rel: string };
 
-interface Equip { kind: string; maskTextures: Uint8Array[]; baseTextures: Uint8Array[]; tint: number[] | null; hatCategory: string | null; }
+interface Equip { kind: string; maskTextures: Uint8Array[]; baseTextures: Uint8Array[]; tint: number[] | null; hatCategory: string | null; layer: number; }
 type Socket = { offset: number[]; rotate: number[]; scale?: number };
+// A body attachment location's transform (shared/attachments.js): a target bone + the PZ-space
+// offset/rotate/scale that positions the item there (bat on back, gun in holster, ...).
+export type BodyTransform = { bone: string; offset: number[]; rotate: number[]; scale?: number };
+// A held item descriptor as far as body-attaching needs it (what resolveHeldItem reads + its sockets).
+export type BodyAttachItem = { name: string; mesh: string; texture?: string; scale?: number; prop?: string; allAttachments?: Record<string, Socket> };
 // One weapon-part option from a held item's attachSlots (shared/character-core.js).
 export type AttachOption = { partName: string; mesh: string; texture?: string; parentAttachment: Socket; selfAttachment: Socket | null };
 type HeldEntry = { holder: THREE.Object3D; prop: string; item: { name: string }; gunObj: THREE.Object3D; parts: Map<string, THREE.Object3D>; attachSel: Map<string, AttachOption> };
@@ -33,6 +38,7 @@ export class CharacterEngine {
   ctx: Ctx;
   gender: 'male' | 'female' = 'male';
   playing = true;
+  private finished = false; // a non-looping clip has reached its end (so play acts as replay)
   speed = 1;
   // live-adjustable lighting (matches the desktop app's defaults)
   light = { ambient: CHAR_LIGHTING.ambient[0], keyBright: CHAR_LIGHTING.keyColour[0], keyDir: [...CHAR_LIGHTING.keyDir] as number[] };
@@ -62,12 +68,15 @@ export class CharacterEngine {
   private equipped = new Map<string, Equip>();
   private statics = new Map<string, THREE.Object3D>();
   private held = new Map<string, HeldEntry>();
+  // body-attached items (bat on back, gun in holster, ...), keyed by slot type; one item per slot.
+  private bodyAttached = new Map<string, { obj: THREE.Object3D; itemName: string; attachmentName: string; transform: BodyTransform }>();
   private static readonly RIGHT_PROP = 'Bip01_Prop1';
   private static readonly LEFT_PROP = 'Bip01_Prop2';
   private hidden = new Set<string>(); // equipped-but-temporarily-hidden clothing/held names
   private whiteTex: THREE.Texture | null = null;
   onClipName?: (s: string) => void;
   onFrame?: (time: number, duration: number) => void;
+  onPlaying?: (playing: boolean) => void; // fires when playback auto-stops at the end of a one-shot clip
   onCamMode?: (mode: 'orbit' | 'iso') => void;
 
   constructor(canvas: HTMLCanvasElement, ctx: Ctx) {
@@ -92,7 +101,10 @@ export class CharacterEngine {
       if (this.paused) return; // an export is driving the frames
       const dt = this.clock.getDelta();
       if (this.turntable) { this.spin = (this.spin + dt * 0.6) % (Math.PI * 2); this.rigs.setFacing(this.spin); }
-      if (this.rigs.clip && this.playing) this.rigs.update(dt * this.speed);
+      if (this.rigs.clip && this.playing) {
+        this.rigs.update(dt * this.speed);
+        if (this.rigs.finishedOnce()) { this.playing = false; this.finished = true; this.onPlaying?.(false); } // one-shot done: stop, arm replay
+      }
       if (this.rigs.clip) this.onFrame?.(this.rigs.time(), this.rigs.duration());
       this.drawFrame();
     };
@@ -409,7 +421,9 @@ export class CharacterEngine {
   seek(frac: number) { this.rigs.setTime(frac * this.rigs.duration()); }
   getTime() { return this.rigs.time(); }
   getDuration() { return this.rigs.duration(); }
-  setLoop(on: boolean) { this.rigs.setLoop(on); }
+  setLoop(on: boolean) { this.rigs.setLoop(on); if (on && this.finished) this.replay(); } // turning loop back on revives a stopped clip
+  /** Rewind to the first frame and play again (one-shot or looping). */
+  replay() { this.finished = false; this.rigs.restart(); this.playing = true; this.onPlaying?.(true); }
   setSpeed(s: number) { this.speed = s; }
 
   dispose() {
@@ -449,6 +463,7 @@ export class CharacterEngine {
     this.bodyRest = boneRestMap(root);
     this.bodySkel = captureSkeletonBind(root); // bind-pose skeleton for world-space glb retarget
     const hadBody = !!this.rigs.bodyRig();
+    this.clearBodyAttachments(); // their holders live on the old skeleton's bones; drop them on reload
     this.rigs.removeKind('body');
     this.rigs.add('body', root);
     root.updateMatrixWorld(true);
@@ -530,8 +545,7 @@ export class CharacterEngine {
     const gltf = await glbToGltf(r.glb);
     if (!gltf.animations?.length) throw new Error('no animation in ' + clip.name);
     const norm = normaliseClip(gltf.animations[0], clip.format, { clipScene: gltf.scene, bodySkel: this.bodySkel ?? undefined, clipRest: boneRestMap(gltf.scene), bodyRest: this.bodyRest });
-    this.rigs.setLoop(true);
-    this.rigs.setClip(norm);
+    this.rigs.setClip(norm); // keeps the current loop setting - don't force looping on a freshly picked clip
     // Bake the weapon prop tracks AFTER binding, so the body is posed by the real playback mixer
     // (not the previous clip's leftover pose). Then rebind with the prop tracks folded in.
     const bodyRoot = this.rigs.bodyRig()?.root;
@@ -540,12 +554,14 @@ export class CharacterEngine {
       if (propTracks.length) { norm.clip.tracks.push(...propTracks); this.rigs.setClip(norm); }
     }
     this.groundToClip(); // re-ground off this clip's posed feet (formats frame the body differently)
-    this.playing = true;
+    this.rigs.restart(); // grounding/prop-baking sample the clip to its end; that finishes a one-shot
+    this.playing = true;  //   (LoopOnce) action, so rewind to a clean, playing frame 0
+    this.finished = false;
     const tag = norm.best ? '' : (clip.format === 'fbx' ? ' (fbx, best-effort)' : ` (${clip.format}, retargeted)`);
     this.onClipName?.(clip.name + tag);
   }
 
-  togglePlay() { this.playing = !this.playing; return this.playing; }
+  togglePlay() { if (this.finished) { this.replay(); return true; } this.playing = !this.playing; return this.playing; }
 
   private setBodyTexture(tex: THREE.Texture) {
     const body = this.rigs.bodyRig();
@@ -559,7 +575,10 @@ export class CharacterEngine {
     if (!this.currentBody) return;
     const layers: { bytes: Uint8Array; tint: number[] | null }[] = [];
     const masks: Uint8Array[] = [];
-    for (const [name, e] of this.equipped.entries()) {
+    // Composite the texture-only garments (socks, longjohns, undies, ...) in PZ BodyLocations order,
+    // not toggle order, so overlapping layers stack correctly regardless of what was equipped first.
+    const ordered = [...this.equipped.entries()].sort((a, b) => a[1].layer - b[1].layer);
+    for (const [name, e] of ordered) {
       if (this.hidden.has(name)) continue; // a hidden garment drops its texture layer AND its skin mask
       for (const b of e.baseTextures) layers.push({ bytes: b, tint: e.tint });
       for (const m of e.maskTextures) masks.push(m);
@@ -607,14 +626,18 @@ export class CharacterEngine {
   isEquipped(name: string) { return this.equipped.has(name); }
   equippedNames() { return [...this.equipped.keys()]; }
 
-  async toggleClothing(item: { name: string }, tint: number[] | null = null) {
+  async toggleClothing(item: { name: string; layer?: number }, tint: number[] | null = null) {
     if (this.equipped.has(item.name)) { await this.unequipClothing(item.name); return false; }
     const r = await resolveClothing(this.ctx, item, this.gender);
     if (r.error) throw new Error(r.error);
-    const entry: Equip = { kind: r.kind, maskTextures: r.maskTextures || [], baseTextures: r.baseTextures || [], tint, hatCategory: r.hatCategory || null };
+    const layer = typeof item.layer === 'number' ? item.layer : -1; // PZ BodyLocations draw order
+    const entry: Equip = { kind: r.kind, maskTextures: r.maskTextures || [], baseTextures: r.baseTextures || [], tint, hatCategory: r.hatCategory || null, layer };
     if (r.kind === 'mesh') {
       const tex = r.texture ? await bytesToTexture(r.texture, false) : this.white();
       const root = await this.loadSkinnedRoot(r.meshGlb, tex, tint, true); // tint -> shader tint uniform
+      // Draw overlapping garment meshes in body-location order so the outer one wins coincident
+      // surfaces (no arbitrary z-fight); +1 keeps every garment above the base body (renderOrder 0).
+      root.traverse((o) => { const m = o as THREE.Mesh; if (m.isMesh) m.renderOrder = 1 + Math.max(layer, 0); });
       this.rigs.add('cloth:' + item.name, root);
     } else if (r.kind === 'static') {
       await this.attachStatic(item.name, r, tint);
@@ -639,7 +662,7 @@ export class CharacterEngine {
     await this.recompositeBody();
   }
 
-  private async attachStatic(name: string, r: { meshGlb: Uint8Array; texture: Uint8Array | null; attachBone?: string | null }, tint: number[] | null = null) {
+  private async attachStatic(name: string, r: { meshGlb: Uint8Array; texture: Uint8Array | null; attachBone?: string | null; subMesh?: string | null }, tint: number[] | null = null) {
     const body = this.rigs.bodyRig();
     if (!body) return;
     let skeleton: THREE.Skeleton | null = null;
@@ -649,6 +672,7 @@ export class CharacterEngine {
     if (!bone) throw new Error(`attach bone not found: ${r.attachBone}`);
     const gltf = await glbToGltf(r.meshGlb);
     const obj = gltf.scene;
+    isolateSubMesh(obj, r.subMesh); // modular model file: keep only the named part
     const tex = r.texture ? await bytesToTexture(r.texture, false) : this.white();
     const mat = makeMaterial(tex, this.lightingObj(), true);
     if (tint) mat.uniforms.tint.value.set(tint[0], tint[1], tint[2]);
@@ -662,6 +686,48 @@ export class CharacterEngine {
     if (obj?.parent) obj.parent.remove(obj);
     this.statics.delete(name);
   }
+
+  // ---- body attachments (item on the player: bat on back, gun in a worn holster, light on webbing) ----
+
+  /** Mount a held item's model at a body location. `transform` is the location's bone + PZ-space
+   *  offset/rotate/scale (A_parent); the item's own attachment of the same name (A_self, usually
+   *  absent) is composed on top - exactly the game's Bone x A_parent x A_self. One item per slot. */
+  async attachToBody(item: BodyAttachItem, slotType: string, attachmentName: string, transform: BodyTransform): Promise<boolean> {
+    const body = this.rigs.bodyRig();
+    if (!body) return false;
+    const bone = body.root.getObjectByName(transform.bone);
+    if (!bone) throw new Error(`body attach bone not found: ${transform.bone}`);
+    const r = await resolveHeldItem(this.ctx, item); // needs mesh/texture/scale, not just the name
+    if (r.error) throw new Error(r.error);
+    const gltf = await glbToGltf(r.meshGlb);
+    const obj = gltf.scene;
+    isolateSubMesh(obj, r.subMesh); // modular model file: keep only the named part
+    const tex = r.texture ? await bytesToTexture(r.texture, false) : this.white();
+    const mat = makeMaterial(tex, this.lightingObj(), true);
+    obj.traverse((o) => { const m = o as THREE.Mesh; if (m.isMesh) { if (!m.geometry.getAttribute('normal')) m.geometry.computeVertexNormals(); m.material = mat; m.frustumCulled = false; } });
+    if (r.scale && r.scale !== 1) obj.scale.setScalar(r.scale);
+    const selfAtt = (item.allAttachments && item.allAttachments[attachmentName]) || null; // optional per-item fine-tune
+    const holder = new THREE.Object3D();
+    holder.matrixAutoUpdate = false;
+    holder.matrix.copy(partMatrix(transform, selfAtt)); // Bone(implicit) x A_parent(body location) x A_self(item)
+    holder.add(obj);
+    this.detachFromBody(slotType); // one item per slot
+    bone.add(holder);
+    this.bodyAttached.set(slotType, { obj: holder, itemName: item.name, attachmentName, transform });
+    return true;
+  }
+
+  detachFromBody(slotType: string) {
+    const cur = this.bodyAttached.get(slotType);
+    if (cur?.obj.parent) cur.obj.parent.remove(cur.obj);
+    this.bodyAttached.delete(slotType);
+  }
+
+  /** What is attached in each slot (for the UI + save/restore). */
+  bodyAttachState(): { slotType: string; itemName: string; attachmentName: string; transform: BodyTransform }[] {
+    return [...this.bodyAttached.entries()].map(([slotType, v]) => ({ slotType, itemName: v.itemName, attachmentName: v.attachmentName, transform: v.transform }));
+  }
+  clearBodyAttachments() { for (const s of [...this.bodyAttached.keys()]) this.detachFromBody(s); }
 
   isHeld(name: string) { return this.held.has(name); }
 
@@ -702,6 +768,7 @@ export class CharacterEngine {
     const att = (r.attachments && (r.attachments[prop] || r.attachments[CharacterEngine.RIGHT_PROP])) || null;
     const gltf = await glbToGltf(r.meshGlb);
     const obj = gltf.scene;
+    isolateSubMesh(obj, r.subMesh); // modular model file (e.g. one FBX of weapon parts): keep only the named part
     // flipY=false: the assimp glb UVs are in glTF convention (V origin at top), same as the
     // body/clothing path. flipY=true samples the transparent atlas background on both vanilla
     // (.x) and modded (.fbx) weapons -> black/see-through patches.
@@ -738,6 +805,7 @@ export class CharacterEngine {
     if (!this.held.has(name)) return; // item was removed mid-load
     const gltf = await glbToGltf(r.meshGlb);
     const obj = gltf.scene;
+    isolateSubMesh(obj, r.subMesh); // modular model file: keep only the named part
     const tex = r.texture ? await bytesToTexture(r.texture, false) : this.white();
     const mat = makeMaterial(tex, this.lightingObj(), true);
     obj.traverse((o) => { const m = o as THREE.Mesh; if (m.isMesh) { if (!m.geometry.getAttribute('normal')) m.geometry.computeVertexNormals(); m.material = mat; m.frustumCulled = false; } });

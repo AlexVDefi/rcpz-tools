@@ -73,6 +73,32 @@ function buildClothingLocations(index) {
   return map;
 }
 
+// Clothing draw/layer order, ported from PZ's BodyLocations.lua (Build 42). The list index IS the
+// render layer: later in the list = drawn on top / outermost. The game keeps worn items sorted by
+// this and builds BOTH the body-texture composite and the 3D-mesh list in this order, so e.g. socks
+// composite under longjohns (Legs1) under shoes, under pants. Values are the lowercased, namespace-
+// stripped BodyLocation ids (matching buildClothingLocations), and the enum->id map from
+// ItemBodyLocation.java. Unknown/modded locations -> -1 (drawn first/underneath), like group.indexOf.
+const CLOTHING_RENDER_ORDER = [
+  'bandage', 'wound', 'beltextra', 'belt', 'bellybutton', 'makeup_fullface', 'makeup_eyes', 'makeup_eyesshadow',
+  'makeup_lips', 'mask', 'maskeyes', 'maskfull', 'underwearbottom', 'underweartop', 'underwear', 'underwearextra1',
+  'underwearextra2', 'hat', 'fullhat', 'ears', 'eartop', 'nose', 'torso1', 'torso1legs1', 'tanktop', 'tshirt',
+  'shortsleeveshirt', 'leftwrist', 'rightwrist', 'shirt', 'rightarm', 'leftarm', 'neck', 'neck_texture', 'necklace',
+  'necklace_long', 'right_middlefinger', 'left_middlefinger', 'left_ringfinger', 'right_ringfinger', 'hands',
+  'handsleft', 'handsright', 'calf_left_texture', 'calf_right_texture', 'socks', 'legs1', 'shoes', 'codpiece',
+  'shortsshort', 'shortpants', 'pants_skinny', 'gaiter_right', 'gaiter_left', 'pants', 'skirt', 'dress', 'legs5',
+  'forearm_left', 'forearm_right', 'longskirt', 'longdress', 'vesttexture', 'bodycostume', 'sportshoulderpad',
+  'gorget', 'jersey', 'sweater', 'sweaterhat', 'pantsextra', 'jacket', 'jacket_down', 'jacket_bulky', 'jackethat',
+  'jackethat_bulky', 'jacketsuit', 'fullsuit', 'boilersuit', 'fullsuithead', 'fullsuitheadscba', 'knee_left',
+  'knee_right', 'calf_left', 'calf_right', 'thigh_left', 'thigh_right', 'sportshoulderpadontop', 'shoulderpadright',
+  'shoulderpadleft', 'elbow_left', 'elbow_right', 'fulltop', 'bathrobe', 'fannypackfront', 'fannypackback', 'webbing',
+  'scba', 'scbanotank', 'ammostrap', 'satchel', 'shoulderholster', 'ankleholster', 'torsoextra', 'torsoextravest',
+  'torsoextravestbullet', 'cuirass', 'tail', 'fullrobe', 'back', 'lefteye', 'righteye', 'eyes', 'scarf', 'zeddmg',
+];
+const CLOTHING_LAYER = new Map(CLOTHING_RENDER_ORDER.map((n, i) => [n, i]));
+/** Draw layer (higher = on top) for a clothing BodyLocation id, matching PZ's BodyLocations order. */
+export function clothingLayer(location) { const i = CLOTHING_LAYER.get(location); return i === undefined ? -1 : i; }
+
 function parseClothingXml(text, rel) {
   const name = rel.split('/').pop().replace(/\.xml$/i, '');
   const maleModel = xScalar(text, 'm_MaleModel');
@@ -102,6 +128,7 @@ export function listClothing(index) {
       item.isMod = f.isMod;
       item.modName = sourceMod(index, f.sourceIndex);
       item.location = locations.get(item.name) || 'other';
+      item.layer = clothingLayer(item.location); // PZ BodyLocations draw order (higher = on top)
       items.push(item);
     } catch { /* skip malformed */ }
   }
@@ -197,6 +224,8 @@ export function listHeldItems(index) {
   const catByItem = new Map();     // item name (lower) -> { sc, dc, tags }
   const partsBySprite = new Map(); // gun model name (lower) -> parsed ModelWeaponPart[]
   const weaponParts = new Map();   // WeaponPart item name (lower) -> { partType, mountOn[] }
+  const atBySprite = new Map();    // model name (lower) -> item AttachmentType (body-attach category)
+  const atByItem = new Map();      // item name (lower) -> item AttachmentType
   for (const f of index.scriptFiles) {
     if (!f.text.includes('model ') && !f.text.includes('DisplayCategory') && !f.text.includes('WeaponSprite')) continue;
     let blocks; try { blocks = parseScriptText(f.text); } catch { continue; }
@@ -217,6 +246,8 @@ export function listHeldItems(index) {
           catByItem.set(b.name.toLowerCase(), info);
           if (ws) catBySprite.set(ws.split('.').pop().toLowerCase(), info);
         }
+        const at = prop(b, 'AttachmentType'); // body-attach category (Rifle/Knife/Holster/...)
+        if (at) { atByItem.set(b.name.toLowerCase(), at); if (ws) atBySprite.set(ws.split('.').pop().toLowerCase(), at); }
         const mwp = b.props.get('ModelWeaponPart');
         if (mwp && ws) partsBySprite.set(ws.split('.').pop().toLowerCase(), mwp.map(parseModelWeaponPart).filter(Boolean));
         const partType = prop(b, 'PartType');
@@ -235,12 +266,34 @@ export function listHeldItems(index) {
       name: m.name, mesh: m.mesh, texture: m.texture, scale: m.scale,
       prop: m.handProp || 'Bip01_Prop1',
       attachments: m.handProp ? m.attachments : DEFAULT_HAND,
+      allAttachments: m.attachments, // every socket on the model, incl. any body-location self-attachment
+      attachmentType: atBySprite.get(key) || atByItem.get(key) || atByItem.get(stripStateSuffix(m.name).toLowerCase()) || null,
       attachSlots: attachmentSlots(m.name, models, partsBySprite, weaponParts),
       isMod: m.isMod, modName: m.modName,
       group: heldGroup(info.sc, info.dc, tags), tags,
     });
   }
   return out.sort((a, b) => a.name.localeCompare(b.name));
+}
+
+/** Items that PROVIDE body-attach slots when worn (holsters/belts/webbing/bags): item name (lower) ->
+ *  { provided:[slotType], replacement:'Bag'|null } from AttachmentsProvided / AttachmentReplacement. */
+export function attachmentProviders(index) {
+  const out = new Map();
+  for (const f of index.scriptFiles) {
+    if (!f.text.includes('AttachmentsProvided') && !f.text.includes('AttachmentReplacement')) continue;
+    let blocks; try { blocks = parseScriptText(f.text); } catch { continue; }
+    walkBlocks(blocks, (b) => {
+      if (b.type !== 'item') return;
+      const prov = prop(b, 'AttachmentsProvided'), repl = prop(b, 'AttachmentReplacement');
+      if (!prov && !repl) return;
+      out.set(b.name.toLowerCase(), {
+        provided: prov ? prov.split(';').map((s) => s.trim()).filter(Boolean) : [],
+        replacement: repl ? repl.trim() : null,
+      });
+    });
+  }
+  return out;
 }
 
 // ============================ RESOLVE (async → bytes) ============================
@@ -252,7 +305,7 @@ async function meshToGlb(ctx, meshName) {
   if (!m || m.unsupported) return { error: `mesh not found: ${meshName}`, meshHit: m || null };
   const srcBytes = await readResolved(m);
   const glb = await ctx.converter.convertToGlb(srcBytes, m.format);
-  return { glb, realPath: m.realPath, format: m.format };
+  return { glb, realPath: m.realPath, format: m.format, subMesh: m.subMesh || null };
 }
 
 /** Body mesh (glb bytes) + chosen skin texture (png bytes). */
@@ -300,7 +353,7 @@ export async function resolveClothing(ctx, item, gender) {
   const mesh = await meshToGlb(ctx, modelName);
   if (mesh.error) return { name: item.name, kind: item.kind, error: mesh.error, maskTextures };
   return {
-    name: item.name, kind: item.kind, meshGlb: mesh.glb, texture, maskTextures,
+    name: item.name, kind: item.kind, meshGlb: mesh.glb, subMesh: mesh.subMesh, texture, maskTextures,
     attachBone: item.attachBone, hatCategory: item.hatCategory, allowTint: item.allowTint, allowHue: item.allowHue,
   };
 }
@@ -311,7 +364,7 @@ export async function resolveHeldItem(ctx, item) {
   if (mesh.error) return { name: item.name, error: mesh.error };
   let texHit = item.texture ? await ctx.resolver.resolveTexture(item.texture) : null;
   if (!texHit) texHit = await ctx.resolver.resolveTexture(item.mesh);
-  return { name: item.name, meshGlb: mesh.glb, texture: texHit ? await readResolved(texHit) : null, prop: item.prop, attachments: item.attachments, scale: item.scale };
+  return { name: item.name, meshGlb: mesh.glb, subMesh: mesh.subMesh, texture: texHit ? await readResolved(texHit) : null, prop: item.prop, attachments: item.attachments, scale: item.scale };
 }
 
 /** Resolve one weapon-part attachment option (from an item's attachSlots) to mesh + texture bytes. */
@@ -320,7 +373,7 @@ export async function resolveAttachmentPart(ctx, option) {
   if (mesh.error) return { error: mesh.error };
   let texHit = option.texture ? await ctx.resolver.resolveTexture(option.texture) : null;
   if (!texHit) texHit = await ctx.resolver.resolveTexture(option.mesh);
-  return { meshGlb: mesh.glb, texture: texHit ? await readResolved(texHit) : null, parentAttachment: option.parentAttachment, selfAttachment: option.selfAttachment };
+  return { meshGlb: mesh.glb, subMesh: mesh.subMesh, texture: texHit ? await readResolved(texHit) : null, parentAttachment: option.parentAttachment, selfAttachment: option.selfAttachment };
 }
 
 /** Resolve one hair/beard style's mesh + texture. Model-less (bald/none) -> {hasMesh:false}. */

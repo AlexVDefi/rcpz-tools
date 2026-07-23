@@ -54,27 +54,35 @@ export function createResolver(sources) {
     return null;
   }
 
-  /** Resolve a model-script `mesh` value -> { src, realPath, format } | { unsupported } | null. */
+  /** Resolve a model-script `mesh` value -> { src, realPath, format, subMesh } | { unsupported } | null. */
   async function resolveMesh(meshName) {
     if (!meshName) return null;
+    // PZ can pack several parts in one model file and pick one with `mesh = file|SubMeshName`
+    // (modular weapons, e.g. `weapons/modular/Mini14|Mini14_Receiver_Base`). Resolve only the
+    // file part here; the sub-mesh name is carried through so the loader can isolate that object.
+    const raw = String(meshName);
+    const bar = raw.indexOf('|');
+    const filePart = bar >= 0 ? raw.slice(0, bar) : raw;
+    const subMesh = bar >= 0 ? (raw.slice(bar + 1).trim() || null) : null;
     // Some clothing XMLs prefix the model with the `x:` namespace ("x:skinned\clothes\bob_apron");
     // it just means "under models_x", which we already prepend, so strip it (as the game does).
-    const lower = String(meshName).replace(/\\/g, '/').toLowerCase()
+    const lower = filePart.replace(/\\/g, '/').toLowerCase()
       .replace(/^x:/, '')
       .replace(/^media\/models_x\//, '').replace(/\.(fbx|x|glb|gltf)$/, '');
     for (const ext of MESH_EXTS) {
       const hit = await locate(`media/models_x/${lower}${ext}`);
-      if (hit) return { ...hit, format: ext.slice(1) };
+      if (hit) return { ...hit, format: ext.slice(1), subMesh };
     }
     const txt = await locate(`media/models/${lower}.txt`); // vehicle-style text mesh (three can't load)
-    if (txt) return { ...txt, format: 'txt', unsupported: true };
+    if (txt) return { ...txt, format: 'txt', unsupported: true, subMesh };
     return null;
   }
 
   /** Resolve a model-script `texture` value (already-media-relative names pass through). */
   async function resolveTexture(textureName) {
     if (!textureName) return null;
-    const lower = String(textureName).replace(/\\/g, '/').toLowerCase().replace(/\.png$/, '');
+    // drop any `|SubMeshName` selector so a mesh path can still be used as a texture fallback
+    const lower = String(textureName).replace(/\\/g, '/').toLowerCase().replace(/\|.*$/, '').replace(/\.png$/, '');
     const rel = lower.includes('media/') ? `${lower}.png` : `media/textures/${lower}.png`;
     return locate(rel);
   }

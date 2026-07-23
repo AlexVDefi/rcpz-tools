@@ -53,6 +53,9 @@ export class RigSet {
   }
 
   setLoop(on: boolean) { this.loop = on; for (const r of this.rigs) if (r.action) r.action.loop = on ? THREE.LoopRepeat : THREE.LoopOnce; }
+  /** Rewind every rig to the first frame and start playing again (revives a finished one-shot). */
+  restart() { for (const r of this.rigs) if (r.action) { r.action.reset(); r.action.play(); } }
+  finishedOnce() { const b = this.bodyRig(); return !this.loop && !!b?.action && b.action.time >= this.duration() - 1e-3; }
 
   update(dt: number) { for (const r of this.rigs) if (r.mixer) r.mixer.update(dt); }
   setTime(t: number) { for (const r of this.rigs) if (r.mixer) r.mixer.setTime(t); }

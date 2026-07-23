@@ -7,7 +7,7 @@
 // provider, so this is a cold-path cost.
 import { resolveBody, resolveClothing, resolveHeldItem, resolveClip, resolveHairStyle } from '@shared/character-core.js';
 import { THREE, makeSkinnedMaterial, makeMaterial, CHAR_LIGHTING } from './three-core';
-import { glbToGltf, bytesToTexture, sourceToTexture } from './loaders';
+import { glbToGltf, isolateSubMesh, bytesToTexture, sourceToTexture } from './loaders';
 import { normaliseClip, normalizeClothingRig, boneRestMap, captureSkeletonBind, type SkeletonBind } from './anim';
 import { RigSet } from './rigset';
 import { composeBody } from './canvas-image-ops';
@@ -253,6 +253,7 @@ export class ThumbnailRenderer {
       const r = await resolveHeldItem(this.ctx, item);
       if (r.error || !r.meshGlb) throw new Error(r.error || 'no mesh');
       const root = (await glbToGltf(r.meshGlb)).scene;
+      isolateSubMesh(root, r.subMesh); // modular model file: keep only the named part
       const tex = r.texture ? await bytesToTexture(r.texture, false) : new THREE.Texture(); // glTF UV convention (see toggleHeld)
       this.applyMat(root, this.material(tex, false));
       return this.renderAlone(root, true);

@@ -21,11 +21,13 @@ import { DeleteAccountModal } from './cloud/DeleteAccountModal';
 import { PasswordModal } from './cloud/PasswordModal';
 import { cloudConfigured } from './cloud/config';
 import { listLanguages, loadItemNames, languageLabel, type DisplayNames } from './item-names';
+import { CHANGELOG } from './changelog';
 import logoUrl from './assets/logo.png';
 import kofiUrl from './assets/kofi_symbol.svg';
 
 const NAV_H = 36; // uniform height for all header controls
-const DESKTOP_APP_URL = 'https://github.com/AlexVDefi/rcpz-tools/releases'; // desktop app download
+const REPO_URL = 'https://github.com/AlexVDefi/rcpz-tools'; // rcpz-tools source repo
+const DESKTOP_APP_URL = REPO_URL + '/releases'; // desktop app download
 const INSTALL_KEY = 'pz-install';
 const WORKSHOP_KEY = 'pz-workshop';
 const ACTIVE_KEY = 'pz-active-mods';
@@ -860,8 +862,42 @@ function MobileMenu({ auth, steam, view, setView, onSignIn, onChangePassword, on
   );
 }
 
+// GitHub mark + a "history" glyph for the changelog control.
+function GithubIcon({ size = 18 }: { size?: number }) {
+  return <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .5C5.73.5.5 5.73.5 12a11.5 11.5 0 0 0 7.86 10.92c.58.1.79-.25.79-.56v-1.95c-3.2.7-3.88-1.54-3.88-1.54-.52-1.33-1.28-1.69-1.28-1.69-1.05-.72.08-.7.08-.7 1.16.08 1.77 1.19 1.77 1.19 1.03 1.77 2.7 1.26 3.36.96.1-.75.4-1.26.73-1.55-2.55-.29-5.24-1.28-5.24-5.68 0-1.25.45-2.28 1.18-3.08-.12-.29-.51-1.46.11-3.04 0 0 .97-.31 3.18 1.18a11 11 0 0 1 5.79 0c2.2-1.49 3.17-1.18 3.17-1.18.63 1.58.24 2.75.12 3.04.74.8 1.18 1.83 1.18 3.08 0 4.41-2.69 5.38-5.25 5.67.41.36.78 1.05.78 2.12v3.14c0 .31.2.67.8.56A11.5 11.5 0 0 0 23.5 12C23.5 5.73 18.27.5 12 .5Z" /></svg>;
+}
+function HistoryIcon({ size = 16 }: { size?: number }) {
+  return <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-7" /><path d="M3 3v5h5" /><path d="M12 7v5l3 2" /></svg>;
+}
+
+// Player-facing changelog dialog (opened from Help). Content lives in changelog.ts.
+function ChangelogModal({ onClose }: { onClose: () => void }) {
+  return (
+    <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: '#000d', display: 'grid', placeItems: 'center', zIndex: 620, padding: 20 }}>
+      <div onClick={(e) => e.stopPropagation()} className="card" style={{ maxWidth: 540, width: '100%', maxHeight: '82vh', overflow: 'auto' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}>
+          <b style={{ fontSize: 17 }}>What&rsquo;s new</b>
+          <button className="secondary" onClick={onClose} aria-label="Close" style={{ width: 30, height: 30, padding: 0, display: 'grid', placeItems: 'center', flexShrink: 0 }}>✕</button>
+        </div>
+        {CHANGELOG.map((e, i) => (
+          <div key={i} style={{ marginTop: 16 }}>
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
+              <span style={{ fontSize: 14, fontWeight: 700 }}>{e.title}</span>
+              {e.date && <span style={{ fontSize: 12, color: 'var(--muted)' }}>{e.date}</span>}
+            </div>
+            <ul style={{ margin: '8px 0 0', paddingLeft: 18, color: 'var(--muted)', fontSize: 13, lineHeight: 1.6 }}>
+              {e.items.map((it, j) => <li key={j} style={{ marginBottom: 5 }}>{it}</li>)}
+            </ul>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function HelpButton({ extra }: { extra?: ReactNode }) {
   const [open, setOpen] = useState(false);
+  const [changelogOpen, setChangelogOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!open) return;
@@ -888,9 +924,20 @@ function HelpButton({ extra }: { extra?: ReactNode }) {
             <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M19.27 5.33A16.7 16.7 0 0 0 15 4l-.2.4c1.9.46 2.78 1.13 3.7 1.96A15.6 15.6 0 0 0 12 5c-2.28 0-4.4.5-6.5 1.36.92-.83 1.96-1.55 3.7-1.96L9 4a16.7 16.7 0 0 0-4.27 1.33C2.36 8.82 1.6 12.75 2 16.63a16.9 16.9 0 0 0 5.06 2.56l.6-.83c-.55-.2-1.06-.45-1.55-.75l.38-.28a11.6 11.6 0 0 0 11.02 0l.38.28c-.49.3-1 .55-1.55.75l.6.83A16.7 16.7 0 0 0 22 16.63c.46-4.5-.73-8.4-2.73-11.3ZM8.9 14.66c-.98 0-1.79-.9-1.79-2s.79-2.02 1.79-2.02 1.8.91 1.79 2.02c0 1.1-.8 2-1.79 2Zm6.2 0c-.98 0-1.79-.9-1.79-2s.79-2.02 1.79-2.02 1.8.91 1.79 2.02c0 1.1-.79 2-1.79 2Z" /></svg>
             Join the Discord
           </a>
+          <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+            <button className="secondary" onClick={() => { setOpen(false); setChangelogOpen(true); }}
+              style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 7, padding: '9px 12px', borderRadius: 8, fontSize: 13, border: '1px solid var(--line)', background: 'var(--panel)', color: 'var(--text)' }}>
+              <HistoryIcon /> Changelog
+            </button>
+            <a href={REPO_URL} target="_blank" rel="noopener noreferrer" title="rcpz-tools on GitHub" aria-label="rcpz-tools on GitHub"
+              style={{ display: 'grid', placeItems: 'center', width: 40, borderRadius: 8, border: '1px solid var(--line)', background: 'var(--panel)', color: 'var(--text)', textDecoration: 'none' }}>
+              <GithubIcon />
+            </a>
+          </div>
           {extra && <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 14, paddingTop: 12, borderTop: '1px solid var(--line)' }}>{extra}</div>}
         </div>
       )}
+      {changelogOpen && <ChangelogModal onClose={() => setChangelogOpen(false)} />}
     </div>
   );
 }

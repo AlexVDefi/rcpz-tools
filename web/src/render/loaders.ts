@@ -22,6 +22,31 @@ export function glbToGltf(bytes: Uint8Array): Promise<GLTF> {
   return new Promise((resolve, reject) => gltfLoader.parse(ab, '', resolve, reject));
 }
 
+// assimp appends pivot suffixes like `Name_$AssimpFbx$_Translation` to FBX object nodes; strip
+// those (and whitespace) so a PZ sub-mesh name matches the loaded node.
+const cleanName = (s: string) => s.replace(/_\$assimpfbx\$.*$/i, '').replace(/\s+/g, '').toLowerCase();
+
+/**
+ * PZ packs several parts in one model file and selects one via `mesh = file|SubMeshName`
+ * (modular weapons). The converted glb still holds every part, so keep only the named object's
+ * subtree (and the transform chain above it, so it stays positioned) and drop the other meshes.
+ * No-op when `name` is empty or matches nothing (falls back to showing the whole file).
+ */
+export function isolateSubMesh(scene: THREE.Object3D, name?: string | null): void {
+  if (!name) return;
+  const target = cleanName(name);
+  const matches: THREE.Object3D[] = [];
+  scene.traverse((o) => { if (o !== scene && cleanName(o.name) === target) matches.push(o); });
+  const node = matches[0];
+  if (!node) return; // unknown name: better to show the whole file than nothing
+  const keep = new Set<THREE.Object3D>();
+  node.traverse((o) => keep.add(o));                             // the chosen part + its children
+  for (let p: THREE.Object3D | null = node; p; p = p.parent) keep.add(p); // its ancestor transforms
+  const drop: THREE.Object3D[] = [];
+  scene.traverse((o) => { if ((o as THREE.Mesh).isMesh && !keep.has(o)) drop.push(o); });
+  for (const o of drop) o.parent?.remove(o);
+}
+
 /**
  * PNG bytes -> texture. Uses HTMLImageElement + object URL (NOT ImageBitmap): three
  * honours texture.flipY for an <img> source but ignores it for ImageBitmap. The assimp
