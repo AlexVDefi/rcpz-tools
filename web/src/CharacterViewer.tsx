@@ -840,8 +840,8 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
           onPointerDown={(e) => { e.preventDefault(); try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* not supported */ } setPeeking(true); }}
           onPointerUp={() => setPeeking(false)} onPointerCancel={() => setPeeking(false)} onLostPointerCapture={() => setPeeking(false)}
           aria-label="Hold to peek at your character" title="Hold to hide this panel and see your character"
-          style={{ position: 'fixed', left: 14, bottom: 'calc(env(safe-area-inset-bottom, 0px) + 14px)', zIndex: 72, width: 48, height: 48, borderRadius: 999, display: 'grid', placeItems: 'center', touchAction: 'none', userSelect: 'none', WebkitUserSelect: 'none', background: peeking ? 'var(--accent)' : '#0e0e13e6', color: peeking ? '#fff' : 'var(--text)', border: '1px solid var(--line)', boxShadow: '0 6px 20px #000a' }}>
-          <EyeIcon />
+          style={{ position: 'fixed', right: 14, bottom: 'calc(env(safe-area-inset-bottom, 0px) + 14px)', zIndex: 72, width: 42, height: 42, borderRadius: 999, display: 'grid', placeItems: 'center', touchAction: 'none', userSelect: 'none', WebkitUserSelect: 'none', opacity: peeking ? 1 : 0.55, background: peeking ? 'var(--accent)' : '#0e0e13e6', color: peeking ? '#fff' : 'var(--text)', border: '1px solid var(--line)', boxShadow: '0 6px 20px #000a', transition: 'opacity .12s ease, background .12s ease' }}>
+          <EyeIcon size={18} />
         </button>
         <div onClick={() => setDrawerOpen(false)} style={{ position: 'fixed', inset: 0, zIndex: 70, background: '#0007', display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', opacity: peeking ? 0 : 1, pointerEvents: peeking ? 'none' : 'auto', transition: 'opacity .12s ease' }}>
           <div onClick={(e) => e.stopPropagation()} style={{ height: 'min(80vh, 680px)', display: 'flex', flexDirection: 'column', background: 'var(--panel)', borderTop: '1px solid var(--line)', borderRadius: '14px 14px 0 0', overflow: 'hidden', boxShadow: '0 -14px 44px #000a', paddingBottom: 'env(safe-area-inset-bottom)' }}>
