@@ -239,7 +239,7 @@ ${ogMedia}
 html,body{margin:0;height:100%}
 body{background:#141418;color:#e7e7ea;font:15px/1.55 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
 main{min-height:100vh;display:flex}
-.stage{position:relative;flex:1;min-width:0;display:grid;place-items:center;padding:24px;background:repeating-conic-gradient(#26262c 0% 25%,#1d1d22 0% 50%) 50%/24px 24px}
+.stage{position:relative;flex:1;min-width:0;display:grid;place-items:center;padding:24px;background:#141418}
 .stage img,.stage video{max-width:100%;max-height:calc(100vh - 48px);object-fit:contain;border-radius:8px;box-shadow:0 10px 40px #0009}
 .wm{position:absolute;right:20px;bottom:20px;display:flex;align-items:center;gap:6px;background:#000000ad;border:1px solid #ffffff26;border-radius:8px;padding:5px 11px;font-weight:600;font-size:13px}
 .info{width:330px;flex-shrink:0;padding:22px 20px;background:#1b1b21;border-left:1px solid #34343c;overflow:auto}
