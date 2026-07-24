@@ -4,6 +4,18 @@ export type ChangelogEntry = { date?: string; title: string; items: string[] };
 
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    date: '2026-07-24',
+    title: 'Zombie skins, body-mod support and a new colour picker',
+    items: [
+      'Give your survivor a zombie skin straight from the Character panel, for male or female bodies.',
+      'Better support for body mods: pick which body and which skin textures to use (the game’s or the mod’s), and filter clothing down to what’s made for that body. If a body’s custom layout means painted-on clothing won’t line up, you’re warned and can hide it.',
+      'Recolour tintable clothing more easily: the colour swatch now shows on every tintable item while you browse, and a colour you pick before wearing is applied the moment you equip it.',
+      'A new colour picker with a colour square, a hue slider and the hex code shown by default (one tap switches to RGB), plus a “match hair” option for your beard colour.',
+      'Modded and vanilla hairstyles now appear together, with a tag on the modded ones.',
+      'Fixes: unloaded local mods no longer come back on refresh, a modded item with no attach point no longer sticks to the head, and browsing hair and beards is smoother.',
+    ],
+  },
+  {
     date: '2026-07-23',
     title: 'Body attachments, faithful layering & fixes',
     items: [
