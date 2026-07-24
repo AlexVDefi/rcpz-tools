@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState, useEffect, type ReactNode } from 'react';
+import { useMemo, useRef, useState, useEffect, useLayoutEffect, type ReactNode } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 
 // `label` is what's shown; `search` (optional) is extra haystack text matched by the search box in
@@ -14,7 +14,7 @@ const LABEL_H = 40;
 // toggle, and a column-size control (bigger/smaller thumbnails). Cards scale with the
 // chosen column count and the panel width, so it stays responsive as the split is dragged.
 export function AssetGrid<T extends GridItem>({
-  items, facetLabel, active, onPick, renderThumb, facetOrder, extraControls, favActive, onToggleFav, tagsOf, overlay,
+  items, facetLabel, active, onPick, renderThumb, facetOrder, extraControls, favActive, onToggleFav, tagsOf, overlay, minRows,
 }: {
   items: T[];
   facetLabel: string;
@@ -27,6 +27,7 @@ export function AssetGrid<T extends GridItem>({
   onToggleFav?: (item: T) => void;
   tagsOf?: (item: T) => string[];
   overlay?: (item: T) => ReactNode; // extra per-cell control drawn over the thumbnail (e.g. hand toggle)
+  minRows?: number; // floor the scroll area to this many card rows (so it stays usable when stacked under tall pickers); the panel scrolls to reach it
 }) {
   const [q, setQ] = useState('');
   const [facet, setFacet] = useState('');
@@ -69,7 +70,10 @@ export function AssetGrid<T extends GridItem>({
       : a.label.localeCompare(b.label));
   }, [items, q, facet, source, tag, tagsOf, modOnly, favOnly, favActive, sort]);
 
-  useEffect(() => {
+  // Measure BEFORE paint (layout effect) so a fresh mount - e.g. the key={kind} remount when switching
+  // hair<->beard - never paints a frame at the width=0 fallback card size (which, with a minRows floor,
+  // would flash the whole grid height). The ResizeObserver keeps it in sync on later resizes.
+  useLayoutEffect(() => {
     const el = scrollRef.current; if (!el) return;
     const ro = new ResizeObserver(() => setWidth(el.clientWidth));
     ro.observe(el); setWidth(el.clientWidth);
@@ -127,7 +131,7 @@ export function AssetGrid<T extends GridItem>({
         </div>
       </div>
 
-      <div ref={scrollRef} style={{ overflow: 'auto', flex: 1, padding: PAD }}>
+      <div ref={scrollRef} style={{ overflow: 'auto', flex: 1, padding: PAD, minHeight: minRows ? minRows * (rowH + GAP) + PAD * 2 : undefined }}>
         <div style={{ height: rowVirt.getTotalSize(), position: 'relative' }}>
           {rowVirt.getVirtualItems().map((vr) => {
             const start = vr.index * cols;

@@ -13,6 +13,14 @@ import { parseScriptText, walkBlocks, prop } from './script-parser.js';
 
 /** Human mod name for the source that provided item at `sourceIndex` (null = vanilla). */
 const sourceMod = (index, sourceIndex) => index.sources?.[sourceIndex]?.modName || null;
+/** The mod-identity fields (folder id / mod.info id / declared requires) for a source, so clothing can
+ *  be linked to the body mod it belongs to. Empty/undefined for vanilla and hosted-without-metadata. */
+const sourceIds = (index, sourceIndex) => {
+  const s = index.sources?.[sourceIndex] || {};
+  return { modId: s.modId || null, infoId: s.infoId || null, requires: s.requires || [] };
+};
+/** Normalise a mod id/name/path-segment for fuzzy matching (lowercase, alphanumerics only). */
+const normId = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
 
 // ---- constants (from character/assets.js, clothing.js, items.js) ----
 const HUMAN_ACTORS = new Set(['bob', 'kate', 'zombie']);
@@ -127,6 +135,8 @@ export function listClothing(index) {
       const item = parseClothingXml(f.text, f.rel);
       item.isMod = f.isMod;
       item.modName = sourceMod(index, f.sourceIndex);
+      const ids = sourceIds(index, f.sourceIndex);
+      item.modId = ids.modId; item.requires = ids.requires; // for body-mod compatibility matching
       item.location = locations.get(item.name) || 'other';
       item.layer = clothingLayer(item.location); // PZ BodyLocations draw order (higher = on top)
       items.push(item);
@@ -371,7 +381,7 @@ export async function listBodySources(ctx, gender = 'male') {
   for (const src of r.sources) {
     for (const e of exts) {
       let real = null; try { real = await r.realPathIn(src, base + e); } catch { real = null; }
-      if (real) { out.push({ id: src.id, label: src.modName || (src.isMod ? src.id : 'Vanilla'), isMod: !!src.isMod, srcRef: src, realPath: real, format: e.slice(1) }); break; }
+      if (real) { out.push({ id: src.id, label: src.modName || (src.isMod ? src.id : 'Vanilla'), isMod: !!src.isMod, modId: src.modId || null, infoId: src.infoId || null, modName: src.modName || null, srcRef: src, realPath: real, format: e.slice(1) }); break; }
     }
   }
   return out;
@@ -390,6 +400,29 @@ export async function listBodyTextureSources(ctx, gender = 'male') {
   for (const src of r.sources) {
     let real = null; try { real = await r.realPathIn(src, probe); } catch { real = null; }
     if (real) out.push({ id: src.id, label: src.modName || (src.isMod ? src.id : 'Vanilla'), isMod: !!src.isMod, srcRef: src });
+  }
+  return out;
+}
+
+/** Which loaded modded bodies a clothing item is made for. Three signals, permissive on purpose (a
+ *  "show clothing that fits this body" filter should over-include a usable item, not hide it):
+ *    1. same mod   - the body mod ships the clothing itself
+ *    2. require=   - the clothing mod declares the body mod as a dependency in mod.info (reliable)
+ *    3. model path - a mod that ships BOTH a vanilla and a body-mod mesh usually names the body-specific
+ *                    model folder after that body, so the variant item's model path contains its id/name
+ *  `bodyMods` = the modded bodies in play ([{ label, modId, infoId }]); returns the labels it fits. */
+export function clothingBodyFit(item, bodyMods) {
+  if (!item || !Array.isArray(bodyMods) || !bodyMods.length) return [];
+  const reqs = new Set((item.requires || []).map(normId).filter(Boolean));
+  const segs = [item.maleModel, item.femaleModel].filter(Boolean)
+    .flatMap((p) => String(p).replace(/\\/g, '/').split('/')).map(normId).filter(Boolean);
+  const out = [];
+  for (const b of bodyMods) {
+    const keys = [b.modId, b.infoId, b.label].map(normId).filter(Boolean);
+    const sameMod = !!(item.modId && b.modId && normId(item.modId) === normId(b.modId));
+    const required = keys.some((k) => reqs.has(k));
+    const inPath = keys.some((k) => k.length >= 4 && segs.some((seg) => seg.includes(k)));
+    if (sameMod || required || inPath) out.push(b.label);
   }
   return out;
 }
@@ -415,11 +448,16 @@ export async function listZombieSkins(ctx, gender = 'male') {
     }
   }
   const g = gender === 'female' ? 'female' : 'male';
-  const out = [];
-  for (const base of seen.values()) {
-    const which = /^m_/i.test(base) ? 'male' : /^f_/i.test(base) ? 'female' : 'both';
-    if (which === 'both' || which === g) out.push(base);
-  }
+  const other = g === 'female' ? 'male' : 'female';
+  const bases = [...seen.values()];
+  const genderOf = (b) => /^m_/i.test(b) ? 'male' : /^f_/i.test(b) ? 'female' : 'both';
+  // this gender's own zombie skins: its prefix, or an unprefixed shared one
+  let out = bases.filter((b) => { const w = genderOf(b); return w === 'both' || w === g; });
+  // PZ's zombie body skins are not gender-locked the way the human tones are: vanilla ships only
+  // M_ZedBody02 and paints it onto female zombies too (the composite Zed_Skin item does exactly this).
+  // So if this gender has no zombie skin of its own, fall back to the other gender's - otherwise the
+  // female picker is empty even though M_ZedBody02 applies fine to the female body (shared UV layout).
+  if (!out.length) out = bases.filter((b) => genderOf(b) === other);
   return out.sort();
 }
 

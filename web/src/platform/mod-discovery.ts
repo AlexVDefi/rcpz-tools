@@ -11,6 +11,8 @@ export interface DiscoveredMod {
   key: string;          // stable id (modId)
   name: string;         // from mod.info, falls back to modId
   author?: string;      // from mod.info (author), if present
+  infoId?: string;      // mod.info `id=` (what other mods' `require=` reference; often == modId but not always)
+  requires?: string[];  // mod.info `require=` mod ids this mod depends on (e.g. a clothing mod requiring a body mod)
   poster?: FileSystemFileHandle; // mod.info poster/icon image (or a poster.png/icon.png beside it), for a thumbnail
   workshopId: string;
   modId: string;
@@ -62,7 +64,7 @@ async function modRoots(modDir: FileSystemDirectoryHandle): Promise<FileSystemDi
   return [];
 }
 
-async function readModInfo(dirs: FileSystemDirectoryHandle[], fallback: string): Promise<{ name: string; author?: string; poster?: FileSystemFileHandle }> {
+async function readModInfo(dirs: FileSystemDirectoryHandle[], fallback: string): Promise<{ name: string; author?: string; infoId?: string; requires?: string[]; poster?: FileSystemFileHandle }> {
   for (const d of dirs) {
     const f = await childFileCI(d, 'mod.info');
     if (f) {
@@ -71,6 +73,11 @@ async function readModInfo(dirs: FileSystemDirectoryHandle[], fallback: string):
         const field = (k: string) => text.match(new RegExp(`^\\s*${k}\\s*=\\s*(.+?)\\s*$`, 'mi'))?.[1]?.trim() || undefined;
         const name = field('name');
         const author = field('author'); // `poster` is an image file, not the author
+        const infoId = field('id');
+        // `require=` is a comma-separated list of mod ids this mod depends on. PZ also allows several
+        // `require=` lines, so collect them all; this is the reliable clothing->body link when declared.
+        const requires = [...text.matchAll(/^\s*require\s*=\s*(.+?)\s*$/gim)]
+          .flatMap((m) => m[1].split(/[,;]/)).map((s) => s.trim()).filter(Boolean);
         // A thumbnail: mod.info's poster/icon image (basename, beside mod.info), else a poster/icon png.
         let poster: FileSystemFileHandle | undefined;
         for (const key of ['poster', 'icon']) {
@@ -78,7 +85,7 @@ async function readModInfo(dirs: FileSystemDirectoryHandle[], fallback: string):
           if (ref) poster ||= (await childFileCI(d, ref.replace(/^.*[\\/]/, ''))) || undefined;
         }
         poster ||= (await childFileCI(d, 'poster.png')) || (await childFileCI(d, 'icon.png')) || undefined;
-        if (name) return { name, author, poster };
+        if (name) return { name, author, infoId, requires: requires.length ? requires : undefined, poster };
       } catch { /* ignore */ }
     }
   }
@@ -114,7 +121,7 @@ export async function discoverWorkshopMods(picked: FileSystemDirectoryHandle, on
     if (seen.has(modDir.name) || !roots.length) return;
     seen.add(modDir.name);
     const info = await readModInfo([...roots, modDir], modDir.name); // mod.info sits in a root OR at the mod's top level
-    mods.push({ key: modDir.name, name: info.name, author: info.author, poster: info.poster, workshopId: wsId, modId: modDir.name, roots });
+    mods.push({ key: modDir.name, name: info.name, author: info.author, infoId: info.infoId, requires: info.requires, poster: info.poster, workshopId: wsId, modId: modDir.name, roots });
     onProgress?.(mods.length);
   };
 
@@ -154,5 +161,5 @@ export async function discoverWorkshopMods(picked: FileSystemDirectoryHandle, on
 
 /** Turn active mods (in priority order) into ordered AssetSources for buildAssetIndex. */
 export function modSources(mods: DiscoveredMod[]): AssetSource[] {
-  return mods.flatMap((m) => m.roots.map((h, i) => createFsaAssetSource(h, { id: `mod:${m.modId}:${i}`, isMod: true, modName: m.name })));
+  return mods.flatMap((m) => m.roots.map((h, i) => createFsaAssetSource(h, { id: `mod:${m.modId}:${i}`, isMod: true, modName: m.name, modId: m.modId, infoId: m.infoId, requires: m.requires })));
 }

@@ -66,6 +66,8 @@ export class CharacterEngine {
   private bodySkel: SkeletonBind | null = null;
   private currentBody: { skinTexture: Uint8Array } | null = null;
   private textureSource: unknown = null; // pins skin textures to a source (Vanilla vs a texture mod), or null = mod-over-vanilla
+  private uvVerdictVal: { score: number; compatible: boolean } | null = null; // modded body vs vanilla UV layout; null when the body IS vanilla
+  private vanillaUvSig = new Map<'male' | 'female', Set<number>>(); // cached vanilla UV-occupancy signature per gender
   private equipped = new Map<string, Equip>();
   private statics = new Map<string, THREE.Object3D>();
   private held = new Map<string, HeldEntry>();
@@ -459,6 +461,47 @@ export class CharacterEngine {
    *  Caller re-applies via setSkin (live) or loadBody (on reload). */
   setTextureSource(src: unknown) { this.textureSource = src || null; }
 
+  // --- Tier-2 body/clothing UV compatibility -----------------------------------------------------
+  // Painted ("composite") clothing and the stock skin textures are drawn through the BODY's UV map, so
+  // they only line up if a modded body keeps the vanilla UV layout. We can't read intent, but we CAN
+  // compare layouts: rasterise each body's UVs into a coarse occupancy grid and score the overlap
+  // (intersection-over-union). High overlap = same atlas = vanilla clothing/skins fit; low = re-UV'd.
+  // Occupancy (not per-vertex) is used so it's robust to a body being re-topologised without re-UVing.
+  private static readonly UV_RES = 32;
+  private static readonly UV_COMPAT_MIN = 0.55; // IoU at/above this = treat as vanilla-compatible
+
+  /** Coarse UV-occupancy signature: the set of grid cells any mesh UV lands in (wrapped to [0,1)). */
+  private uvSignature(meshes: THREE.SkinnedMesh[]): Set<number> {
+    const res = CharacterEngine.UV_RES, cells = new Set<number>();
+    for (const m of meshes) {
+      const uv = m.geometry?.getAttribute('uv'); if (!uv) continue;
+      for (let i = 0; i < uv.count; i++) {
+        let u = uv.getX(i), v = uv.getY(i);
+        u -= Math.floor(u); v -= Math.floor(v); // wrap tiled UVs into the unit square
+        const cx = Math.min(res - 1, Math.max(0, Math.floor(u * res)));
+        const cy = Math.min(res - 1, Math.max(0, Math.floor(v * res)));
+        cells.add(cy * res + cx);
+      }
+    }
+    return cells;
+  }
+
+  /** Vanilla body's UV signature for a gender (parsed once from the stock mesh, then cached). */
+  private async vanillaUvSignature(gender: 'male' | 'female'): Promise<Set<number>> {
+    const hit = this.vanillaUvSig.get(gender);
+    if (hit) return hit;
+    const body = await resolveBody(this.ctx, { gender }); // no bodySource -> vanilla mesh
+    const gltf = await glbToGltf(body.meshGlb);
+    const meshes: THREE.SkinnedMesh[] = [];
+    gltf.scene.traverse((o) => { const sm = o as THREE.SkinnedMesh; if (sm.isSkinnedMesh || (o as THREE.Mesh).isMesh) meshes.push(o as THREE.SkinnedMesh); });
+    const sig = this.uvSignature(meshes);
+    this.vanillaUvSig.set(gender, sig);
+    return sig;
+  }
+
+  /** null when the current body is vanilla; else how its UV layout compares to vanilla. */
+  uvVerdict(): { score: number; compatible: boolean } | null { return this.uvVerdictVal; }
+
   async loadBody(gender: 'male' | 'female' = this.gender, bodySource?: unknown) {
     this.gender = gender;
     const body = await resolveBody(this.ctx, { gender, bodySource, textureSource: this.textureSource });
@@ -492,6 +535,19 @@ export class CharacterEngine {
     }
     if (this.rigs.clip) this.groundToClip(); // a clip may already be playing (e.g. gender swap)
     await this.recompositeBody();
+    // UV-compatibility verdict: only meaningful for a modded body (vanilla IS the reference). Never let
+    // a failure here break body loading - it is advisory only.
+    this.uvVerdictVal = null;
+    if ((bodySource as { isMod?: boolean } | undefined)?.isMod) {
+      try {
+        const van = await this.vanillaUvSignature(gender);
+        const mod = this.uvSignature(this.bodyMeshes);
+        let inter = 0; for (const c of mod) if (van.has(c)) inter++;
+        const union = van.size + mod.size - inter;
+        const score = union ? inter / union : 1;
+        this.uvVerdictVal = { score, compatible: score >= CharacterEngine.UV_COMPAT_MIN };
+      } catch { this.uvVerdictVal = null; }
+    }
   }
 
   /** World Y of the lowest CPU-skinned vertex across the body meshes at the current pose. This is

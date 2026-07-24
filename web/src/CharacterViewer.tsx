@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { listClips, listClothing, listHeldItems, listHair, clothingGroup, CLOTHING_GROUP_ORDER, HELD_GROUP_ORDER, SKIN_TONES, attachmentProviders, listZombieSkins, listBodySources, listBodyTextureSources } from '@shared/character-core.js';
+import { listClips, listClothing, listHeldItems, listHair, clothingGroup, CLOTHING_GROUP_ORDER, HELD_GROUP_ORDER, SKIN_TONES, attachmentProviders, listZombieSkins, listBodySources, listBodyTextureSources, clothingBodyFit } from '@shared/character-core.js';
 import { SLOTS, bodyAttachOptions, slotsFromWorn } from '@shared/attachments.js';
 import { CharacterEngine, type Ctx, type AttachOption } from './render/character-engine';
 
@@ -28,6 +28,119 @@ type TourStep = { target: string; title: string; body: string; interactive?: boo
 const rgb01 = (rgb: number[]) => [rgb[0] / 255, rgb[1] / 255, rgb[2] / 255];
 const rgbHex = (rgb: number[]) => '#' + rgb.map((c) => Math.max(0, Math.min(255, c)).toString(16).padStart(2, '0')).join('');
 const rgb01Hex = (rgb: number[]) => rgbHex(rgb.map((c) => Math.round(Math.max(0, Math.min(1, c)) * 255)));
+
+const clamp01 = (n: number) => Math.max(0, Math.min(1, n));
+const hexToRgb255 = (hex: string): number[] => { const n = parseInt(hex.slice(1), 16); return [(n >> 16) & 255, (n >> 8) & 255, n & 255]; };
+const rgb255Hex = (rgb: number[]) => '#' + rgb.map((c) => Math.max(0, Math.min(255, Math.round(c))).toString(16).padStart(2, '0')).join('');
+function rgbToHsv([r, g, b]: number[]): [number, number, number] {
+  r /= 255; g /= 255; b /= 255;
+  const max = Math.max(r, g, b), min = Math.min(r, g, b), d = max - min;
+  let h = 0;
+  if (d) { if (max === r) h = ((g - b) / d) % 6; else if (max === g) h = (b - r) / d + 2; else h = (r - g) / d + 4; h *= 60; if (h < 0) h += 360; }
+  return [h, max ? d / max : 0, max];
+}
+function hsvToRgb([h, s, v]: number[]): number[] {
+  const c = v * s, x = c * (1 - Math.abs(((h / 60) % 2) - 1)), m = v - c;
+  let r = 0, g = 0, b = 0;
+  if (h < 60) { r = c; g = x; } else if (h < 120) { r = x; g = c; } else if (h < 180) { g = c; b = x; }
+  else if (h < 240) { g = x; b = c; } else if (h < 300) { r = x; b = c; } else { r = c; b = x; }
+  return [(r + m) * 255, (g + m) * 255, (b + m) * 255];
+}
+// Drag over an element -> fractional (x,y) in [0,1], with pointer capture so it keeps tracking outside.
+function startDrag(e: React.PointerEvent, onFrac: (fx: number, fy: number) => void) {
+  const el = e.currentTarget as HTMLElement, rect = el.getBoundingClientRect();
+  const at = (cx: number, cy: number) => onFrac(clamp01((cx - rect.left) / rect.width), clamp01((cy - rect.top) / rect.height));
+  at(e.clientX, e.clientY);
+  try { el.setPointerCapture(e.pointerId); } catch { /* older browsers */ }
+  const mv = (ev: PointerEvent) => at(ev.clientX, ev.clientY);
+  const up = () => { el.removeEventListener('pointermove', mv); el.removeEventListener('pointerup', up); el.removeEventListener('pointercancel', up); };
+  el.addEventListener('pointermove', mv); el.addEventListener('pointerup', up); el.addEventListener('pointercancel', up);
+}
+function LinkIcon({ size = 14 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+      <path d="M9 13a5 5 0 0 0 7 0l2-2a5 5 0 0 0-7-7l-1 1" />
+      <path d="M15 11a5 5 0 0 0-7 0l-2 2a5 5 0 0 0 7 7l1-1" />
+    </svg>
+  );
+}
+
+// A compact colour picker. The trigger is just the swatch; clicking opens a popover with a
+// saturation/value box, a hue slider, and a HEX field shown by DEFAULT (one tap toggles to RGB) - the
+// point being the value reads as hex the moment it opens, not buried in the OS dialog. An optional
+// "match" checkbox lives inside the popover (the beard uses it to follow the hair): while on, the colour
+// controls lock and follow their source, but the checkbox stays live so you can unlock them.
+function ColorPicker({ value, onChange, title, match }: { value: string; onChange: (hex: string) => void; title?: string; match?: { on: boolean; onToggle: (on: boolean) => void; label: string } }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const h = (e: PointerEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false); };
+    document.addEventListener('pointerdown', h);
+    return () => document.removeEventListener('pointerdown', h);
+  }, [open]);
+  return (
+    <div ref={ref} style={{ position: 'relative', display: 'inline-block' }}>
+      <button type="button" title={title} onClick={() => setOpen((o) => !o)}
+        style={{ position: 'relative', width: 30, height: 30, borderRadius: 6, border: '1px solid var(--line)', background: value, cursor: 'pointer', padding: 0 }}>
+        {match?.on && <span style={{ position: 'absolute', right: -4, bottom: -4, width: 15, height: 15, borderRadius: '50%', background: 'var(--accent)', color: '#fff', display: 'grid', placeItems: 'center', border: '1px solid var(--panel)' }}><LinkIcon size={9} /></span>}
+      </button>
+      {open && <ColorPopover value={value} onChange={onChange} match={match} />}
+    </div>
+  );
+}
+function ColorPopover({ value, onChange, match }: { value: string; onChange: (hex: string) => void; match?: { on: boolean; onToggle: (on: boolean) => void; label: string } }) {
+  const [hsv, setHsv] = useState<[number, number, number]>(() => rgbToHsv(hexToRgb255(value)));
+  const [mode, setMode] = useState<'hex' | 'rgb'>('hex'); // HEX shown by default
+  const [hexText, setHexText] = useState(value);
+  const locked = !!match?.on;
+  useEffect(() => { setHexText(rgb255Hex(hsvToRgb(hsv))); }, [hsv]);
+  const emit = (next: [number, number, number]) => { setHsv(next); onChange(rgb255Hex(hsvToRgb(next))); };
+  const [h, s, v] = hsv;
+  const rgb = hsvToRgb(hsv).map((c) => Math.round(c));
+  const commitHex = (raw: string) => { let t = raw.trim(); if (t && t[0] !== '#') t = '#' + t; if (/^#[0-9a-fA-F]{6}$/.test(t)) emit(rgbToHsv(hexToRgb255(t))); else setHexText(rgb255Hex(hsvToRgb(hsv))); };
+  const setChan = (i: number, val: number) => { const n = [...rgb]; n[i] = Math.max(0, Math.min(255, Math.round(val) || 0)); emit(rgbToHsv(n)); };
+  const numStyle: React.CSSProperties = { width: 44, fontSize: 12, fontFamily: 'ui-monospace, monospace', color: 'var(--text)', background: '#14141a', border: '1px solid var(--line)', borderRadius: 4, padding: '3px 4px', textAlign: 'center' };
+  return (
+    <div style={{ position: 'absolute', top: 'calc(100% + 6px)', left: 0, zIndex: 40, width: 196, padding: 10, background: 'var(--panel)', border: '1px solid var(--line)', borderRadius: 8, boxShadow: '0 8px 24px #000a' }}>
+      {match && (
+        <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, cursor: 'pointer', marginBottom: 9 }}>
+          <input type="checkbox" checked={match.on} onChange={(e) => match.onToggle(e.target.checked)} style={{ accentColor: 'var(--accent)' }} />
+          {match.label}
+        </label>
+      )}
+      <div style={{ opacity: locked ? 0.4 : 1, pointerEvents: locked ? 'none' : 'auto' }}>
+        <div onPointerDown={(e) => startDrag(e, (fx, fy) => emit([h, fx, 1 - fy]))}
+          style={{ position: 'relative', width: '100%', height: 120, borderRadius: 6, cursor: 'crosshair', touchAction: 'none',
+            background: `linear-gradient(to top, #000, rgba(0,0,0,0)), linear-gradient(to right, #fff, hsl(${h}, 100%, 50%))` }}>
+          <span style={{ position: 'absolute', left: `${s * 100}%`, top: `${(1 - v) * 100}%`, width: 12, height: 12, transform: 'translate(-50%,-50%)', borderRadius: '50%', border: '2px solid #fff', boxShadow: '0 0 0 1px #0008', pointerEvents: 'none' }} />
+        </div>
+        <div onPointerDown={(e) => startDrag(e, (fx) => emit([fx * 360, s, v]))}
+          style={{ position: 'relative', width: '100%', height: 14, marginTop: 9, borderRadius: 7, cursor: 'ew-resize', touchAction: 'none',
+            background: 'linear-gradient(to right, #f00, #ff0, #0f0, #0ff, #00f, #f0f, #f00)' }}>
+          <span style={{ position: 'absolute', left: `${(h / 360) * 100}%`, top: '50%', width: 12, height: 12, transform: 'translate(-50%,-50%)', borderRadius: '50%', border: '2px solid #fff', boxShadow: '0 0 0 1px #0008', pointerEvents: 'none' }} />
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 9 }}>
+          <button type="button" onClick={() => setMode((m) => (m === 'hex' ? 'rgb' : 'hex'))} title="Switch HEX / RGB"
+            style={{ fontSize: 10, fontWeight: 600, letterSpacing: '.03em', padding: '4px 6px', borderRadius: 4, border: '1px solid var(--line)', background: 'var(--panel)', color: 'var(--muted)', cursor: 'pointer', flexShrink: 0 }}>{mode.toUpperCase()}</button>
+          {mode === 'hex' ? (
+            <input value={hexText} spellCheck={false} maxLength={7} aria-label="hex colour"
+              onChange={(e) => setHexText(e.target.value)} onBlur={(e) => commitHex(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
+              style={{ flex: 1, minWidth: 0, fontSize: 12, fontFamily: 'ui-monospace, monospace', color: 'var(--text)', background: '#14141a', border: '1px solid var(--line)', borderRadius: 4, padding: '3px 6px' }} />
+          ) : (
+            <div style={{ display: 'flex', gap: 4 }}>
+              {[0, 1, 2].map((i) => (
+                <input key={i} type="number" min={0} max={255} value={rgb[i]} aria-label={['red', 'green', 'blue'][i]}
+                  onChange={(e) => setChan(i, Number(e.target.value))} style={numStyle} />
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
 
 type CamPreset = 'orbit' | 'iso' | 'front' | 'portrait';
 const ASPECTS: [string, number | null][] = [['Fit', null], ['1:1', 1], ['4:5', 4 / 5], ['3:4', 3 / 4], ['16:9', 16 / 9], ['9:16', 9 / 16]];
@@ -153,6 +266,9 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
   type BodySource = { id: string; label: string; isMod: boolean; srcRef: unknown; realPath: string; format: string };
   const [bodySources, setBodySources] = useState<BodySource[]>([]);
   const [bodySourceId, setBodySourceId] = useState<string>(() => localStorage.getItem('pz-body-source') || '');
+  // Tier-2 UV verdict for the loaded body: null when vanilla, else { score, compatible } comparing its UV
+  // layout to vanilla's. compatible=false means painted (composite) clothing and stock skins may not align.
+  const [uvVerdict, setUvVerdict] = useState<{ score: number; compatible: boolean } | null>(null);
   useEffect(() => { localStorage.setItem('pz-body-source', bodySourceId); }, [bodySourceId]);
   useEffect(() => { let ok = true; (async () => { try { const b = await listBodySources(ctx, gender); if (ok) setBodySources(b as BodySource[]); } catch { /* ignore */ } })(); return () => { ok = false; }; }, [ctx, gender]);
   // Skin-texture source: a texture/skin mod ships its own Body/<tone>.png, so the same tone can come
@@ -191,6 +307,11 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
   const [mobileViewH, setMobileViewH] = useState(0);
   const isMobileRef = useRef(isMobile); isMobileRef.current = isMobile;
   const [clothOnBody, setClothOnBody] = useState(true);
+  const [hidePainted, setHidePainted] = useState(false); // Tier-2: on a custom-UV body, drop composite (painted) items that won't align
+  // A colour chosen for a tintable garment before it is worn. The thumbnail swatch is always shown for
+  // tintable items (so it's clear what's tintable while browsing); picking a colour on an un-worn item
+  // stashes it here and it's applied the moment the garment is equipped.
+  const [pendingTints, setPendingTints] = useState<Record<string, number[]>>({});
   const [favs, setFavs] = useState<Set<string>>(() => { try { return new Set(JSON.parse(localStorage.getItem('pz-favorites') || '[]') as string[]); } catch { return new Set(); } });
   useEffect(() => { localStorage.setItem('pz-favorites', JSON.stringify([...favs])); }, [favs]);
   const toggleFav = (kind: FavKind, name: string) => setFavs((s) => { const n = new Set(s); const k = favKey(kind, name); if (n.has(k)) n.delete(k); else n.add(k); return n; });
@@ -236,12 +357,20 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
   // Each item's shown label is its translated display name when one is available (else the raw
   // item/model name). `search` keeps the raw name (and mod) matchable so people can still search by
   // the internal name. `display` is the translated name (or undefined) for capturing into a share.
-  const clothing = useMemo(() => (listClothing(index) as Array<{ name: string; kind: string; location: string; isMod: boolean; modName?: string | null; allowTint?: boolean; allowHue?: boolean }>)
+  // The modded bodies in play (Vanilla excluded): used to tag clothing that is made for a given body,
+  // so a "fits <body>" filter appears. Empty when no body mod is loaded, so the tag/filter stays hidden.
+  const bodyMods = useMemo(() => bodySources.filter((b) => b.isMod).map((b) => ({ label: b.label, modId: (b as { modId?: string | null }).modId || null, infoId: (b as { infoId?: string | null }).infoId || null })), [bodySources]);
+  const clothing = useMemo(() => (listClothing(index) as Array<{ name: string; kind: string; location: string; isMod: boolean; modName?: string | null; allowTint?: boolean; allowHue?: boolean; modId?: string | null; requires?: string[]; maleModel?: string; femaleModel?: string }>)
     .map((c) => { const display = displayNames?.get(c.name, c.modName) || undefined; const label = display || c.name;
-      return { ...c, key: c.name, label, display, search: `${label} ${c.name} ${c.modName || ''}`.toLowerCase(), facet: clothingGroup(c), source: c.modName || 'Vanilla' }; }), [index, displayNames]);
+      const bodyFit = clothingBodyFit(c, bodyMods) as string[]; // modded bodies this garment is made for
+      return { ...c, key: c.name, label, display, bodyFit, search: `${label} ${c.name} ${c.modName || ''}`.toLowerCase(), facet: clothingGroup(c), source: c.modName || 'Vanilla' }; }), [index, displayNames, bodyMods]);
   // A garment is tintable exactly when the game says so: AllowRandomTint or AllowRandomHue (its base
   // texture is greyscale/white and takes a colour multiply). Only these get a colour picker.
   const tintableClothing = useMemo(() => new Set(clothing.filter((c) => c.allowTint || c.allowHue).map((c) => c.name)), [clothing]);
+  // On a custom-UV body, painted-on (composite) clothing is drawn through the body's UV map and won't
+  // line up; offer to hide it. Only meaningful when the current body's UV layout diverges from vanilla.
+  const uvIncompatible = !!uvVerdict && !uvVerdict.compatible;
+  const clothingShown = useMemo(() => (uvIncompatible && hidePainted ? clothing.filter((c) => c.kind !== 'composite') : clothing), [clothing, uvIncompatible, hidePainted]);
   const held = useMemo(() => (listHeldItems(index) as Array<{ name: string; mesh: string; texture?: string; scale?: number; isMod?: boolean; modName?: string | null; group: string; tags: string[]; attachSlots?: AttachSlot[]; attachmentType?: string | null; allAttachments?: Record<string, { offset: number[]; rotate: number[]; scale?: number }> }>)
     .map((h) => { const display = displayNames?.get(h.name, h.modName) || undefined; const label = display || h.name;
       return { ...h, key: h.name, label, display, search: `${label} ${h.name} ${h.modName || ''} ${(h.tags || []).join(' ')}`.toLowerCase(), facet: h.group, isMod: !!h.isMod, source: h.modName || 'Vanilla' }; }), [index, displayNames]);
@@ -375,6 +504,7 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
         eng.setTextureSource(texSrc);
         await eng.loadBody(gender, bodySrc);
         if (cancelled) return;
+        setUvVerdict(eng.uvVerdict()); // Tier-2: how this body's UV layout compares to vanilla (null when vanilla)
         eng.setAutoFrame(isMobileRef.current); // phone default: whole character centered + fitted, kept on resize
         setStatus(''); setEquipTick((t) => t + 1);
         if (pendingImportRef.current) { const p = pendingImportRef.current; pendingImportRef.current = null; await applyLookRef.current?.(p); }
@@ -399,8 +529,16 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
     finally { setBusy(''); setEquipTick((t) => t + 1); }
   }
   const playClip = (c: Clip) => guard(async () => { await engineRef.current!.playClip(c); setPlaying(true); setCurrentClipId(c.id); });
-  const toggleCloth = (it: { name: string }) => guard(() => engineRef.current!.toggleClothing(it));
+  const toggleCloth = (it: { name: string }) => guard(() => engineRef.current!.toggleClothing(it, pendingTints[it.name] ?? null));
   const setClothTint = (name: string, tint: number[] | null) => guard(() => engineRef.current!.setClothingTint(name, tint));
+  // The colour shown on a tintable garment's swatch: the live tint if it's worn, else the pending pick.
+  const shownClothTint = (name: string): number[] | null =>
+    (engineRef.current?.isEquipped(name) ? engineRef.current?.clothingTint(name) : pendingTints[name]) ?? null;
+  // Pick a colour from a thumbnail swatch: remember it, and if the garment is already worn, recolour live.
+  const pickClothTint = (name: string, tint: number[]) => {
+    setPendingTints((p) => ({ ...p, [name]: tint }));
+    if (engineRef.current?.isEquipped(name)) setClothTint(name, tint);
+  };
   const toggleHeld = (it: { name: string }) => guard(() => engineRef.current!.toggleHeld(it));
   const setHeldHand = (name: string, hand: 'right' | 'left') => guard(() => engineRef.current!.setHeldHand(name, hand));
   const setAttachment = (name: string, slot: string, option: AttachOption | null) => guard(() => engineRef.current!.setHeldAttachment(name, slot, option));
@@ -413,7 +551,14 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
   const recolourPart = (kind: 'hair' | 'beard', hex: string) => {
     (kind === 'hair' ? setHairColor : setBeardColor)(hex);
     engineRef.current?.setPartTint(kind, hexRgb(hex));
+    // when the beard is being matched to the hair, a hair recolour drags the beard along
+    if (kind === 'hair' && matchBeardRef.current) { setBeardColor(hex); engineRef.current?.setPartTint('beard', hexRgb(hex)); }
   };
+  // "match hair" for the beard: keep the beard colour in sync with the hair colour. A ref lets
+  // recolourPart read the latest value without being re-created. Turning it on snaps the beard now.
+  const [matchBeard, setMatchBeard] = useState(false);
+  const matchBeardRef = useRef(matchBeard); matchBeardRef.current = matchBeard;
+  const toggleMatchBeard = (on: boolean) => { setMatchBeard(on); if (on) recolourPart('beard', hairColor); };
   // equipped-panel actions
   const toggleHide = (name: string, hidden: boolean) => guard(() => engineRef.current!.setItemHidden(name, hidden));
   const removeEquip = (name: string, type: 'clothing' | 'held') => guard(() => engineRef.current!.removeEquipped(name, type));
@@ -769,32 +914,54 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
       )}
       {tab === 'clothing' && (
         <AssetGrid<typeof clothing[number] & GridItem>
-          items={clothing as (typeof clothing[number] & GridItem)[]}
+          items={clothingShown as (typeof clothing[number] & GridItem)[]}
           facetLabel="groups"
           facetOrder={CLOTHING_GROUP_ORDER as string[]}
           active={(it) => { void equipTick; return !!engineRef.current?.isEquipped(it.name); }}
           onPick={(it) => toggleCloth(it)}
           favActive={(it) => favs.has(favKey('clothing', it.name))}
           onToggleFav={(it) => toggleFav('clothing', it.name)}
+          tagsOf={(it) => it.bodyFit || []}
           overlay={(it) => {
             void equipTick;
-            // a colour picker in the corner (same spot as the held items' L/R), only for garments the
-            // game marks tintable, and only once worn so the change is visible.
-            if (!tintableClothing.has(it.name) || !engineRef.current?.isEquipped(it.name)) return null;
-            const cur = engineRef.current?.clothingTint(it.name);
-            return (
-              <span onClick={(e) => e.stopPropagation()} title="Tint this garment"
+            // A "made for <body mod>" badge (top-left, clear of the MOD badge) whenever this garment is
+            // associated with a loaded modded body - so it reads at a glance, and the tag dropdown filters by it.
+            const fit = it.bodyFit as string[] | undefined;
+            const badge = fit && fit.length ? (
+              <span title={`Made for: ${fit.join(', ')}`}
+                style={{ position: 'absolute', top: 4, left: 4, background: '#5a3e8fcc', color: '#fff', fontSize: 9, padding: '1px 4px', borderRadius: 3, maxWidth: '78%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {fit.length > 1 ? `${fit.length} bodies` : fit[0]}
+              </span>
+            ) : null;
+            // A colour picker in the corner (same spot as the held items' L/R), shown for every garment
+            // the game marks tintable - always, not just once worn - so it's clear at a glance while
+            // browsing what is and isn't tintable. Picking a colour before wearing is remembered and
+            // applied on equip; if it's already worn, the recolour is live.
+            const tintable = tintableClothing.has(it.name);
+            const cur = tintable ? shownClothTint(it.name) : null;
+            const picker = tintable ? (
+              <span onClick={(e) => e.stopPropagation()} title={engineRef.current?.isEquipped(it.name) ? 'Tint this garment' : 'Tintable: pick a colour (applied when you wear it)'}
                 style={{ position: 'absolute', bottom: 4, right: 4, width: 24, height: 24, borderRadius: 5, overflow: 'hidden', border: '1px solid #000a', boxShadow: '0 1px 2px #000' }}>
-                <input type="color" value={cur ? rgb01Hex(cur) : '#ffffff'} onChange={(e) => setClothTint(it.name, hexRgb(e.target.value))} onClick={(e) => e.stopPropagation()}
+                <input type="color" value={cur ? rgb01Hex(cur) : '#ffffff'} onChange={(e) => pickClothTint(it.name, hexRgb(e.target.value))} onClick={(e) => e.stopPropagation()}
                   style={{ position: 'absolute', top: -6, left: -6, width: 36, height: 36, padding: 0, border: 'none', background: 'transparent', cursor: 'pointer' }} />
               </span>
-            );
+            ) : null;
+            if (!badge && !picker) return null;
+            return <>{badge}{picker}</>;
           }}
           extraControls={(
-            <div style={{ display: 'flex', border: '1px solid var(--line)', borderRadius: 6, overflow: 'hidden' }} title="thumbnail style">
-              <button className="secondary" onClick={() => setClothOnBody(true)} style={segBtn(clothOnBody)}>on body</button>
-              <button className="secondary" onClick={() => setClothOnBody(false)} style={segBtn(!clothOnBody)}>item</button>
-            </div>
+            <>
+              <div style={{ display: 'flex', border: '1px solid var(--line)', borderRadius: 6, overflow: 'hidden' }} title="thumbnail style">
+                <button className="secondary" onClick={() => setClothOnBody(true)} style={segBtn(clothOnBody)}>on body</button>
+                <button className="secondary" onClick={() => setClothOnBody(false)} style={segBtn(!clothOnBody)}>item</button>
+              </div>
+              {uvIncompatible && (
+                <button className="secondary" onClick={() => setHidePainted((v) => !v)} style={segBtn(hidePainted)}
+                  title="This body has a custom UV layout, so painted-on (composite) clothing will not line up. Hide it.">
+                  hide painted-on
+                </button>
+              )}
+            </>
           )}
           renderThumb={(it) => <Thumb depKey={`c:${it.name}:${gender}:${clothOnBody}`} getUrl={() => thumbs.clothing(it, gender, clothOnBody)} />} />
       )}
@@ -835,7 +1002,7 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
           }}
           renderThumb={(it) => <Thumb depKey={`h:${it.name}`} getUrl={() => thumbs.held(it)} />} />
       )}
-      {tab === 'character' && <CharacterTab hairData={hairData} gender={gender} setGender={setGender} skin={skin} tones={tones} zombieSkins={zombieSkins} skinThumbUrl={skinThumbUrl} bodyOptions={bodySources.map((b) => ({ id: b.id, label: b.label }))} bodySel={bodySourceId || bodySources[0]?.id || ''} onBody={changeBody} textureOptions={texSources.map((t) => ({ id: t.id, label: t.label }))} textureSel={texSourceId || texSources[0]?.id || ''} onTexture={changeTexture} onSkin={(t) => { setSkin(t); engineRef.current?.setSkin(t); }} thumbs={thumbs} hairSel={hairSel} beardSel={beardSel} hairColor={hairColor} beardColor={beardColor} onPickPart={applyHairPart} onRecolour={recolourPart} favs={favs} onToggleFav={toggleFav} onImport={() => setImportOpen(true)} onNew={() => { void newCharacter(); }}
+      {tab === 'character' && <CharacterTab hairData={hairData} gender={gender} setGender={setGender} skin={skin} tones={tones} zombieSkins={zombieSkins} skinThumbUrl={skinThumbUrl} bodyOptions={bodySources.map((b) => ({ id: b.id, label: b.label }))} bodySel={bodySourceId || bodySources[0]?.id || ''} onBody={changeBody} uvVerdict={uvVerdict} textureOptions={texSources.map((t) => ({ id: t.id, label: t.label }))} textureSel={texSourceId || texSources[0]?.id || ''} onTexture={changeTexture} onSkin={(t) => { setSkin(t); engineRef.current?.setSkin(t); }} thumbs={thumbs} hairSel={hairSel} beardSel={beardSel} hairColor={hairColor} beardColor={beardColor} matchBeard={matchBeard} onToggleMatchBeard={toggleMatchBeard} onPickPart={applyHairPart} onRecolour={recolourPart} favs={favs} onToggleFav={toggleFav} onImport={() => setImportOpen(true)} onNew={() => { void newCharacter(); }}
         savedCount={Object.keys(presets).length} onOpenSaved={() => setPresetsOpen(true)} />}
       {tab === 'export' && (
         <div style={{ padding: 12, overflow: 'auto', height: '100%' }}>
@@ -1362,8 +1529,8 @@ function ExportSection({ studio, cloud }: { studio: StudioCtl; cloud: CloudCtl }
         <div style={{ display: 'flex', border: '1px solid var(--line)', borderRadius: 6, overflow: 'hidden' }}>
           {(['transparent', 'solid', 'gradient'] as const).map((m) => <button key={m} className="secondary" onClick={() => s.setBg({ ...s.bg, mode: m })} style={seg(s.bg.mode === m)}>{m}</button>)}
         </div>
-        {s.bg.mode !== 'transparent' && <input type="color" value={s.bg.color1} onChange={(e) => s.setBg({ ...s.bg, color1: e.target.value })} title="colour 1" style={{ width: 32, height: 28, padding: 0, border: '1px solid var(--line)', borderRadius: 6, background: 'transparent' }} />}
-        {s.bg.mode === 'gradient' && <input type="color" value={s.bg.color2} onChange={(e) => s.setBg({ ...s.bg, color2: e.target.value })} title="colour 2" style={{ width: 32, height: 28, padding: 0, border: '1px solid var(--line)', borderRadius: 6, background: 'transparent' }} />}
+        {s.bg.mode !== 'transparent' && <ColorPicker value={s.bg.color1} onChange={(hex) => s.setBg({ ...s.bg, color1: hex })} title="colour 1" />}
+        {s.bg.mode === 'gradient' && <ColorPicker value={s.bg.color2} onChange={(hex) => s.setBg({ ...s.bg, color2: hex })} title="colour 2" />}
         {s.bg.mode === 'gradient' && <input type="range" min={0} max={360} value={s.bg.angle} onChange={(e) => s.setBg({ ...s.bg, angle: Number(e.target.value) })} title="angle" style={{ width: 90, accentColor: '#5b8cff' }} />}
       </div>
 
@@ -1516,7 +1683,7 @@ const NONE_HAIR: HairItem = { name: 'None', key: 'None', label: 'None', facet: '
 // Character tab: identity (gender + skin texture) as a compact header, then a browsable
 // thumbnail grid for the active appearance kind (Hair or Beard) filling the rest. Selection
 // and colour are lifted to the parent so the Favorites tab stays in sync.
-function CharacterTab({ hairData, gender, setGender, skin, tones, zombieSkins, skinThumbUrl, bodyOptions, bodySel, onBody, textureOptions, textureSel, onTexture, onSkin, thumbs, hairSel, beardSel, hairColor, beardColor, onPickPart, onRecolour, favs, onToggleFav, onImport, onNew, savedCount, onOpenSaved }: {
+function CharacterTab({ hairData, gender, setGender, skin, tones, zombieSkins, skinThumbUrl, bodyOptions, bodySel, onBody, uvVerdict, textureOptions, textureSel, onTexture, onSkin, thumbs, hairSel, beardSel, hairColor, beardColor, matchBeard, onToggleMatchBeard, onPickPart, onRecolour, favs, onToggleFav, onImport, onNew, savedCount, onOpenSaved }: {
   hairData: HairData;
   gender: 'male' | 'female';
   setGender: (g: 'male' | 'female') => void;
@@ -1527,6 +1694,7 @@ function CharacterTab({ hairData, gender, setGender, skin, tones, zombieSkins, s
   bodyOptions: { id: string; label: string }[];
   bodySel: string;
   onBody: (id: string) => void;
+  uvVerdict: { score: number; compatible: boolean } | null;
   textureOptions: { id: string; label: string }[];
   textureSel: string;
   onTexture: (id: string) => void;
@@ -1536,6 +1704,8 @@ function CharacterTab({ hairData, gender, setGender, skin, tones, zombieSkins, s
   beardSel: string;
   hairColor: string;
   beardColor: string;
+  matchBeard: boolean;
+  onToggleMatchBeard: (on: boolean) => void;
   onPickPart: (kind: 'hair' | 'beard', style: HairStyle) => void;
   onRecolour: (kind: 'hair' | 'beard', hex: string) => void;
   favs: Set<string>;
@@ -1566,7 +1736,7 @@ function CharacterTab({ hairData, gender, setGender, skin, tones, zombieSkins, s
   const zombieSelected = zombieSkins.includes(skin);
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0, overflowY: 'auto' }}>
       <div style={{ padding: 12, borderBottom: '1px solid var(--line)' }}>
         <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
           <button className="secondary" onClick={onOpenSaved} style={{ flex: 1, minWidth: 0, padding: '8px 12px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}>
@@ -1588,11 +1758,22 @@ function CharacterTab({ hairData, gender, setGender, skin, tones, zombieSkins, s
         {bodyOptions.length > 1 && (
           <>
             <label style={{ color: 'var(--muted)', fontSize: 12 }}>Body</label>
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, margin: '4px 0 12px' }} title="A body mod is loaded - pick which body model to use">
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, margin: '4px 0 6px' }} title="A body mod is loaded - pick which body model to use">
               {bodyOptions.map((b) => (
                 <button key={b.id} className="secondary" title={b.label} onClick={() => onBody(b.id)} style={{ ...chip(bodySel === b.id), minWidth: 0, maxWidth: 150, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{b.label}</button>
               ))}
             </div>
+            {uvVerdict && (
+              uvVerdict.compatible ? (
+                <div title={`UV overlap with vanilla: ${Math.round(uvVerdict.score * 100)}%`} style={{ fontSize: 11, color: '#6ea06e', margin: '0 0 12px' }}>
+                  Vanilla-compatible UVs: standard clothing and skins fit this body.
+                </div>
+              ) : (
+                <div title={`UV overlap with vanilla: ${Math.round(uvVerdict.score * 100)}%`} style={{ fontSize: 11, color: '#c9a24b', margin: '0 0 12px', lineHeight: 1.35 }}>
+                  Custom UV layout: painted-on clothing and the stock skin textures may not line up. Use this body mod&apos;s own skin textures, and prefer clothing made for it.
+                </div>
+              )
+            )}
           </>
         )}
         {textureOptions.length > 1 && (
@@ -1647,9 +1828,14 @@ function CharacterTab({ hairData, gender, setGender, skin, tones, zombieSkins, s
           </div>
         </div>
       )}
-      <div style={{ flex: 1, minHeight: 0 }}>
+      {/* The hair/beard grid keeps a usable floor even when the pickers above stack up (body, texture,
+          zombie skin). The wrapper's min-height is a reliable definite box (so the whole panel scrolls
+          rather than squeezing the grid), and minRows floors the scroll area to 2 actual card rows at
+          the current thumbnail size. */}
+      <div style={{ flex: 1, minHeight: isMobile ? 240 : 340 }}>
         <AssetGrid<HairItem>
           key={kind}
+          minRows={2}
           items={items}
           facetLabel="letters"
           active={(it) => it.name === selected}
@@ -1662,7 +1848,8 @@ function CharacterTab({ hairData, gender, setGender, skin, tones, zombieSkins, s
                 <button className="secondary" onClick={() => setKind('hair')} style={seg(kind === 'hair')}>hair</button>
                 <button className="secondary" onClick={() => setKind('beard')} style={seg(kind === 'beard')}>beard</button>
               </div>
-              <input type="color" value={color} onChange={(e) => onRecolour(kind, e.target.value)} title="colour" style={{ width: 34, height: 30, padding: 0, border: '1px solid var(--line)', borderRadius: 6, background: 'transparent' }} />
+              <ColorPicker value={color} onChange={(hex) => onRecolour(kind, hex)} title="colour"
+                match={kind === 'beard' ? { on: matchBeard, onToggle: onToggleMatchBeard, label: 'Match hair colour' } : undefined} />
             </>
           )}
           renderThumb={(it) => it.name === 'None'

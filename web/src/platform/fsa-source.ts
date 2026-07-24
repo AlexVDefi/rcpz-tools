@@ -13,6 +13,9 @@ export interface AssetSource {
   id: string;
   isMod: boolean;
   modName?: string; // human mod name (for the per-mod grid filter); undefined for vanilla
+  modId?: string;   // the mod's folder id (used to link clothing to the body mod it ships with)
+  infoId?: string;  // the mod.info `id=` (what other mods' require= reference)
+  requires?: string[]; // mod ids this mod declares as dependencies (a clothing mod may require a body mod)
   listDir(relDir: string): Promise<Array<{ name: string; kind: 'file' | 'dir' }>>;
   readBytes(relPath: string): Promise<Uint8Array>;
   readText(relPath: string): Promise<string>;
@@ -24,7 +27,7 @@ const split = (rel: string) => norm(rel).split('/').filter(Boolean);
 
 export function createFsaAssetSource(
   root: FileSystemDirectoryHandle,
-  opts: { id: string; isMod?: boolean; modName?: string },
+  opts: { id: string; isMod?: boolean; modName?: string; modId?: string; infoId?: string; requires?: string[] },
 ): AssetSource {
   const dirCache = new Map<string, Promise<FileSystemDirectoryHandle | null>>();
 
@@ -57,6 +60,9 @@ export function createFsaAssetSource(
     id: opts.id,
     isMod: !!opts.isMod,
     modName: opts.modName,
+    modId: opts.modId,
+    infoId: opts.infoId,
+    requires: opts.requires,
     async listDir(relDir) {
       const dir = await dirHandle(relDir);
       if (!dir) return [];

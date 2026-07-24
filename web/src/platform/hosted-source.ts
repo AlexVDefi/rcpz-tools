@@ -22,7 +22,7 @@ export interface HostedManifest {
   assetBase: string; // e.g. "assets/"
   meshopt?: boolean;
   kind?: 'vanilla' | 'mod';
-  mod?: { id: string; name: string };
+  mod?: { id: string; name: string; requires?: string[] };
   counts?: Record<string, number>;
   files: Record<string, FileEntry>;
 }
@@ -60,6 +60,9 @@ export function createHostedAssetSource(
     id: opts.id || `hosted:${manifest.version}`,
     isMod: manifest.kind === 'mod',
     modName: manifest.mod?.name,
+    modId: manifest.mod?.id,
+    infoId: manifest.mod?.id,
+    requires: manifest.mod?.requires,
     async listDir(relDir) {
       const m = dirs.get(norm(relDir).toLowerCase());
       return m ? [...m.values()] : [];
