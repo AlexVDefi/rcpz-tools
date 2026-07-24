@@ -162,7 +162,9 @@ export function ModsPanel({ tabs, busy, onTab, divided = true }: { tabs: ModTab[
                   <div style={{ position: 'relative', width: 54, height: 32, flexShrink: 0, borderRadius: 4, overflow: 'hidden', background: '#0e0e12' }}><ModThumb preview={m.preview} poster={m.poster} /></div>
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontSize: 12.5, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{m.title}</div>
-                    {(m.subtitle ?? (m.author ? `by ${m.author}` : null)) && <div style={{ color: 'var(--muted)', fontSize: 11.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{m.subtitle ?? `by ${m.author}`}</div>}
+                    {/* always render the second line so every row is the same height. When there's no author
+                        (common for local mods; hosted mods carry the author from the hosting API), say so. */}
+                    <div style={{ color: 'var(--muted)', fontSize: 11.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{m.subtitle ?? `by ${m.author || '(unknown author)'}`}</div>
                   </div>
                   <input type="checkbox" checked={m.enabled} disabled={cardBusy(m)} onChange={() => tab.onToggle(m.id)} style={{ width: 17, height: 17, accentColor: 'var(--accent)', flexShrink: 0 }} />
                 </label>

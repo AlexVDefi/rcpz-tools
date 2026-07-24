@@ -2,7 +2,7 @@
 // browser port of src/characterApp/character.js's equip logic, driven by the async
 // resolve* fns (which return glb/png BYTES) and the Canvas body compositor. The React
 // viewer creates one of these and calls its methods; all Three.js lives here.
-import { resolveBody, resolveClip, resolveClothing, resolveHeldItem, resolveHairStyle, resolveAttachmentPart } from '@shared/character-core.js';
+import { resolveBody, resolveSkinTexture, resolveClip, resolveClothing, resolveHeldItem, resolveHairStyle, resolveAttachmentPart } from '@shared/character-core.js';
 import { THREE, makeSkinnedMaterial, makeMaterial, CHAR_LIGHTING, partMatrix, makeOrbit } from './three-core';
 import { glbToGltf, isolateSubMesh, bytesToTexture, sourceToTexture } from './loaders';
 import { normaliseClip, retargetAttachments, boneRestMap, normalizeClothingRig, captureSkeletonBind, type SkeletonBind } from './anim';
@@ -65,6 +65,7 @@ export class CharacterEngine {
   private bodyRest = new Map<string, THREE.Quaternion>();
   private bodySkel: SkeletonBind | null = null;
   private currentBody: { skinTexture: Uint8Array } | null = null;
+  private textureSource: unknown = null; // pins skin textures to a source (Vanilla vs a texture mod), or null = mod-over-vanilla
   private equipped = new Map<string, Equip>();
   private statics = new Map<string, THREE.Object3D>();
   private held = new Map<string, HeldEntry>();
@@ -454,9 +455,13 @@ export class CharacterEngine {
     return root;
   }
 
-  async loadBody(gender: 'male' | 'female' = this.gender) {
+  /** Pin skin textures to a specific source (Vanilla vs a texture mod); null = mod-over-vanilla.
+   *  Caller re-applies via setSkin (live) or loadBody (on reload). */
+  setTextureSource(src: unknown) { this.textureSource = src || null; }
+
+  async loadBody(gender: 'male' | 'female' = this.gender, bodySource?: unknown) {
     this.gender = gender;
-    const body = await resolveBody(this.ctx, { gender });
+    const body = await resolveBody(this.ctx, { gender, bodySource, textureSource: this.textureSource });
     this.currentBody = { skinTexture: body.skinTexture };
     const tex = await bytesToTexture(body.skinTexture, false);
     const root = await this.loadSkinnedRoot(body.meshGlb, tex, null, false);
@@ -530,12 +535,13 @@ export class CharacterEngine {
     this.rigs.setGroundOffset(this.rigs.groundOffset - minY); // lowest skinned point -> y=0
   }
 
-  /** Swap the body skin tone (texture only, no mesh reload); recomposites so clothing stays. */
+  /** Swap the body skin tone (texture only, no mesh reload); recomposites so clothing stays.
+   *  Honours the pinned textureSource so switching Vanilla<->mod textures is live. */
   async setSkin(tone: string) {
     if (!this.currentBody) return;
-    const hit = await (this.ctx.resolver as { resolveTexture(n: string): Promise<{ src: { readBytes(p: string): Promise<Uint8Array> }; realPath: string } | null> }).resolveTexture(`Body/${tone}`);
-    if (!hit) return;
-    this.currentBody.skinTexture = await hit.src.readBytes(hit.realPath);
+    const tex = await resolveSkinTexture(this.ctx, tone, this.textureSource);
+    if (!tex) return;
+    this.currentBody.skinTexture = tex.bytes;
     await this.recompositeBody();
   }
 
@@ -598,6 +604,21 @@ export class CharacterEngine {
   /** Full serialisable state of what's worn/held, for saving a character preset. */
   clothingState(): { name: string; tint: number[] | null; hidden: boolean }[] {
     return [...this.equipped.entries()].map(([name, e]) => ({ name, tint: e.tint, hidden: this.hidden.has(name) }));
+  }
+  /** The colour tint (rgb 0-1) applied to an equipped garment, or null for none. */
+  clothingTint(name: string): number[] | null { return this.equipped.get(name)?.tint ?? null; }
+  /** Recolour an equipped garment live: update the shader tint uniform (mesh/static) and, for
+   *  texture-composited garments, recomposite the body diffuse. tint=null clears it (white). */
+  async setClothingTint(name: string, tint: number[] | null) {
+    const e = this.equipped.get(name); if (!e) return;
+    e.tint = tint;
+    const apply = (obj: THREE.Object3D | undefined) => obj?.traverse((o) => {
+      const m = o as THREE.Mesh & { material: THREE.ShaderMaterial };
+      if ((o as THREE.Mesh).isMesh && m.material?.uniforms?.tint) m.material.uniforms.tint.value.set(tint ? tint[0] : 1, tint ? tint[1] : 1, tint ? tint[2] : 1);
+    });
+    apply(this.rigs.get('cloth:' + name)?.root);
+    apply(this.statics.get(name));
+    if (e.kind === 'composite') await this.recompositeBody();
   }
   heldState(): { name: string; hand: 'right' | 'left'; hidden: boolean; attachments: { slot: string; option: AttachOption }[] }[] {
     return [...this.held.entries()].map(([name, h]) => ({
@@ -668,8 +689,11 @@ export class CharacterEngine {
     let skeleton: THREE.Skeleton | null = null;
     body.root.traverse((o) => { const sm = o as THREE.SkinnedMesh; if (sm.isSkinnedMesh && !skeleton) skeleton = sm.skeleton; });
     if (!skeleton) throw new Error('no body skeleton to attach to');
-    const bone = (skeleton as THREE.Skeleton).bones.find((b) => b.name === (r.attachBone || 'Bip01_Head'));
-    if (!bone) throw new Error(`attach bone not found: ${r.attachBone}`);
+    // Attach to the item's named bone when it exists. A static item with no attach bone (or an unknown
+    // one - common in mods) used to default onto Bip01_Head, dumping mis-configured garments on the head.
+    // Fall back to the body root so it renders at its own authored position instead of on the head.
+    const bone = r.attachBone ? (skeleton as THREE.Skeleton).bones.find((b) => b.name === r.attachBone) : null;
+    const parent: THREE.Object3D = bone || body.root;
     const gltf = await glbToGltf(r.meshGlb);
     const obj = gltf.scene;
     isolateSubMesh(obj, r.subMesh); // modular model file: keep only the named part
@@ -677,7 +701,7 @@ export class CharacterEngine {
     const mat = makeMaterial(tex, this.lightingObj(), true);
     if (tint) mat.uniforms.tint.value.set(tint[0], tint[1], tint[2]);
     obj.traverse((o) => { const m = o as THREE.Mesh; if (m.isMesh) { if (!m.geometry.getAttribute('normal')) m.geometry.computeVertexNormals(); m.material = mat; m.frustumCulled = false; } });
-    bone.add(obj);
+    parent.add(obj);
     this.statics.set(name, obj);
   }
 

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { listClips, listClothing, listHeldItems, listHair, clothingGroup, CLOTHING_GROUP_ORDER, HELD_GROUP_ORDER, SKIN_TONES, attachmentProviders } from '@shared/character-core.js';
+import { listClips, listClothing, listHeldItems, listHair, clothingGroup, CLOTHING_GROUP_ORDER, HELD_GROUP_ORDER, SKIN_TONES, attachmentProviders, listZombieSkins, listBodySources, listBodyTextureSources } from '@shared/character-core.js';
 import { SLOTS, bodyAttachOptions, slotsFromWorn } from '@shared/attachments.js';
 import { CharacterEngine, type Ctx, type AttachOption } from './render/character-engine';
 
@@ -27,6 +27,7 @@ type TourStep = { target: string; title: string; body: string; interactive?: boo
 
 const rgb01 = (rgb: number[]) => [rgb[0] / 255, rgb[1] / 255, rgb[2] / 255];
 const rgbHex = (rgb: number[]) => '#' + rgb.map((c) => Math.max(0, Math.min(255, c)).toString(16).padStart(2, '0')).join('');
+const rgb01Hex = (rgb: number[]) => rgbHex(rgb.map((c) => Math.round(Math.max(0, Math.min(1, c)) * 255)));
 
 type CamPreset = 'orbit' | 'iso' | 'front' | 'portrait';
 const ASPECTS: [string, number | null][] = [['Fit', null], ['1:1', 1], ['4:5', 4 / 5], ['3:4', 3 / 4], ['16:9', 16 / 9], ['9:16', 9 / 16]];
@@ -74,7 +75,7 @@ const FLOOR_PRESETS: [string, string[]][] = [
   ['Wood', P('floors_interior_tilesandwood_01', 47)],
 ];
 interface Clip { id: string; name: string; actor: string; format: string; isMod: boolean; rel: string; modName?: string | null }
-interface HairStyle { name: string; model?: string; texture?: string }
+interface HairStyle { name: string; model?: string; texture?: string; isMod?: boolean; modName?: string | null }
 interface HairData { hair: { male: HairStyle[]; female: HairStyle[] }; beards: HairStyle[] }
 type HairItem = HairStyle & GridItem;
 
@@ -143,6 +144,38 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
   const [gender, setGender] = useState<'male' | 'female'>(bootChar.current?.gender || 'male');
   const [skin, setSkin] = useState<string>(bootChar.current?.skin || (SKIN_TONES as Record<string, string[]>)[bootChar.current?.gender || 'male'][0]);
   const tones = (SKIN_TONES as Record<string, string[]>)[gender];
+  // Zombie ("Zed") body skins, discovered from the assets (vanilla + mods) for the current gender.
+  const [zombieSkins, setZombieSkins] = useState<string[]>([]);
+  useEffect(() => { let ok = true; (async () => { try { const z = await listZombieSkins(ctx, gender); if (ok) setZombieSkins(z as string[]); } catch { /* ignore */ } })(); return () => { ok = false; }; }, [ctx, gender]);
+  // Body model source: a "body mod" replaces the default MaleBody/FemaleBody (same file name), so more
+  // than one source can provide it. Let the user pick which body to use (Vanilla vs the mod's), and
+  // remember it globally (it's a viewing preference, not part of a saved character).
+  type BodySource = { id: string; label: string; isMod: boolean; srcRef: unknown; realPath: string; format: string };
+  const [bodySources, setBodySources] = useState<BodySource[]>([]);
+  const [bodySourceId, setBodySourceId] = useState<string>(() => localStorage.getItem('pz-body-source') || '');
+  useEffect(() => { localStorage.setItem('pz-body-source', bodySourceId); }, [bodySourceId]);
+  useEffect(() => { let ok = true; (async () => { try { const b = await listBodySources(ctx, gender); if (ok) setBodySources(b as BodySource[]); } catch { /* ignore */ } })(); return () => { ok = false; }; }, [ctx, gender]);
+  // Skin-texture source: a texture/skin mod ships its own Body/<tone>.png, so the same tone can come
+  // from Vanilla or a mod. Pick which one to paint; remembered globally (a viewing preference). Switching
+  // is live (setSkin recomposites), so it is NOT a dep of the body-load effect - a ref feeds the boot path.
+  type TexSource = { id: string; label: string; isMod: boolean; srcRef: unknown };
+  const [texSources, setTexSources] = useState<TexSource[]>([]);
+  const [texSourceId, setTexSourceId] = useState<string>(() => localStorage.getItem('pz-texture-source') || '');
+  const texSourceIdRef = useRef(texSourceId);
+  useEffect(() => { texSourceIdRef.current = texSourceId; localStorage.setItem('pz-texture-source', texSourceId); }, [texSourceId]);
+  useEffect(() => { let ok = true; (async () => { try { const t = await listBodyTextureSources(ctx, gender); if (ok) setTexSources(t as TexSource[]); } catch { /* ignore */ } })(); return () => { ok = false; }; }, [ctx, gender]);
+  const skinUrlCache = useRef<Map<string, string>>(new Map());
+  useEffect(() => () => { for (const u of skinUrlCache.current.values()) URL.revokeObjectURL(u); }, []);
+  const skinThumbUrl = async (name: string): Promise<string> => {
+    const cache = skinUrlCache.current;
+    const cached = cache.get(name); if (cached) return cached;
+    const t = await (ctx.resolver as { resolveTexture(n: string): Promise<{ src: { readBytes(p: string): Promise<Uint8Array> }; realPath: string } | null> }).resolveTexture(`Body/${name}`);
+    if (!t) return '';
+    const b = await t.src.readBytes(t.realPath);
+    const ab = b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength) as ArrayBuffer;
+    const url = URL.createObjectURL(new Blob([ab], { type: 'image/png' }));
+    cache.set(name, url); return url;
+  };
   const [status, setStatus] = useState('loading body…');
   const [nowPlaying, setNowPlaying] = useState('');
   const [playing, setPlaying] = useState(true);
@@ -203,9 +236,12 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
   // Each item's shown label is its translated display name when one is available (else the raw
   // item/model name). `search` keeps the raw name (and mod) matchable so people can still search by
   // the internal name. `display` is the translated name (or undefined) for capturing into a share.
-  const clothing = useMemo(() => (listClothing(index) as Array<{ name: string; kind: string; location: string; isMod: boolean; modName?: string | null }>)
+  const clothing = useMemo(() => (listClothing(index) as Array<{ name: string; kind: string; location: string; isMod: boolean; modName?: string | null; allowTint?: boolean; allowHue?: boolean }>)
     .map((c) => { const display = displayNames?.get(c.name, c.modName) || undefined; const label = display || c.name;
       return { ...c, key: c.name, label, display, search: `${label} ${c.name} ${c.modName || ''}`.toLowerCase(), facet: clothingGroup(c), source: c.modName || 'Vanilla' }; }), [index, displayNames]);
+  // A garment is tintable exactly when the game says so: AllowRandomTint or AllowRandomHue (its base
+  // texture is greyscale/white and takes a colour multiply). Only these get a colour picker.
+  const tintableClothing = useMemo(() => new Set(clothing.filter((c) => c.allowTint || c.allowHue).map((c) => c.name)), [clothing]);
   const held = useMemo(() => (listHeldItems(index) as Array<{ name: string; mesh: string; texture?: string; scale?: number; isMod?: boolean; modName?: string | null; group: string; tags: string[]; attachSlots?: AttachSlot[]; attachmentType?: string | null; allAttachments?: Record<string, { offset: number[]; rotate: number[]; scale?: number }> }>)
     .map((h) => { const display = displayNames?.get(h.name, h.modName) || undefined; const label = display || h.name;
       return { ...h, key: h.name, label, display, search: `${label} ${h.name} ${h.modName || ''} ${(h.tags || []).join(' ')}`.toLowerCase(), facet: h.group, isMod: !!h.isMod, source: h.modName || 'Vanilla' }; }), [index, displayNames]);
@@ -328,7 +364,16 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
       const eng = engineRef.current; if (!eng) return;
       setStatus('loading body…');
       try {
-        await eng.loadBody(gender);
+        // a picked body-model source (a body mod that replaced the default) - discover it fresh for the
+        // current gender so gender + body stay in sync; undefined falls back to the mod-over-vanilla default.
+        let bodySrc: unknown = undefined;
+        if (bodySourceId) { try { const srcs = await listBodySources(ctx, gender); bodySrc = (srcs as { id: string }[]).find((s) => s.id === bodySourceId); } catch { /* default */ } }
+        // pin the picked skin-texture source (Vanilla vs a texture mod) before loading so the body paints
+        // with it from the first frame. Read via ref (a texture switch is applied live, not by reloading).
+        let texSrc: unknown = undefined;
+        if (texSourceIdRef.current) { try { const srcs = await listBodyTextureSources(ctx, gender); texSrc = (srcs as { id: string }[]).find((s) => s.id === texSourceIdRef.current); } catch { /* default */ } }
+        eng.setTextureSource(texSrc);
+        await eng.loadBody(gender, bodySrc);
         if (cancelled) return;
         eng.setAutoFrame(isMobileRef.current); // phone default: whole character centered + fitted, kept on resize
         setStatus(''); setEquipTick((t) => t + 1);
@@ -347,7 +392,7 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
       } catch (e) { if (!cancelled) setStatus('body error: ' + (e instanceof Error ? e.message : String(e))); }
     })();
     return () => { cancelled = true; };
-  }, [gender, idleClip]);
+  }, [gender, idleClip, bodySourceId]);
 
   async function guard(fn: () => Promise<unknown>) {
     try { await fn(); } catch (e) { setNowPlaying('error: ' + (e instanceof Error ? e.message : String(e))); }
@@ -355,6 +400,7 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
   }
   const playClip = (c: Clip) => guard(async () => { await engineRef.current!.playClip(c); setPlaying(true); setCurrentClipId(c.id); });
   const toggleCloth = (it: { name: string }) => guard(() => engineRef.current!.toggleClothing(it));
+  const setClothTint = (name: string, tint: number[] | null) => guard(() => engineRef.current!.setClothingTint(name, tint));
   const toggleHeld = (it: { name: string }) => guard(() => engineRef.current!.toggleHeld(it));
   const setHeldHand = (name: string, hand: 'right' | 'left') => guard(() => engineRef.current!.setHeldHand(name, hand));
   const setAttachment = (name: string, slot: string, option: AttachOption | null) => guard(() => engineRef.current!.setHeldAttachment(name, slot, option));
@@ -597,6 +643,27 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
   const capturePreview = (): string | undefined => {
     try { return engineRef.current?.snapshotFront(260, 340, '#1b1d24'); } catch { return undefined; }
   };
+  // Switch which body model to use (Vanilla vs a body mod's). Capture the current look first so the
+  // body-reload effect re-applies clothing/held/attachments/skin onto the freshly-loaded body.
+  const changeBody = (id: string) => {
+    if (id === (bodySourceId || bodySources[0]?.id || '')) return;
+    pendingPresetRef.current = buildPreset(charNameRef.current || '');
+    setBodySourceId(id);
+  };
+  // Switch which source paints the skin texture (Vanilla vs a texture mod). Applied live - just re-run
+  // setSkin with the new source pinned, so no body reload and the clothing/pose stay put.
+  const changeTexture = (id: string) => {
+    if (id === (texSourceId || texSources[0]?.id || '')) return;
+    setTexSourceId(id);
+    const eng = engineRef.current; if (!eng) return;
+    (async () => {
+      try {
+        const src = (await listBodyTextureSources(ctx, gender) as { id: string }[]).find((s) => s.id === id);
+        eng.setTextureSource(src);
+        await eng.setSkin(skin);
+      } catch { /* keep the current texture on failure */ }
+    })();
+  };
   const savePreset = async (name: string) => { const n = name.trim(); if (!n) return; const thumb = capturePreview(); setPresets((p) => ({ ...p, [n]: { ...buildPreset(n), thumb } })); emitCharName(n); };
   const deletePreset = (name: string) => setPresets((p) => { const n = { ...p }; delete n[name]; return n; });
   const duplicatePreset = (preset: CharPreset) => setPresets((p) => {
@@ -709,6 +776,20 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
           onPick={(it) => toggleCloth(it)}
           favActive={(it) => favs.has(favKey('clothing', it.name))}
           onToggleFav={(it) => toggleFav('clothing', it.name)}
+          overlay={(it) => {
+            void equipTick;
+            // a colour picker in the corner (same spot as the held items' L/R), only for garments the
+            // game marks tintable, and only once worn so the change is visible.
+            if (!tintableClothing.has(it.name) || !engineRef.current?.isEquipped(it.name)) return null;
+            const cur = engineRef.current?.clothingTint(it.name);
+            return (
+              <span onClick={(e) => e.stopPropagation()} title="Tint this garment"
+                style={{ position: 'absolute', bottom: 4, right: 4, width: 24, height: 24, borderRadius: 5, overflow: 'hidden', border: '1px solid #000a', boxShadow: '0 1px 2px #000' }}>
+                <input type="color" value={cur ? rgb01Hex(cur) : '#ffffff'} onChange={(e) => setClothTint(it.name, hexRgb(e.target.value))} onClick={(e) => e.stopPropagation()}
+                  style={{ position: 'absolute', top: -6, left: -6, width: 36, height: 36, padding: 0, border: 'none', background: 'transparent', cursor: 'pointer' }} />
+              </span>
+            );
+          }}
           extraControls={(
             <div style={{ display: 'flex', border: '1px solid var(--line)', borderRadius: 6, overflow: 'hidden' }} title="thumbnail style">
               <button className="secondary" onClick={() => setClothOnBody(true)} style={segBtn(clothOnBody)}>on body</button>
@@ -754,7 +835,7 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
           }}
           renderThumb={(it) => <Thumb depKey={`h:${it.name}`} getUrl={() => thumbs.held(it)} />} />
       )}
-      {tab === 'character' && <CharacterTab hairData={hairData} gender={gender} setGender={setGender} skin={skin} tones={tones} onSkin={(t) => { setSkin(t); engineRef.current?.setSkin(t); }} thumbs={thumbs} hairSel={hairSel} beardSel={beardSel} hairColor={hairColor} beardColor={beardColor} onPickPart={applyHairPart} onRecolour={recolourPart} favs={favs} onToggleFav={toggleFav} onImport={() => setImportOpen(true)} onNew={() => { void newCharacter(); }}
+      {tab === 'character' && <CharacterTab hairData={hairData} gender={gender} setGender={setGender} skin={skin} tones={tones} zombieSkins={zombieSkins} skinThumbUrl={skinThumbUrl} bodyOptions={bodySources.map((b) => ({ id: b.id, label: b.label }))} bodySel={bodySourceId || bodySources[0]?.id || ''} onBody={changeBody} textureOptions={texSources.map((t) => ({ id: t.id, label: t.label }))} textureSel={texSourceId || texSources[0]?.id || ''} onTexture={changeTexture} onSkin={(t) => { setSkin(t); engineRef.current?.setSkin(t); }} thumbs={thumbs} hairSel={hairSel} beardSel={beardSel} hairColor={hairColor} beardColor={beardColor} onPickPart={applyHairPart} onRecolour={recolourPart} favs={favs} onToggleFav={toggleFav} onImport={() => setImportOpen(true)} onNew={() => { void newCharacter(); }}
         savedCount={Object.keys(presets).length} onOpenSaved={() => setPresetsOpen(true)} />}
       {tab === 'export' && (
         <div style={{ padding: 12, overflow: 'auto', height: '100%' }}>
@@ -875,6 +956,16 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
                       <button className="secondary" title="Hand, body location and attachments" aria-label="Options" onClick={() => setAttachOpen(open ? null : e.name)}
                         style={{ ...iconBtn, background: open ? 'var(--accent)' : 'var(--panel)', color: open ? '#fff' : 'var(--text)' }}><GearIcon size={isMobile ? 16 : 14} /></button>
                     )}
+                    {e.type === 'clothing' && tintableClothing.has(e.name) && (() => {
+                      void equipTick;
+                      const cur = engineRef.current?.clothingTint(e.name);
+                      return (
+                        <span title="Tint this garment" style={{ ...iconBtn, position: 'relative', overflow: 'hidden', borderRadius: 6, border: '1px solid var(--line)' }}>
+                          <input type="color" value={cur ? rgb01Hex(cur) : '#ffffff'} onChange={(ev) => setClothTint(e.name, hexRgb(ev.target.value))}
+                            style={{ position: 'absolute', top: -8, left: -8, width: 'calc(100% + 16px)', height: 'calc(100% + 16px)', padding: 0, border: 'none', background: 'transparent', cursor: 'pointer' }} />
+                        </span>
+                      );
+                    })()}
                     <button className="secondary" title={e.hidden ? 'Show in scene' : 'Hide from scene'} aria-label={e.hidden ? 'show' : 'hide'} onClick={() => toggleHide(e.name, !e.hidden)}
                       style={{ ...iconBtn, color: e.hidden ? 'var(--muted)' : 'var(--text)' }}>{e.hidden ? <EyeOffIcon size={isMobile ? 16 : 14} /> : <EyeIcon size={isMobile ? 16 : 14} />}</button>
                     <button className="secondary" title="remove (unequip)" aria-label="remove" onClick={() => removeEquip(e.name, e.type)} style={{ ...iconBtn, fontSize: isMobile ? 14 : 12, color: '#ff6b6b' }}>✕</button>
@@ -1419,18 +1510,26 @@ function ShareResult({ url, playerUrl, onDelete }: { url: string; playerUrl: str
 }
 
 const hexRgb = (hex: string) => { const n = parseInt(hex.slice(1), 16); return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255]; };
-const toHairItem = (s: HairStyle): HairItem => ({ ...s, key: s.name, label: s.name, facet: firstLetter(s.name), isMod: false });
+const toHairItem = (s: HairStyle): HairItem => ({ ...s, key: s.name, label: s.name, facet: firstLetter(s.name), isMod: !!s.isMod, source: s.modName || 'Vanilla' });
 const NONE_HAIR: HairItem = { name: 'None', key: 'None', label: 'None', facet: '·', isMod: false };
 
 // Character tab: identity (gender + skin texture) as a compact header, then a browsable
 // thumbnail grid for the active appearance kind (Hair or Beard) filling the rest. Selection
 // and colour are lifted to the parent so the Favorites tab stays in sync.
-function CharacterTab({ hairData, gender, setGender, skin, tones, onSkin, thumbs, hairSel, beardSel, hairColor, beardColor, onPickPart, onRecolour, favs, onToggleFav, onImport, onNew, savedCount, onOpenSaved }: {
+function CharacterTab({ hairData, gender, setGender, skin, tones, zombieSkins, skinThumbUrl, bodyOptions, bodySel, onBody, textureOptions, textureSel, onTexture, onSkin, thumbs, hairSel, beardSel, hairColor, beardColor, onPickPart, onRecolour, favs, onToggleFav, onImport, onNew, savedCount, onOpenSaved }: {
   hairData: HairData;
   gender: 'male' | 'female';
   setGender: (g: 'male' | 'female') => void;
   skin: string;
   tones: string[];
+  zombieSkins: string[];
+  skinThumbUrl: (name: string) => Promise<string>;
+  bodyOptions: { id: string; label: string }[];
+  bodySel: string;
+  onBody: (id: string) => void;
+  textureOptions: { id: string; label: string }[];
+  textureSel: string;
+  onTexture: (id: string) => void;
   onSkin: (tone: string) => void;
   thumbs: ThumbnailProvider;
   hairSel: string;
@@ -1459,6 +1558,12 @@ function CharacterTab({ hairData, gender, setGender, skin, tones, onSkin, thumbs
   const toneLabel = (t: string) => { const m = t.match(/(\d+)(a?)$/); return m ? String(parseInt(m[1], 10)) + (m[2] ? 'h' : '') : t; };
   const seg = (on: boolean) => ({ borderRadius: 0, padding: '6px 14px', background: on ? 'var(--accent)' : 'var(--panel)', color: on ? '#fff' : 'var(--muted)' }) as const;
   const chip = (on: boolean) => ({ minWidth: 34, borderRadius: 6, padding: '7px 8px', background: on ? 'var(--accent)' : '#14141a', color: on ? '#fff' : 'var(--text)', border: '1px solid var(--line)' }) as const;
+  // Zombie skins get a sickly-green look so they read clearly as separate from the human tones.
+  const [zModal, setZModal] = useState(false);
+  const ZOMBIE_BUTTONS_MAX = 8; // few -> inline buttons; more (usually modded) -> a browsable modal
+  const zombieLabel = (n: string) => n.replace(/^[mf]_/i, '').replace(/body/i, '').replace(/([a-z])(\d)/i, '$1 $2').trim() || n;
+  const zChip = (on: boolean) => ({ minWidth: 34, borderRadius: 6, padding: '7px 8px', background: on ? '#4f7a3a' : '#14141a', color: on ? '#fff' : '#9cc77a', border: '1px solid ' + (on ? '#5a8a42' : '#3a5a2a') }) as const;
+  const zombieSelected = zombieSkins.includes(skin);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
@@ -1480,13 +1585,68 @@ function CharacterTab({ hairData, gender, setGender, skin, tones, onSkin, thumbs
             ))}
           </div>
         </div>
+        {bodyOptions.length > 1 && (
+          <>
+            <label style={{ color: 'var(--muted)', fontSize: 12 }}>Body</label>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, margin: '4px 0 12px' }} title="A body mod is loaded - pick which body model to use">
+              {bodyOptions.map((b) => (
+                <button key={b.id} className="secondary" title={b.label} onClick={() => onBody(b.id)} style={{ ...chip(bodySel === b.id), minWidth: 0, maxWidth: 150, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{b.label}</button>
+              ))}
+            </div>
+          </>
+        )}
+        {textureOptions.length > 1 && (
+          <>
+            <label style={{ color: 'var(--muted)', fontSize: 12 }}>Skin texture</label>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, margin: '4px 0 12px' }} title="A skin/texture mod is loaded - pick which body textures to paint">
+              {textureOptions.map((t) => (
+                <button key={t.id} className="secondary" title={t.label} onClick={() => onTexture(t.id)} style={{ ...chip(textureSel === t.id), minWidth: 0, maxWidth: 150, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.label}</button>
+              ))}
+            </div>
+          </>
+        )}
         <label style={{ color: 'var(--muted)', fontSize: 12 }}>Skin</label>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 4 }}>
           {tones.map((t) => (
             <button key={t} className="secondary" title={t} onClick={() => onSkin(t)} style={chip(skin === t)}>{toneLabel(t)}</button>
           ))}
         </div>
+        {zombieSkins.length > 0 && (
+          <>
+            <label style={{ color: '#9cc77a', fontSize: 12, display: 'block', marginTop: 12 }}>Zombie skin</label>
+            {zombieSkins.length <= ZOMBIE_BUTTONS_MAX ? (
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 4 }}>
+                {zombieSkins.map((z) => (
+                  <button key={z} className="secondary" title={z} onClick={() => onSkin(z)} style={zChip(skin === z)}>{zombieLabel(z)}</button>
+                ))}
+              </div>
+            ) : (
+              <button className="secondary" onClick={() => setZModal(true)} style={{ ...zChip(zombieSelected), width: '100%', marginTop: 4, padding: '8px 12px' }}>
+                Browse zombie skins ({zombieSkins.length}){zombieSelected ? `: ${zombieLabel(skin)}` : ''}
+              </button>
+            )}
+          </>
+        )}
       </div>
+      {zModal && (
+        <div onClick={() => setZModal(false)} style={{ position: 'fixed', inset: 0, background: '#000d', display: 'grid', placeItems: 'center', zIndex: 620, padding: 20 }}>
+          <div onClick={(e) => e.stopPropagation()} className="card" style={{ maxWidth: 560, width: '100%', maxHeight: '82vh', overflow: 'auto' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+              <b style={{ fontSize: 16, color: '#9cc77a' }}>Zombie skins <span style={{ color: 'var(--muted)', fontWeight: 400, fontSize: 12 }}>({zombieSkins.length})</span></b>
+              <button className="secondary" onClick={() => setZModal(false)} aria-label="Close" style={{ width: 30, height: 30, padding: 0, display: 'grid', placeItems: 'center', flexShrink: 0 }}>✕</button>
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(94px, 1fr))', gap: 8 }}>
+              {zombieSkins.map((z) => (
+                <button key={z} className="secondary" title={z} onClick={() => { onSkin(z); setZModal(false); }}
+                  style={{ padding: 0, borderRadius: 8, overflow: 'hidden', border: `2px solid ${skin === z ? '#5a8a42' : 'var(--line)'}`, display: 'flex', flexDirection: 'column', cursor: 'pointer', background: '#0e0e12' }}>
+                  <div style={{ aspectRatio: '1', width: '100%', background: '#0e0e12' }}><Thumb depKey={`skin:${z}`} getUrl={() => skinThumbUrl(z)} /></div>
+                  <span style={{ fontSize: 10.5, padding: '4px 3px', color: skin === z ? '#9cc77a' : 'var(--muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{zombieLabel(z)}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
       <div style={{ flex: 1, minHeight: 0 }}>
         <AssetGrid<HairItem>
           key={kind}

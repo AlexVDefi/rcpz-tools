@@ -147,12 +147,25 @@ function hairStyle(block) {
     level: parseInt(xScalar(block, 'level'), 10) || 0, alternates,
   };
 }
+function dedupByName(styles) {
+  const seen = new Set(), out = []; // keep the first occurrence of each name (mods are concatenated first)
+  for (const s of styles) { const k = s.name.toLowerCase(); if (seen.has(k)) continue; seen.add(k); out.push(s); }
+  return out;
+}
 export function listHair(index) {
   const hair = { male: [], female: [] }, beards = [];
-  if (index.hairXml) {
-    for (const g of ['male', 'female']) hair[g] = hairBlocks(index.hairXml, g).map(hairStyle).filter((s) => s.name);
+  // hairXml/beardXml are per-source [{ text, isMod, modName }] (mods first). Parse each, tag every style
+  // with its source (so modded hair gets a MOD badge + source filter), then dedup by name (mods win).
+  const asSrcs = (v) => Array.isArray(v) ? v : (v ? [{ text: v, isMod: false, modName: null }] : []);
+  const hairSrcs = asSrcs(index.hairXml), beardSrcs = asSrcs(index.beardXml);
+  for (const g of ['male', 'female']) {
+    const styles = [];
+    for (const src of hairSrcs) for (const s of hairBlocks(src.text, g).map(hairStyle).filter((s) => s.name)) styles.push({ ...s, isMod: !!src.isMod, modName: src.modName || null });
+    hair[g] = dedupByName(styles);
   }
-  if (index.beardXml) beards.push(...hairBlocks(index.beardXml, 'style').map(hairStyle).filter((s) => s.name));
+  const bstyles = [];
+  for (const src of beardSrcs) for (const s of hairBlocks(src.text, 'style').map(hairStyle).filter((s) => s.name)) bstyles.push({ ...s, isMod: !!src.isMod, modName: src.modName || null });
+  beards.push(...dedupByName(bstyles));
   return { hair, beards };
 }
 
@@ -308,16 +321,106 @@ async function meshToGlb(ctx, meshName) {
   return { glb, realPath: m.realPath, format: m.format, subMesh: m.subMesh || null };
 }
 
-/** Body mesh (glb bytes) + chosen skin texture (png bytes). */
-export async function resolveBody(ctx, { gender = 'male', skin } = {}) {
+/** Body mesh (glb bytes) + chosen skin texture (png bytes). `bodySource`/`textureSource` optionally
+ *  pin the mesh / the skin texture to a specific source (Vanilla vs a mod), bypassing mod-over-vanilla. */
+export async function resolveBody(ctx, { gender = 'male', skin, bodySource, textureSource } = {}) {
   const g = gender === 'female' ? 'female' : 'male';
-  const mesh = await meshToGlb(ctx, BODY_MESH[g]);
-  if (mesh.error) throw new Error(`${mesh.error} (is the game folder set?)`);
+  let meshGlb;
+  if (bodySource && bodySource.srcRef && bodySource.realPath) {
+    // A specific source's body model was picked (a body mod replaces the default, and the user chose
+    // which one). Read it straight from that source instead of the mod-over-vanilla winner.
+    const bytes = await bodySource.srcRef.readBytes(bodySource.realPath);
+    meshGlb = await ctx.converter.convertToGlb(bytes, bodySource.format || 'fbx');
+  } else {
+    const mesh = await meshToGlb(ctx, BODY_MESH[g]);
+    if (mesh.error) throw new Error(`${mesh.error} (is the game folder set?)`);
+    meshGlb = mesh.glb;
+  }
   const tones = SKIN_TONES[g];
   const chosen = tones.includes(skin) ? skin : tones[0];
-  const texHit = await ctx.resolver.resolveTexture(`Body/${chosen}`);
-  if (!texHit) throw new Error(`skin texture not found: Body/${chosen}.png`);
-  return { gender: g, skin: chosen, tones, meshGlb: mesh.glb, skinTexture: await readResolved(texHit), skinTexturePath: texHit.realPath };
+  const tex = await resolveSkinTexture(ctx, chosen, textureSource);
+  if (!tex) throw new Error(`skin texture not found: Body/${chosen}.png`);
+  return { gender: g, skin: chosen, tones, meshGlb, skinTexture: tex.bytes, skinTexturePath: tex.realPath };
+}
+
+/** Read one Body/<tone>.png, from a specific source if `textureSource` is given (a skin-texture mod the
+ *  user picked), else mod-over-vanilla. Returns { bytes, realPath } | null. */
+export async function resolveSkinTexture(ctx, tone, textureSource) {
+  const r = ctx.resolver;
+  if (textureSource && textureSource.srcRef && r.realPathIn) {
+    try {
+      const real = await r.realPathIn(textureSource.srcRef, `media/textures/body/${String(tone).toLowerCase()}.png`);
+      if (real) return { bytes: await textureSource.srcRef.readBytes(real), realPath: real };
+    } catch { /* fall back to the default resolution */ }
+  }
+  const hit = await r.resolveTexture(`Body/${tone}`);
+  return hit ? { bytes: await readResolved(hit), realPath: hit.realPath } : null;
+}
+
+/** Which sources provide the body model for a gender (a body mod "replaces" it: same file name, so
+ *  several sources can have it). Returns [{ id, label, isMod, srcRef, realPath, format }] in priority
+ *  order (mods first, then vanilla) - so [0] is the mod-over-vanilla default. Lets the UI offer a
+ *  "which body" picker; each entry can be handed to resolveBody as `bodySource`. */
+export async function listBodySources(ctx, gender = 'male') {
+  const r = ctx && ctx.resolver;
+  if (!r || !r.sources || !r.realPathIn) return [];
+  const g = gender === 'female' ? 'female' : 'male';
+  const base = `media/models_x/skinned/${g}body`;
+  const exts = ['.fbx', '.x', '.glb'];
+  const out = [];
+  for (const src of r.sources) {
+    for (const e of exts) {
+      let real = null; try { real = await r.realPathIn(src, base + e); } catch { real = null; }
+      if (real) { out.push({ id: src.id, label: src.modName || (src.isMod ? src.id : 'Vanilla'), isMod: !!src.isMod, srcRef: src, realPath: real, format: e.slice(1) }); break; }
+    }
+  }
+  return out;
+}
+
+/** Which sources provide body SKIN textures for a gender (a skin/texture mod ships its own
+ *  media/textures/Body/<tone>.png). Probes the first tone as the marker. Returns
+ *  [{ id, label, isMod, srcRef }] mods-first; each entry can be handed to resolveBody/setSkin as
+ *  `textureSource` to pin the skin texture to Vanilla or a specific mod. */
+export async function listBodyTextureSources(ctx, gender = 'male') {
+  const r = ctx && ctx.resolver;
+  if (!r || !r.sources || !r.realPathIn) return [];
+  const g = gender === 'female' ? 'female' : 'male';
+  const probe = `media/textures/body/${SKIN_TONES[g][0].toLowerCase()}.png`;
+  const out = [];
+  for (const src of r.sources) {
+    let real = null; try { real = await r.realPathIn(src, probe); } catch { real = null; }
+    if (real) out.push({ id: src.id, label: src.modName || (src.isMod ? src.id : 'Vanilla'), isMod: !!src.isMod, srcRef: src });
+  }
+  return out;
+}
+
+/** Discover zombie ("Zed") body-skin textures under media/textures/Body across every source (mods
+ *  included), for a gender. Returns the texture base names (e.g. 'M_ZedBody02') - setSkin/resolveBody
+ *  accept them exactly like the human tones. Vanilla B42 ships one (M_ZedBody02, male); mods can add
+ *  more, which is why the picker switches to a browsable modal when there are many. */
+export async function listZombieSkins(ctx, gender = 'male') {
+  const r = ctx && ctx.resolver;
+  if (!r || !r.sources || !r.realPathIn) return [];
+  const seen = new Map(); // name(lower) -> real base name, highest-priority (mod) source wins
+  for (const src of r.sources) {
+    let real = null; try { real = await r.realPathIn(src, 'media/textures/body'); } catch { real = null; }
+    if (!real) continue;
+    let entries = []; try { entries = await src.listDir(real); } catch { entries = []; }
+    for (const e of entries) {
+      if (e.kind !== 'file') continue;
+      const m = /^(.+)\.png$/i.exec(e.name); if (!m) continue;
+      const base = m[1], lower = base.toLowerCase();
+      if (!/zed|zombie/.test(lower) || /dmg/.test(lower)) continue; // full zombie skins only, not the ZedDmg wound decals
+      if (!seen.has(lower)) seen.set(lower, base);
+    }
+  }
+  const g = gender === 'female' ? 'female' : 'male';
+  const out = [];
+  for (const base of seen.values()) {
+    const which = /^m_/i.test(base) ? 'male' : /^f_/i.test(base) ? 'female' : 'both';
+    if (which === 'both' || which === g) out.push(base);
+  }
+  return out.sort();
 }
 
 /** Convert one clip to glb bytes on demand. */

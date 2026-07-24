@@ -32,6 +32,7 @@ const INSTALL_KEY = 'pz-install';
 const WORKSHOP_KEY = 'pz-workshop';
 const ACTIVE_KEY = 'pz-active-mods';
 const SOURCE_KEY = 'pz-asset-source'; // remembers the last choice: 'local' | 'hosted'
+const HOSTED_LOCAL_OFF_KEY = 'pz-hosted-local-off'; // set once the user removes local mods in hosted mode, so boot doesn't re-load them
 const fsaSupported = fileAccessSupported; // true in the desktop app (native fs) or an FSA-capable browser
 // Hosted vanilla asset bundle (baked by tools/bake-assets.mjs, served from R2). When set, the app
 // offers a no-install path that works on ANY browser - local files/mods still need Chromium FSA.
@@ -274,6 +275,7 @@ export function App() {
     setError(''); setScanHosted(true); setScan(null); setPhase('scanning'); setOverlay('in');
     try {
       await saveDir(WORKSHOP_KEY, h);
+      localStorage.removeItem(HOSTED_LOCAL_OFF_KEY); // explicitly loading mods re-enables restore on boot
       const discovered = await discoverWorkshopMods(h);
       if (!discovered.length) {
         setError('No mods found there. Point at your Zomboid/mods, Zomboid/Workshop, or the Steam 108600 folder.');
@@ -288,6 +290,7 @@ export function App() {
   const reconnectLocalMods = useCallback(async () => {
     if (!savedWorkshop) return;
     if (!(await requestPermission(savedWorkshop))) return; // user declined the re-grant prompt
+    localStorage.removeItem(HOSTED_LOCAL_OFF_KEY);
     setError(''); setScanHosted(true); setScan(null); setPhase('scanning'); setOverlay('in');
     try {
       const discovered = await discoverWorkshopMods(savedWorkshop);
@@ -297,6 +300,7 @@ export function App() {
   }, [savedWorkshop, rebuildHosted, hostedMods, enabledMods]);
   const clearLocalMods = useCallback(() => {
     setMods([]); setDisabledLocal([]); setSavedWorkshop(null);
+    localStorage.setItem(HOSTED_LOCAL_OFF_KEY, '1'); // stay removed across reloads (boot skips re-discovery)
     if (HOSTED_ASSETS_URL) rebuildHosted(HOSTED_ASSETS_URL, hostedMods.filter((m) => enabledMods.includes(m.modId)), []);
   }, [rebuildHosted, hostedMods, enabledMods]);
   // "Use my game files instead": leave hosted and show the full local onboarding (Sources + disclaimers).
@@ -345,13 +349,15 @@ export function App() {
         // Returning hosted user: also restore the mods folder they had loaded. If its read permission
         // survived the reload, re-discover silently; otherwise remember the handle for a one-click reconnect.
         let localMods: DiscoveredMod[] = [];
-        try {
-          const ws = await loadDir(WORKSHOP_KEY);
-          if (ws) {
-            if (await hasPermission(ws)) { localMods = await discoverWorkshopMods(ws); setMods(localMods); }
-            else setSavedWorkshop(ws);
-          }
-        } catch { /* best-effort; fall through to a vanilla+community rebuild */ }
+        if (localStorage.getItem(HOSTED_LOCAL_OFF_KEY) !== '1') { // the user hasn't removed their local mods
+          try {
+            const ws = await loadDir(WORKSHOP_KEY);
+            if (ws) {
+              if (await hasPermission(ws)) { localMods = await discoverWorkshopMods(ws); setMods(localMods); }
+              else setSavedWorkshop(ws);
+            }
+          } catch { /* best-effort; fall through to a vanilla+community rebuild */ }
+        }
         useHosted(localMods);
       }
     })();

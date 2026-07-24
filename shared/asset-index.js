@@ -52,7 +52,7 @@ export async function buildAssetIndex(sources, opts = {}) {
   const clothingFiles = []; // { rel, text, isMod }
   const animClips = [];     // { key, actor, clip, format, rel, isMod, sourceIndex }
   const seenScript = new Set(), seenCloth = new Set(), seenAnim = new Set();
-  let hairXml = null, beardXml = null;
+  const hairXml = [], beardXml = []; // [{ text, isMod, modName }] per source (mods first); merged + tagged in listHair
 
   for (let si = 0; si < sources.length; si++) {
     const src = sources[si];
@@ -78,15 +78,18 @@ export async function buildAssetIndex(sources, opts = {}) {
     });
     report(si, src, 'clothing', clothingFiles.length);
 
-    // hairstyle manifests (first source that has them wins)
-    if (hairXml == null) {
+    // hairstyle manifests: collect from EVERY source (mods first) so vanilla AND modded hairstyles are
+    // all available at once (no toggling the mod on/off). listHair parses each, tags styles with isMod/
+    // modName (so modded hair shows a MOD badge + a source filter), and dedups same-named styles mod-over-vanilla.
+    {
       const hd = await realSubdir(src, 'media/hairstyles');
       if (hd) {
         const entries = await src.listDir(hd);
         const h = entries.find((e) => e.name.toLowerCase() === 'hairstyles.xml');
         const b = entries.find((e) => e.name.toLowerCase() === 'beardstyles.xml');
-        if (h) try { hairXml = await src.readText(`${hd}/${h.name}`); } catch {}
-        if (b) try { beardXml = await src.readText(`${hd}/${b.name}`); } catch {}
+        const tag = { isMod, modName: src.modName || (isMod ? src.id : null) };
+        if (h) try { hairXml.push({ text: await src.readText(`${hd}/${h.name}`), ...tag }); } catch {}
+        if (b) try { beardXml.push({ text: await src.readText(`${hd}/${b.name}`), ...tag }); } catch {}
       }
     }
 
