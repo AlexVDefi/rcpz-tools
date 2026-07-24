@@ -15,6 +15,7 @@
   ],
   "win": {
     "target": [{ "target": "zip", "arch": ["x64"] }],
-    "artifactName": "PZ-Survivor-Studio-${version}-win-x64.${ext}"
+    "artifactName": "PZ-Survivor-Studio-${version}-win-x64.${ext}",
+    "icon": "build/studio-icon.ico"
   }
 }
