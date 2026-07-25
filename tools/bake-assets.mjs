@@ -208,8 +208,8 @@ async function main() {
   for (const { realPath, bytes } of refs.values()) {
     const e = ext(realPath);
     const isClip = realPath.toLowerCase().includes('/anims_x/');
-    let outBytes, outExt, virtualPath, kind;
     try {
+      let outBytes, outExt, virtualPath, kind;
       // Meshes (models_x) -> glb + meshopt. Animation CLIPS stay in their native format:
       // the app routes clips by extension, and only the native (.x) path plays vanilla clips
       // upright - a pre-converted .glb clip takes the foreign-skeleton retarget path and
@@ -229,16 +229,19 @@ async function main() {
         outBytes = bytes; outExt = e.slice(1) || 'bin'; virtualPath = realPath;
         kind = isClip ? 'clip' : (e === '.png' ? 'texture' : 'other');
       }
+      // Normalise to a typed array before hashing/writing: crypto.update and writeFileSync reject a
+      // plain Array (some converter/optimizer paths hand one back), which used to kill the whole bake.
+      const buf = ArrayBuffer.isView(outBytes) ? outBytes : Buffer.from(outBytes);
+      const hash = sha16(buf);
+      const fname = `${hash}.${outExt}`;
+      if (!written.has(hash)) { fs.writeFileSync(path.join(assetsDir, fname), buf); written.add(hash); stat.bytes += buf.length; }
+      files[virtualPath] = { kind: 'bin', hash, ext: outExt, size: buf.length };
+      stat[kind]++;
     } catch (err) { stat.failed++; errors.push(`convert ${realPath}: ${err.message}`); continue; }
-
-    const hash = sha16(outBytes);
-    const fname = `${hash}.${outExt}`;
-    if (!written.has(hash)) { fs.writeFileSync(path.join(assetsDir, fname), outBytes); written.add(hash); stat.bytes += outBytes.length; }
-    files[virtualPath] = { kind: 'bin', hash, ext: outExt, size: outBytes.length };
-    stat[kind]++;
     if (++done % 100 === 0) process.stdout.write(`  converted ${done}/${refs.size}\r`);
   }
   process.stdout.write(`  converted ${done}/${refs.size}\n`);
+  if (stat.failed) console.warn(`  ${stat.failed} asset(s) skipped:\n    ${errors.slice(-Math.min(stat.failed, 8)).join('\n    ')}`);
 
   // --- inline the small text trees the browser's buildAssetIndex parses ---
   // Prune scripts to those the character catalog actually reads (same guards listHeldItems /
@@ -248,8 +251,12 @@ async function main() {
   const addText = (rel, text) => { files[rel] = { kind: 'text', text }; textBytes += Buffer.byteLength(text); };
   for (const f of index.scriptFiles) if ((!modBake || f.isMod) && scriptWanted(f.text)) addText(f.rel, f.text);
   for (const f of index.clothingFiles) if (!modBake || f.isMod) addText(f.rel, f.text);
-  if (!modBake && index.hairXml) addText('media/hairstyles/hairstyles.xml', index.hairXml);
-  if (!modBake && index.beardXml) addText('media/hairstyles/beardstyles.xml', index.beardXml);
+  // hairXml/beardXml are now per-source arrays ([{ text, isMod, modName }], mods first); the vanilla
+  // bundle inlines the raw vanilla file so the hosted app's buildAssetIndex re-parses it. (Older index
+  // builds returned a bare string, so accept both.)
+  const xmlText = (v) => (Array.isArray(v) ? (v.find((e) => !e.isMod) || v[0])?.text : v);
+  if (!modBake) { const t = xmlText(index.hairXml); if (t) addText('media/hairstyles/hairstyles.xml', t); }
+  if (!modBake) { const t = xmlText(index.beardXml); if (t) addText('media/hairstyles/beardstyles.xml', t); }
 
   // --- per-language item-name translations (media/lua/shared/Translate/<LANG>/ItemName.json | .txt) ---
   // Added as hashed binaries, not inline: all languages total a few MB, so the browser fetches only
@@ -335,4 +342,4 @@ async function main() {
   console.log(`\nDone -> ${outVer}`);
 }
 
-main().catch((e) => { console.error('\nbake failed:', e.message); process.exit(1); });
+main().catch((e) => { console.error('\nbake failed:', e.stack || e.message); process.exit(1); });
