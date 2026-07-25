@@ -427,10 +427,17 @@ export function clothingBodyFit(item, bodyMods) {
   return out;
 }
 
-/** Discover zombie ("Zed") body-skin textures under media/textures/Body across every source (mods
- *  included), for a gender. Returns the texture base names (e.g. 'M_ZedBody02') - setSkin/resolveBody
- *  accept them exactly like the human tones. Vanilla B42 ships one (M_ZedBody02, male); mods can add
- *  more, which is why the picker switches to a browsable modal when there are many. */
+/** The zombie body-skin textures B42 actually applies, under media/textures/Body across every source,
+ *  for a gender. setSkin/resolveBody accept the returned names exactly like the human tones.
+ *
+ *  How the game does it (zombie.core.skinnedmodel.visual.HumanVisual.getSkinTexture ->
+ *  PopTemplateManager.male/femaleSkinsZombie1/2/3): a zombie rolls a ROT STAGE 1-3 and picks a random
+ *  <gender>_ZedBody0<1-4>_level<1-3>; skeleton zombies use Skeleton / SkeletonBurned / SkeletonMuscle.
+ *  Those rot-staged skins (+ human skeletons) are what we offer, sorted by stage then body variant. The
+ *  bare M_ZedBody0X (no _level) and the ZedDmg_* wound decals are legacy/overlays and are skipped.
+ *
+ *  Fallback: if a bundle has none of the rot-staged skins (e.g. an old hosted bundle that only baked the
+ *  legacy M_ZedBody02), we degrade to any zed/zombie skin so the picker still shows something. */
 export async function listZombieSkins(ctx, gender = 'male') {
   const r = ctx && ctx.resolver;
   if (!r || !r.sources || !r.realPathIn) return [];
@@ -442,23 +449,33 @@ export async function listZombieSkins(ctx, gender = 'male') {
     for (const e of entries) {
       if (e.kind !== 'file') continue;
       const m = /^(.+)\.png$/i.exec(e.name); if (!m) continue;
-      const base = m[1], lower = base.toLowerCase();
-      if (!/zed|zombie/.test(lower) || /dmg/.test(lower)) continue; // full zombie skins only, not the ZedDmg wound decals
-      if (!seen.has(lower)) seen.set(lower, base);
+      const lower = m[1].toLowerCase();
+      if (!seen.has(lower)) seen.set(lower, m[1]);
     }
   }
   const g = gender === 'female' ? 'female' : 'male';
   const other = g === 'female' ? 'male' : 'female';
   const bases = [...seen.values()];
-  const genderOf = (b) => /^m_/i.test(b) ? 'male' : /^f_/i.test(b) ? 'female' : 'both';
-  // this gender's own zombie skins: its prefix, or an unprefixed shared one
-  let out = bases.filter((b) => { const w = genderOf(b); return w === 'both' || w === g; });
-  // PZ's zombie body skins are not gender-locked the way the human tones are: vanilla ships only
-  // M_ZedBody02 and paints it onto female zombies too (the composite Zed_Skin item does exactly this).
-  // So if this gender has no zombie skin of its own, fall back to the other gender's - otherwise the
-  // female picker is empty even though M_ZedBody02 applies fine to the female body (shared UV layout).
-  if (!out.length) out = bases.filter((b) => genderOf(b) === other);
-  return out.sort();
+
+  const zedLevel = (b) => /^[mf]_zedbody\d+_level[123]$/i.test(b);      // the real, rot-staged zombie skins
+  const zedGender = (b) => (/^f_/i.test(b) ? 'female' : 'male');
+  const SKELETONS = new Set(['skeleton', 'skeletonburned', 'skeletonmuscle']); // human only (not ChickenSkeleton etc.)
+  const isSkeleton = (b) => SKELETONS.has(b.toLowerCase());
+  const rank = (b) => {
+    const stage = Number((/_level([123])$/i.exec(b) || [])[1] || (isSkeleton(b) ? 8 : 9)); // skeletons after the staged ones
+    const num = Number((/(\d+)_level/i.exec(b) || [])[1] || 0);
+    return stage * 100 + num;
+  };
+
+  const real = bases.filter((b) => (zedLevel(b) && zedGender(b) === g) || isSkeleton(b));
+  if (real.length) return real.sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
+
+  // Fallback: any zed/zombie skin minus the ZedDmg decals, gender-filtered, dropping to the other gender.
+  const genericGender = (b) => (/^m_/i.test(b) ? 'male' : /^f_/i.test(b) ? 'female' : 'both');
+  const zed = bases.filter((b) => /zed|zombie/i.test(b) && !/dmg/i.test(b));
+  let fb = zed.filter((b) => { const w = genericGender(b); return w === 'both' || w === g; });
+  if (!fb.length) fb = zed.filter((b) => genericGender(b) === other);
+  return fb.sort();
 }
 
 /** Convert one clip to glb bytes on demand. */

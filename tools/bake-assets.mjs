@@ -35,7 +35,7 @@ import { createMeshConverter } from '../shared/mesh-converter.js';
 import { optimizeGlb } from './glb-optimize.mjs';
 import { buildMinimalFloorPack, FLOOR_PACK_VPATH, FLOOR_TILES } from './floor-pack.mjs';
 import {
-  listClothing, listHair, listHeldItems, listClips,
+  listClothing, listHair, listHeldItems, listClips, listZombieSkins,
   resolveBody, resolveClothing, resolveHairStyle, resolveHeldItem, resolveAttachmentPart, resolveClip,
   SKIN_TONES, MASK_PART,
 } from '../shared/character-core.js';
@@ -188,6 +188,13 @@ async function main() {
   }
   for (const c of clipsToBake) await tryEach(`clip ${c.name}`, () => resolveClip(ctx, c));
   if (!modBake) for (let m = 0; m < 16; m++) { const nm = MASK_PART[m]; if (!nm) continue; const hit = await resolver.resolveMediaPath(`media/textures/body/masks/${nm.toLowerCase()}.png`); if (hit) await hit.src.readBytes(hit.realPath); }
+  // Zombie body skins: the rot-staged M_/F_ZedBody0X_levelN + human skeletons the game applies at
+  // runtime (nothing else references them, so bake them explicitly or the studio's zombie picker is empty).
+  if (!modBake) {
+    const zed = new Set();
+    for (const gg of ['male', 'female']) for (const nm of await listZombieSkins(ctx, gg)) zed.add(nm);
+    for (const nm of zed) { const hit = await resolver.resolveTexture(`Body/${nm}`); if (hit) await hit.src.readBytes(hit.realPath); }
+  }
   console.log(`Referenced ${refs.size} binaries; ${errors.length} entries could not resolve locally.\n`);
 
   // --- bake: convert meshes/clips to glb (once each), copy textures, content-hash everything ---

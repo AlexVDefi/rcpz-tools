@@ -1731,7 +1731,16 @@ function CharacterTab({ hairData, gender, setGender, skin, tones, zombieSkins, s
   // Zombie skins get a sickly-green look so they read clearly as separate from the human tones.
   const [zModal, setZModal] = useState(false);
   const ZOMBIE_BUTTONS_MAX = 8; // few -> inline buttons; more (usually modded) -> a browsable modal
-  const zombieLabel = (n: string) => n.replace(/^[mf]_/i, '').replace(/body/i, '').replace(/([a-z])(\d)/i, '$1 $2').trim() || n;
+  // Label the real B42 zombie skins by rot stage + body variant, e.g. M_ZedBody02_level1 -> "Rot 1 · 2".
+  const zombieLabel = (n: string) => {
+    const lm = /^[mf]_zedbody0*(\d+)_level([123])$/i.exec(n);
+    if (lm) return `Rot ${lm[2]} · ${Number(lm[1])}`;
+    const s = n.toLowerCase();
+    if (s === 'skeleton') return 'Skeleton';
+    if (s === 'skeletonburned') return 'Skeleton (burned)';
+    if (s === 'skeletonmuscle') return 'Skeleton (muscle)';
+    return n.replace(/^[mf]_/i, '').replace(/body/i, '').replace(/_/g, ' ').replace(/([a-z])(\d)/i, '$1 $2').replace(/\s+/g, ' ').trim() || n;
+  };
   const zChip = (on: boolean) => ({ minWidth: 34, borderRadius: 6, padding: '7px 8px', background: on ? '#4f7a3a' : '#14141a', color: on ? '#fff' : '#9cc77a', border: '1px solid ' + (on ? '#5a8a42' : '#3a5a2a') }) as const;
   const zombieSelected = zombieSkins.includes(skin);
 
