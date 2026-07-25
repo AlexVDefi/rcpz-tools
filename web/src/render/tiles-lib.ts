@@ -148,6 +148,22 @@ export class TileLibrary {
     ctx.drawImage(img, t.rect.x, t.rect.y, t.rect.w, t.rect.h, t.offset.x, t.offset.y, t.rect.w, t.rect.h);
     return c;
   }
+
+  /** The full authored sprite as a THREE texture, for standing objects (walls/furniture) rendered as
+   *  camera-facing billboards. sRGB + nearest to match placed floors and the game look. Cached. */
+  async spriteTexture(name: string): Promise<{ tex: THREE.Texture; full: { w: number; h: number } } | null> {
+    const t = this.tiles.get(name); if (!t) return null;
+    const key = 'sprite:' + name;
+    let tex = this.texCache.get(key);
+    if (!tex) {
+      const canvas = await this.spriteCanvas(name); if (!canvas) return null;
+      tex = new THREE.CanvasTexture(canvas);
+      tex.colorSpace = THREE.SRGBColorSpace; tex.magFilter = THREE.NearestFilter; tex.minFilter = THREE.NearestFilter;
+      tex.generateMipmaps = false; tex.needsUpdate = true;
+      this.texCache.set(key, tex);
+    }
+    return { tex, full: t.full };
+  }
 }
 
 async function bytesToImage(bytes: Uint8Array): Promise<HTMLImageElement> {

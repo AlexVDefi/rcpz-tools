@@ -24,6 +24,9 @@ export type AttachOption = { partName: string; mesh: string; texture?: string; p
 type HeldEntry = { holder: THREE.Object3D; prop: string; item: { name: string }; gunObj: THREE.Object3D; parts: Map<string, THREE.Object3D>; attachSel: Map<string, AttachOption> };
 
 type IsoCam = THREE.OrthographicCamera & { __aspect?: number };
+// The scene-builder brush: a flat floor/rug (de-sheared texture) or a standing object (full sprite
+// texture + its authored px size, rendered as a camera-facing billboard).
+export type TileBrush = { tex: THREE.Texture; kind: 'floor' | 'rug' | 'object'; fullW?: number; fullH?: number };
 
 export class CharacterEngine {
   renderer: THREE.WebGLRenderer;
@@ -110,6 +113,7 @@ export class CharacterEngine {
         if (this.rigs.finishedOnce()) { this.playing = false; this.finished = true; this.onPlaying?.(false); } // one-shot done: stop, arm replay
       }
       if (this.rigs.clip) this.onFrame?.(this.rigs.time(), this.rigs.duration());
+      if (this.billboards.length) { const q = this.camera.quaternion; for (const m of this.billboards) m.quaternion.copy(q); } // standing tiles face the camera
       this.drawFrame();
     };
     loop();
@@ -377,11 +381,14 @@ export class CharacterEngine {
   // snapped cell; a floor is the base layer, a rug stacks just above it (PZ's rug-on-floor order). Only
   // meaningful at the pziso camera. Standing sprites (walls/furniture) come next.
   private static readonly TILE = 0.45;
+  private static readonly OBJ_PX = 0.45 / 128;  // world units per sprite pixel (2x art: 128px diamond = 1 tile)
+  private static readonly OBJ_ANCHOR = 0.12;    // fraction up from the sprite bottom where the base sits on the ground
   private tileGroup = new THREE.Group();
-  private cells = new Map<string, { floor?: THREE.Mesh; rug?: THREE.Mesh }>();
+  private cells = new Map<string, { floor?: THREE.Mesh; rug?: THREE.Mesh; object?: THREE.Mesh }>();
+  private billboards: THREE.Mesh[] = []; // standing sprites that face the camera each frame
   private tileGrid: THREE.GridHelper | null = null;
   private ghost: THREE.Mesh | null = null;
-  private brush: { tex: THREE.Texture; kind: 'floor' | 'rug' } | null = null;
+  private brush: TileBrush | null = null;
   private brushDown: { x: number; y: number } | null = null;
   private raycaster = new THREE.Raycaster();
   private groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
@@ -403,20 +410,25 @@ export class CharacterEngine {
   /** Set the tile to paint (null clears build mode). While active: show the tile-aligned iso grid
    *  (hiding the default one so there's a single grid), and lock left-drag rotate so clicks place
    *  tiles instead of dropping to orbit (right-drag pan + wheel zoom still work). */
-  setBuildBrush(tex: THREE.Texture | null, kind: 'floor' | 'rug' = 'floor') {
-    this.brush = tex ? { tex, kind } : null;
-    this.orbit.lockRotate = !!tex;
-    if (this.ghost && !tex) { this.tileGroup.remove(this.ghost); this.ghost = null; }
+  setBuildBrush(brush: TileBrush | null) {
+    this.brush = brush;
+    this.orbit.lockRotate = !!brush;
+    if (this.ghost) { this.dropMesh(this.ghost); this.ghost = null; } // rebuilt for the new brush on next hover
     if (!this.tileGrid) {
       const g = new THREE.GridHelper(CharacterEngine.TILE * 24, 24, 0x4a6a9a, 0x30425e);
       (g.material as THREE.Material).transparent = true; (g.material as THREE.Material).opacity = 0.5;
       // shift by half a cell so grid LINES fall on tile edges (tiles fill cells, not straddle crossings)
       g.position.set(CharacterEngine.TILE / 2, 0.0015, CharacterEngine.TILE / 2); this.scene.add(g); this.tileGrid = g;
     }
-    this.tileGrid.visible = !!tex;
-    this.grid.visible = tex ? false : !this.floorMesh; // one grid at a time
+    this.tileGrid.visible = !!brush;
+    this.grid.visible = brush ? false : !this.floorMesh; // one grid at a time
   }
-  clearTiles() { for (const c of this.cells.values()) { if (c.floor) this.tileGroup.remove(c.floor); if (c.rug) this.tileGroup.remove(c.rug); } this.cells.clear(); }
+  clearTiles() {
+    for (const c of this.cells.values()) for (const m of [c.floor, c.rug, c.object]) if (m) this.tileGroup.remove(m);
+    this.cells.clear();
+    this.billboards = this.billboards.filter((m) => m === this.ghost); // keep only the hover ghost
+  }
+  private dropMesh(m: THREE.Mesh) { this.tileGroup.remove(m); const i = this.billboards.indexOf(m); if (i >= 0) this.billboards.splice(i, 1); }
 
   private cellFromClient(e: { clientX: number; clientY: number }): { gx: number; gy: number } | null {
     const r = this.renderer.domElement.getBoundingClientRect();
@@ -435,27 +447,43 @@ export class CharacterEngine {
     m.rotation.x = -Math.PI / 2; m.position.y = y; m.renderOrder = order;
     return m;
   }
+  // A standing sprite (wall/furniture): a camera-facing quad sized from the authored px, with its base
+  // diamond anchored on the ground. alphaTest (opaque pass) so it depth-sorts against the character.
+  private makeBillboard(tex: THREE.Texture, fullW: number, fullH: number, opacity = 1): THREE.Mesh {
+    const w = fullW * CharacterEngine.OBJ_PX, h = fullH * CharacterEngine.OBJ_PX;
+    const geo = new THREE.PlaneGeometry(w, h);
+    geo.translate(0, h * (0.5 - CharacterEngine.OBJ_ANCHOR), 0); // base of the sprite sits at the mesh origin (the cell)
+    const mat = new THREE.MeshBasicMaterial({ map: tex, alphaTest: 0.5, transparent: opacity < 1, opacity, depthWrite: opacity >= 1 });
+    mat.color.setScalar(this.light.ambient);
+    const m = new THREE.Mesh(geo, mat); m.userData.billboard = true;
+    return m;
+  }
   private placeBrush(gx: number, gy: number) {
-    if (!this.brush) return;
+    const b = this.brush; if (!b) return;
     const key = `${gx},${gy}`; let cell = this.cells.get(key); if (!cell) { cell = {}; this.cells.set(key, cell); }
-    const T = CharacterEngine.TILE, floor = this.brush.kind === 'floor';
-    const prev = floor ? cell.floor : cell.rug; if (prev) this.tileGroup.remove(prev);
-    const m = this.flatQuad(this.brush.tex, floor ? 0.002 : 0.004, floor ? 1 : 2);
-    m.position.x = gx * T; m.position.z = gy * T;
-    this.tileGroup.add(m); if (floor) cell.floor = m; else cell.rug = m;
+    const T = CharacterEngine.TILE;
+    const slot: 'floor' | 'rug' | 'object' = b.kind === 'object' ? 'object' : b.kind === 'rug' ? 'rug' : 'floor';
+    const prev = cell[slot]; if (prev) this.dropMesh(prev);
+    const m = b.kind === 'object' ? this.makeBillboard(b.tex, b.fullW ?? 128, b.fullH ?? 256)
+      : this.flatQuad(b.tex, b.kind === 'rug' ? 0.004 : 0.002, b.kind === 'rug' ? 2 : 1);
+    if (b.kind === 'object') this.billboards.push(m);
+    m.position.x = gx * T; m.position.z = gy * T; this.tileGroup.add(m); cell[slot] = m;
   }
   private eraseCell(gx: number, gy: number) {
     const key = `${gx},${gy}`, cell = this.cells.get(key); if (!cell) return;
-    if (cell.rug) { this.tileGroup.remove(cell.rug); cell.rug = undefined; }        // top layer first
-    else if (cell.floor) { this.tileGroup.remove(cell.floor); cell.floor = undefined; }
-    if (!cell.rug && !cell.floor) this.cells.delete(key);
+    for (const slot of ['object', 'rug', 'floor'] as const) { if (cell[slot]) { this.dropMesh(cell[slot]!); cell[slot] = undefined; break; } } // top layer first
+    if (!cell.object && !cell.rug && !cell.floor) this.cells.delete(key);
   }
   private moveGhost(e: { clientX: number; clientY: number }) {
-    const c = this.cellFromClient(e); if (!c || !this.brush) { if (this.ghost) this.ghost.visible = false; return; }
+    const c = this.cellFromClient(e), b = this.brush;
+    if (!c || !b) { if (this.ghost) this.ghost.visible = false; return; }
     const T = CharacterEngine.TILE;
-    if (!this.ghost) { this.ghost = this.flatQuad(this.brush.tex, this.brush.kind === 'rug' ? 0.005 : 0.003, 3, 0.6); this.tileGroup.add(this.ghost); }
-    const mat = this.ghost.material as THREE.MeshBasicMaterial;
-    if (mat.map !== this.brush.tex) { mat.map = this.brush.tex; mat.needsUpdate = true; }
+    if (!this.ghost) {
+      this.ghost = b.kind === 'object' ? this.makeBillboard(b.tex, b.fullW ?? 128, b.fullH ?? 256, 0.55)
+        : this.flatQuad(b.tex, b.kind === 'rug' ? 0.005 : 0.003, 3, 0.6);
+      if (b.kind === 'object') this.billboards.push(this.ghost);
+      this.tileGroup.add(this.ghost);
+    }
     this.ghost.visible = true; this.ghost.position.x = c.gx * T; this.ghost.position.z = c.gy * T;
   }
 
@@ -498,8 +526,8 @@ export class CharacterEngine {
     for (const s of this.statics.values()) s.traverse(set);
     for (const h of this.held.values()) h.holder.traverse(set);
     if (this.floorMat) this.floorMat.color.setScalar(this.light.ambient); // floor tracks ambient only
-    // placed tiles are flat like the floor - tint them by ambient too (and the hover ghost)
-    for (const c of this.cells.values()) { if (c.floor) (c.floor.material as THREE.MeshBasicMaterial).color.setScalar(this.light.ambient); if (c.rug) (c.rug.material as THREE.MeshBasicMaterial).color.setScalar(this.light.ambient); }
+    // placed tiles are unlit sprites like the floor - tint them by ambient too (and the hover ghost)
+    for (const c of this.cells.values()) for (const m of [c.floor, c.rug, c.object]) if (m) (m.material as THREE.MeshBasicMaterial).color.setScalar(this.light.ambient);
     if (this.ghost) (this.ghost.material as THREE.MeshBasicMaterial).color.setScalar(this.light.ambient);
   }
   setLight(key: 'ambient' | 'keyBright' | 'kx' | 'ky' | 'kz', v: number) {

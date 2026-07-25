@@ -453,19 +453,27 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
   const tileItems = useMemo(() => (tileReady === true
     ? tileLib.list(tileCat).map((t) => ({ ...t, key: t.name, label: `${t.sheet.replace(/^(floors_|walls_|furniture_|appliances_|lighting_)/, '')} ${t.index}`, facet: t.sheet, isMod: false }))
     : []), [tileReady, tileLib, tileCat]);
-  // The placement brush: a selected floor/rug becomes a de-sheared flat tile you click onto the iso
-  // grid. Walls/furniture (standing sprites) aren't placeable yet, so they clear the brush. Leaving
-  // the Build tab clears it too. Snap to the PZ-iso camera so what you place reads correctly.
+  // The placement brush for the selected tile: floors/rugs become flat de-sheared tiles; walls/furniture
+  // become camera-facing standing sprites. Leaving the Build tab clears it. Snap to the PZ-iso camera
+  // so what you place reads correctly.
   const selectedTileInfo = selectedTile ? tileLib.get(selectedTile) : undefined;
-  const placeableSel = selectedTileInfo?.category === 'floor' || selectedTileInfo?.category === 'overlay';
   useEffect(() => {
     const eng = engineRef.current; if (!eng) return;
-    if (tab !== 'build' || !selectedTile || !placeableSel) { eng.setBuildBrush(null); return; }
+    const info = selectedTile ? tileLib.get(selectedTile) : undefined;
+    if (tab !== 'build' || !selectedTile || !info) { eng.setBuildBrush(null); return; }
     let ok = true;
     if (eng.camMode !== 'iso') eng.applyCameraPreset('iso');
-    tileLib.flatTexture(selectedTile).then((tex) => { if (ok && tex) eng.setBuildBrush(tex, selectedTileInfo?.category === 'overlay' ? 'rug' : 'floor'); });
+    (async () => {
+      if (info.category === 'floor' || info.category === 'overlay') {
+        const tex = await tileLib.flatTexture(selectedTile);
+        if (ok && tex) eng.setBuildBrush({ tex, kind: info.category === 'overlay' ? 'rug' : 'floor' });
+      } else {
+        const s = await tileLib.spriteTexture(selectedTile);
+        if (ok && s) eng.setBuildBrush({ tex: s.tex, kind: 'object', fullW: s.full.w, fullH: s.full.h });
+      }
+    })();
     return () => { ok = false; };
-  }, [tab, selectedTile, placeableSel, selectedTileInfo, tileLib]);
+  }, [tab, selectedTile, tileLib]);
   // single-tile floor, used when loading a saved character whose floor was a specific tile
   const pickFloor = async (name: string) => { setFloorSel(name); try { engineRef.current?.setFloor(await floorLib.texture(name), 1); } catch { /* ignore */ } };
   const pickPreset = async (name: string, tiles: string[]) => {
@@ -1061,9 +1069,8 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
                 renderThumb={(it) => <Thumb depKey={`tile:${it.name}`} getUrl={() => tileLib.thumbUrl(it.name)} />} />
             </div>
             <div style={{ padding: '8px 12px', borderTop: '1px solid var(--line)', fontSize: 12, color: 'var(--muted)', lineHeight: 1.4 }}>
-              {placeableSel ? <><b style={{ color: 'var(--text)' }}>Click the ground</b> to place. Right-click erases, drag orbits. Floors are the base; rugs stack on top.</>
-                : selectedTile ? 'Walls and furniture placement is coming next. Floors and rugs are placeable now.'
-                : 'Pick a floor or rug, then click the ground (PZ-iso view) to place it.'}
+              {selectedTileInfo ? <><b style={{ color: 'var(--text)' }}>Click the ground</b> to place. Right-click erases, drag orbits. Floors are the base; rugs, walls and furniture stack on the cell.</>
+                : 'Pick a tile, then click the ground (in the PZ-iso view) to place it.'}
             </div>
           </div>
         )
