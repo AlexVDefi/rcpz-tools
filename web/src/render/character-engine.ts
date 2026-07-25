@@ -97,6 +97,7 @@ export class CharacterEngine {
     // dragging the mouse in the locked PZ-iso view drops back to free orbit
     this.orbit.onInteract = () => { this.autoFrame = false; if (this.camMode === 'iso') this.setCamMode('orbit'); };
     this.orbit.onAdjust = () => { this.autoFrame = false; }; // any pan/zoom/touch also ends auto-framing
+    this.initTileInput(canvas);
     this.fit();
     const loop = () => {
       if (this.disposed) return;
@@ -368,6 +369,89 @@ export class CharacterEngine {
     this.scene.add(mesh);
     this.floorMesh = mesh; this.floorMat = mat;
     this.grid.visible = false;
+  }
+
+  // --- scene tile builder --------------------------------------------------------------------------
+  // Flat tiles (floors + rugs) placed on an iso grid of TILE-sized cells, matching setFloor's scale
+  // (1 game tile ~= 0.45 world units). A brush + a click on the ground drops a de-sheared tile at the
+  // snapped cell; a floor is the base layer, a rug stacks just above it (PZ's rug-on-floor order). Only
+  // meaningful at the pziso camera. Standing sprites (walls/furniture) come next.
+  private static readonly TILE = 0.45;
+  private tileGroup = new THREE.Group();
+  private cells = new Map<string, { floor?: THREE.Mesh; rug?: THREE.Mesh }>();
+  private tileGrid: THREE.GridHelper | null = null;
+  private ghost: THREE.Mesh | null = null;
+  private brush: { tex: THREE.Texture; kind: 'floor' | 'rug' } | null = null;
+  private brushDown: { x: number; y: number } | null = null;
+  private raycaster = new THREE.Raycaster();
+  private groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+
+  private initTileInput(canvas: HTMLCanvasElement) {
+    this.scene.add(this.tileGroup);
+    canvas.addEventListener('pointerdown', (e) => { if (this.brush) this.brushDown = { x: e.clientX, y: e.clientY }; });
+    canvas.addEventListener('pointermove', (e) => { if (this.brush) this.moveGhost(e); });
+    canvas.addEventListener('pointerup', (e) => {
+      const down = this.brushDown; this.brushDown = null;
+      if (!this.brush || !down) return;
+      if (Math.hypot(e.clientX - down.x, e.clientY - down.y) >= 5) return; // a drag = orbit, not a place
+      const c = this.cellFromClient(e); if (!c) return;
+      if (e.button === 2) this.eraseCell(c.gx, c.gy); else this.placeBrush(c.gx, c.gy);
+    });
+    canvas.addEventListener('contextmenu', (e) => { if (this.brush) e.preventDefault(); }); // right-click erases
+  }
+
+  /** Set the tile to paint (null clears build mode). Shows the iso placement grid while active. */
+  setBuildBrush(tex: THREE.Texture | null, kind: 'floor' | 'rug' = 'floor') {
+    this.brush = tex ? { tex, kind } : null;
+    if (this.ghost && !tex) { this.tileGroup.remove(this.ghost); this.ghost = null; }
+    if (!this.tileGrid) {
+      const g = new THREE.GridHelper(CharacterEngine.TILE * 24, 24, 0x4a6a9a, 0x30425e);
+      (g.material as THREE.Material).transparent = true; (g.material as THREE.Material).opacity = 0.5;
+      g.position.y = 0.0015; this.scene.add(g); this.tileGrid = g;
+    }
+    this.tileGrid.visible = !!tex;
+  }
+  clearTiles() { for (const c of this.cells.values()) { if (c.floor) this.tileGroup.remove(c.floor); if (c.rug) this.tileGroup.remove(c.rug); } this.cells.clear(); }
+
+  private cellFromClient(e: { clientX: number; clientY: number }): { gx: number; gy: number } | null {
+    const r = this.renderer.domElement.getBoundingClientRect();
+    const ndc = new THREE.Vector2(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
+    this.raycaster.setFromCamera(ndc, this.camera);
+    const hit = new THREE.Vector3();
+    if (!this.raycaster.ray.intersectPlane(this.groundPlane, hit)) return null;
+    const T = CharacterEngine.TILE;
+    return { gx: Math.round(hit.x / T), gy: Math.round(hit.z / T) };
+  }
+  private flatQuad(tex: THREE.Texture, y: number, order: number, opacity = 1): THREE.Mesh {
+    const T = CharacterEngine.TILE;
+    const mat = new THREE.MeshBasicMaterial({ map: tex, transparent: true, alphaTest: 0.4, opacity, depthWrite: false });
+    mat.color.setScalar(this.light.ambient);
+    const m = new THREE.Mesh(new THREE.PlaneGeometry(T, T), mat);
+    m.rotation.x = -Math.PI / 2; m.position.y = y; m.renderOrder = order;
+    return m;
+  }
+  private placeBrush(gx: number, gy: number) {
+    if (!this.brush) return;
+    const key = `${gx},${gy}`; let cell = this.cells.get(key); if (!cell) { cell = {}; this.cells.set(key, cell); }
+    const T = CharacterEngine.TILE, floor = this.brush.kind === 'floor';
+    const prev = floor ? cell.floor : cell.rug; if (prev) this.tileGroup.remove(prev);
+    const m = this.flatQuad(this.brush.tex, floor ? 0.002 : 0.004, floor ? 1 : 2);
+    m.position.x = gx * T; m.position.z = gy * T;
+    this.tileGroup.add(m); if (floor) cell.floor = m; else cell.rug = m;
+  }
+  private eraseCell(gx: number, gy: number) {
+    const key = `${gx},${gy}`, cell = this.cells.get(key); if (!cell) return;
+    if (cell.rug) { this.tileGroup.remove(cell.rug); cell.rug = undefined; }        // top layer first
+    else if (cell.floor) { this.tileGroup.remove(cell.floor); cell.floor = undefined; }
+    if (!cell.rug && !cell.floor) this.cells.delete(key);
+  }
+  private moveGhost(e: { clientX: number; clientY: number }) {
+    const c = this.cellFromClient(e); if (!c || !this.brush) { if (this.ghost) this.ghost.visible = false; return; }
+    const T = CharacterEngine.TILE;
+    if (!this.ghost) { this.ghost = this.flatQuad(this.brush.tex, this.brush.kind === 'rug' ? 0.005 : 0.003, 3, 0.6); this.tileGroup.add(this.ghost); }
+    const mat = this.ghost.material as THREE.MeshBasicMaterial;
+    if (mat.map !== this.brush.tex) { mat.map = this.brush.tex; mat.needsUpdate = true; }
+    this.ghost.visible = true; this.ghost.position.x = c.gx * T; this.ghost.position.z = c.gy * T;
   }
 
   // Soft blob shadow under the character (matches the game's grounding shadow): a radial

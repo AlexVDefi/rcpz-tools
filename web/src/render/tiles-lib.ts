@@ -2,6 +2,7 @@
 // (local game files today; a baked curated bundle later), indexes them WITHOUT loading the 1.4GB
 // Tiles2x.pack whole (shared/pack.js indexPack + the source's readRange), and hands the browser/
 // placement code classified tiles with lazy thumbnails and full-canvas placement sprites.
+import * as THREE from 'three';
 import { indexPack } from '@shared/pack.js';
 import { buildTileCatalogue } from '@shared/tiles.js';
 import { parseTileDefs, mergeTileDefs } from '@shared/tiledef.js';
@@ -110,6 +111,27 @@ export class TileLibrary {
     const url = c.toDataURL('image/png');
     this.thumbs.set(name, url);
     return url;
+  }
+
+  /** A de-sheared THREE texture for laying a FLAT tile (floor/rug) on the ground: the 2:1 iso diamond
+   *  crop is un-squashed + rotated 45 back to an axis-aligned square (same trick as FloorLibrary), so
+   *  a PlaneGeometry(TILE,TILE) shows the tile correctly at any camera angle. Cached per name. */
+  private texCache = new Map<string, THREE.Texture>();
+  async flatTexture(name: string): Promise<THREE.Texture | null> {
+    const hit = this.texCache.get(name); if (hit) return hit;
+    const t = this.tiles.get(name); if (!t) return null;
+    const img = await this.page(t.pack, t.page);
+    const S = 256, { w, h } = t.rect;
+    const c = document.createElement('canvas'); c.width = S; c.height = S;
+    const ctx = c.getContext('2d')!; ctx.imageSmoothingEnabled = false;
+    const fill = ((S + 4) * Math.SQRT2) / w; // overscan closes sub-pixel seams between repeated tiles
+    ctx.translate(S / 2, S / 2); ctx.scale(fill, fill); ctx.rotate(Math.PI / 4); ctx.scale(1, w / h);
+    ctx.drawImage(img, t.rect.x, t.rect.y, w, h, -w / 2, -h / 2, w, h);
+    const tex = new THREE.CanvasTexture(c);
+    tex.colorSpace = THREE.NoColorSpace; tex.magFilter = THREE.NearestFilter; tex.minFilter = THREE.NearestFilter;
+    tex.generateMipmaps = false; tex.needsUpdate = true;
+    this.texCache.set(name, tex);
+    return tex;
   }
 
   /** The FULL sprite canvas (fx x fy) with the trimmed crop composited at its offset - this is the
