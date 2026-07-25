@@ -18,6 +18,7 @@ export interface AssetSource {
   requires?: string[]; // mod ids this mod declares as dependencies (a clothing mod may require a body mod)
   listDir(relDir: string): Promise<Array<{ name: string; kind: 'file' | 'dir' }>>;
   readBytes(relPath: string): Promise<Uint8Array>;
+  readRange?(relPath: string, offset: number, length: number): Promise<Uint8Array>; // lazy byte-range read (large packs)
   readText(relPath: string): Promise<string>;
   stat(relPath: string): Promise<{ size: number; mtimeMs: number } | null>;
 }
@@ -77,6 +78,14 @@ export function createFsaAssetSource(
       if (!fh) throw new Error(`not found: ${relPath}`);
       const file = await fh.getFile();
       return new Uint8Array(await file.arrayBuffer());
+    },
+    // Read one byte range without loading the whole file (File.slice is lazy) - lets us index the
+    // 1.4GB Tiles2x.pack from local game files and fetch atlas pages on demand.
+    async readRange(relPath, offset, length) {
+      const fh = await fileHandle(relPath);
+      if (!fh) throw new Error(`not found: ${relPath}`);
+      const file = await fh.getFile();
+      return new Uint8Array(await file.slice(offset, offset + length).arrayBuffer());
     },
     async readText(relPath) {
       const fh = await fileHandle(relPath);

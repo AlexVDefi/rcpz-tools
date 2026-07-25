@@ -40,6 +40,13 @@ export function createNodeAssetSource(rootAbs, opts = {}) {
       const buf = await fs.promises.readFile(abs(relPath));
       return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
     },
+    // Positional read of one byte range, WITHOUT loading the whole file - needed to index the 1.4GB
+    // Tiles2x.pack (read page metadata, skip the atlas PNGs, fetch a page lazily later).
+    async readRange(relPath, offset, length) {
+      const fh = await fs.promises.open(abs(relPath), 'r');
+      try { const buf = Buffer.alloc(length); const { bytesRead } = await fh.read(buf, 0, length, offset); return new Uint8Array(buf.buffer, buf.byteOffset, bytesRead); }
+      finally { await fh.close(); }
+    },
     async readText(relPath) {
       return fs.promises.readFile(abs(relPath), 'utf8');
     },
