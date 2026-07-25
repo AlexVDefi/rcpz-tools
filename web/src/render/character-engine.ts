@@ -400,9 +400,12 @@ export class CharacterEngine {
     canvas.addEventListener('contextmenu', (e) => { if (this.brush) e.preventDefault(); }); // right-click erases
   }
 
-  /** Set the tile to paint (null clears build mode). Shows the iso placement grid while active. */
+  /** Set the tile to paint (null clears build mode). While active: show the tile-aligned iso grid
+   *  (hiding the default one so there's a single grid), and lock left-drag rotate so clicks place
+   *  tiles instead of dropping to orbit (right-drag pan + wheel zoom still work). */
   setBuildBrush(tex: THREE.Texture | null, kind: 'floor' | 'rug' = 'floor') {
     this.brush = tex ? { tex, kind } : null;
+    this.orbit.lockRotate = !!tex;
     if (this.ghost && !tex) { this.tileGroup.remove(this.ghost); this.ghost = null; }
     if (!this.tileGrid) {
       const g = new THREE.GridHelper(CharacterEngine.TILE * 24, 24, 0x4a6a9a, 0x30425e);
@@ -410,6 +413,7 @@ export class CharacterEngine {
       g.position.y = 0.0015; this.scene.add(g); this.tileGrid = g;
     }
     this.tileGrid.visible = !!tex;
+    this.grid.visible = tex ? false : !this.floorMesh; // one grid at a time
   }
   clearTiles() { for (const c of this.cells.values()) { if (c.floor) this.tileGroup.remove(c.floor); if (c.rug) this.tileGroup.remove(c.rug); } this.cells.clear(); }
 

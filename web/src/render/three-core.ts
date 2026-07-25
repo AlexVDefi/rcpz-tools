@@ -121,7 +121,9 @@ export function makeOrbit(getCamera: () => THREE.Camera, dom: HTMLElement, targe
   const state = { radius: 2.2, theta: Math.PI * 0.5, phi: Math.PI * 0.42, target };
   let mode: 'none' | 'rotate' | 'pan' = 'none';
   let lastX = 0, lastY = 0;
-  const api = { state, apply, setTarget, dispose, onInteract: undefined as (() => void) | undefined, onAdjust: undefined as (() => void) | undefined };
+  // lockRotate: while the scene builder is active, left-drag must NOT rotate/leave the iso camera (it
+  // places tiles instead) - but right-drag pan and wheel zoom stay live.
+  const api = { state, apply, setTarget, dispose, lockRotate: false, onInteract: undefined as (() => void) | undefined, onAdjust: undefined as (() => void) | undefined };
 
   function apply() {
     const camera = getCamera() as THREE.PerspectiveCamera & THREE.OrthographicCamera & { __aspect?: number };
@@ -155,8 +157,8 @@ export function makeOrbit(getCamera: () => THREE.Camera, dom: HTMLElement, targe
 
   const onDown = (e: MouseEvent) => {
     if (e.button === 2) { mode = 'pan'; e.preventDefault(); } // pan keeps the current (e.g. iso) camera
-    else if (e.button === 0) { mode = 'rotate'; api.onInteract?.(); } // only rotating leaves a locked camera
-    else return;
+    else if (e.button === 0 && !api.lockRotate) { mode = 'rotate'; api.onInteract?.(); } // only rotating leaves a locked camera
+    else return; // left-button while lockRotate: leave it to the tile placer (no orbit action)
     api.onAdjust?.();
     lastX = e.clientX; lastY = e.clientY;
   };
@@ -182,7 +184,7 @@ export function makeOrbit(getCamera: () => THREE.Camera, dom: HTMLElement, targe
   let pinch = 0;
   const onTouchStart = (e: TouchEvent) => {
     api.onAdjust?.();
-    if (e.touches.length === 1) { mode = 'rotate'; api.onInteract?.(); lastX = e.touches[0].clientX; lastY = e.touches[0].clientY; }
+    if (e.touches.length === 1 && !api.lockRotate) { mode = 'rotate'; api.onInteract?.(); lastX = e.touches[0].clientX; lastY = e.touches[0].clientY; }
     else if (e.touches.length >= 2) {
       mode = 'pan';
       const a = e.touches[0], b = e.touches[1];
