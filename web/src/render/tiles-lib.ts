@@ -130,7 +130,9 @@ export class TileLibrary {
     ctx.translate(S / 2, S / 2); ctx.scale(fill, fill); ctx.rotate(-Math.PI / 4); ctx.scale(1, w / h);
     ctx.drawImage(img, t.rect.x, t.rect.y, w, h, -w / 2, -h / 2, w, h);
     const tex = new THREE.CanvasTexture(c);
-    tex.colorSpace = THREE.NoColorSpace; tex.magFilter = THREE.NearestFilter; tex.minFilter = THREE.NearestFilter;
+    // The atlas pixels are sRGB; tag them so they're linearised on sample (else they render too bright
+    // against the sRGB-encoded output, even with the ambient dim). magFilter nearest keeps them crisp.
+    tex.colorSpace = THREE.SRGBColorSpace; tex.magFilter = THREE.NearestFilter; tex.minFilter = THREE.NearestFilter;
     tex.generateMipmaps = false; tex.needsUpdate = true;
     this.texCache.set(name, tex);
     return tex;
