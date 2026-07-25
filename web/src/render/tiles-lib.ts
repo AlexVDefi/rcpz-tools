@@ -125,7 +125,9 @@ export class TileLibrary {
     const c = document.createElement('canvas'); c.width = S; c.height = S;
     const ctx = c.getContext('2d')!; ctx.imageSmoothingEnabled = false;
     const fill = ((S + 4) * Math.SQRT2) / w; // overscan closes sub-pixel seams between repeated tiles
-    ctx.translate(S / 2, S / 2); ctx.scale(fill, fill); ctx.rotate(Math.PI / 4); ctx.scale(1, w / h);
+    // rotate -45 (not +45): both axis-align the diamond but differ by 90 - this one keeps the tile's
+    // pattern in the same orientation as the game/thumbnail once the iso camera re-shears it.
+    ctx.translate(S / 2, S / 2); ctx.scale(fill, fill); ctx.rotate(-Math.PI / 4); ctx.scale(1, w / h);
     ctx.drawImage(img, t.rect.x, t.rect.y, w, h, -w / 2, -h / 2, w, h);
     const tex = new THREE.CanvasTexture(c);
     tex.colorSpace = THREE.NoColorSpace; tex.magFilter = THREE.NearestFilter; tex.minFilter = THREE.NearestFilter;
