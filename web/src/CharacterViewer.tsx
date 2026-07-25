@@ -7,6 +7,7 @@ type AttachSlot = { slot: string; options: AttachOption[] };
 import { ThumbnailProvider } from './render/thumbnail-provider';
 import { ClipPreview } from './render/clip-preview';
 import { FloorLibrary } from './render/floor';
+import { TileLibrary, type TileCategory } from './render/tiles-lib';
 import { AssetGrid, type GridItem } from './AssetGrid';
 import { Thumb } from './Thumb';
 import { exportPng, exportGif, exportVideo, download, type BgConfig, type Content } from './render/export-media';
@@ -154,7 +155,7 @@ const bgStyle = (b: BgConfig): React.CSSProperties =>
   : b.mode === 'solid' ? { background: b.color1 }
   : { background: `linear-gradient(${b.angle}deg, ${b.color1}, ${b.color2})` };
 
-type Tab = 'animate' | 'clothing' | 'held' | 'character' | 'export';
+type Tab = 'animate' | 'clothing' | 'held' | 'character' | 'build' | 'export';
 type FavKind = 'clothing' | 'held' | 'hair' | 'beard';
 type Light = { ambient: number; keyBright: number; kx: number; ky: number; kz: number };
 type ScenePreset = { bg: BgConfig; turntable: boolean; camPreset: CamPreset; studioAspect: number | null; facing: number | null; floor: string | null; light: Light; grid: boolean; shadow: boolean };
@@ -437,6 +438,21 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
   useEffect(() => () => preview.dispose(), [preview]);
   const floorLib = useMemo(() => new FloorLibrary(ctx.resolver as ConstructorParameters<typeof FloorLibrary>[0]), [ctx]);
   const [floorSel, setFloorSel] = useState<string | null>(null);
+  // Scene builder: curated vanilla tiles (needs the packs, so local game-files mode). Indexed lazily
+  // the first time the Build tab opens. selectedTile is the brush for the (upcoming) placement step.
+  const tileLib = useMemo(() => new TileLibrary(ctx.resolver as ConstructorParameters<typeof TileLibrary>[0]), [ctx]);
+  const [tileReady, setTileReady] = useState<boolean | 'error'>(false);
+  const [tileCat, setTileCat] = useState<TileCategory>('floor');
+  const [selectedTile, setSelectedTile] = useState<string | null>(null);
+  useEffect(() => {
+    if (tab !== 'build' || tileReady) return;
+    let ok = true;
+    tileLib.ensure().then(() => { if (ok) setTileReady(true); }).catch(() => { if (ok) setTileReady('error'); });
+    return () => { ok = false; };
+  }, [tab, tileLib, tileReady]);
+  const tileItems = useMemo(() => (tileReady === true
+    ? tileLib.list(tileCat).map((t) => ({ ...t, key: t.name, label: `${t.sheet.replace(/^(floors_|walls_|furniture_|appliances_|lighting_)/, '')} ${t.index}`, facet: t.sheet, isMod: false }))
+    : []), [tileReady, tileLib, tileCat]);
   // single-tile floor, used when loading a saved character whose floor was a specific tile
   const pickFloor = async (name: string) => { setFloorSel(name); try { engineRef.current?.setFloor(await floorLib.texture(name), 1); } catch { /* ignore */ } };
   const pickPreset = async (name: string, tiles: string[]) => {
@@ -894,7 +910,7 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
     window.addEventListener('mouseup', onUp);
   }
 
-  const tabs: [Tab, string][] = [['character', 'Character'], ['clothing', 'Clothing'], ['held', 'Held'], ['animate', 'Animate'], ['export', 'Export']];
+  const tabs: [Tab, string][] = [['character', 'Character'], ['clothing', 'Clothing'], ['held', 'Held'], ['build', 'Build'], ['animate', 'Animate'], ['export', 'Export']];
   const segBtn = (on: boolean) => ({ borderRadius: 0, padding: '6px 9px', background: on ? 'var(--accent)' : 'var(--panel)', color: on ? '#fff' : 'var(--muted)' }) as const;
   void equipTick; // re-read equipped state on every equip change
   const equipList = engineRef.current?.equippedList() ?? [];
@@ -1001,6 +1017,40 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
             );
           }}
           renderThumb={(it) => <Thumb depKey={`h:${it.name}`} getUrl={() => thumbs.held(it)} />} />
+      )}
+      {tab === 'build' && (
+        tileReady === 'error' || (tileReady === true && !tileLib.list().length) ? (
+          <div style={{ padding: 20, color: 'var(--muted)', fontSize: 13, lineHeight: 1.55 }}>
+            Building scenes from tiles reads the vanilla tile packs, which are only available from your
+            installed game files. Switch to <b>use my game files</b> (local mode) to browse and place tiles.
+            Hosted tile support (a baked curated set) is coming.
+          </div>
+        ) : tileReady !== true ? (
+          <div style={{ padding: 20, color: 'var(--muted)' }}>Indexing tiles…</div>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
+            <div style={{ padding: 8, display: 'flex', gap: 6, flexWrap: 'wrap', borderBottom: '1px solid var(--line)' }}>
+              {tileLib.categories().map((c) => (
+                <button key={c} className="secondary" onClick={() => setTileCat(c)}
+                  style={{ padding: '6px 12px', borderRadius: 6, textTransform: 'capitalize', background: tileCat === c ? 'var(--accent)' : 'var(--panel)', color: tileCat === c ? '#fff' : 'var(--text)', border: '1px solid var(--line)' }}>
+                  {c === 'overlay' ? 'rugs' : c}
+                </button>
+              ))}
+            </div>
+            <div style={{ flex: 1, minHeight: 0 }}>
+              <AssetGrid<typeof tileItems[number] & GridItem>
+                key={tileCat}
+                items={tileItems as (typeof tileItems[number] & GridItem)[]}
+                facetLabel="sheets"
+                active={(it) => it.name === selectedTile}
+                onPick={(it) => setSelectedTile(it.name === selectedTile ? null : it.name)}
+                renderThumb={(it) => <Thumb depKey={`tile:${it.name}`} getUrl={() => tileLib.thumbUrl(it.name)} />} />
+            </div>
+            <div style={{ padding: '8px 12px', borderTop: '1px solid var(--line)', fontSize: 12, color: 'var(--muted)' }}>
+              {selectedTile ? <>Selected <b style={{ color: 'var(--text)' }}>{selectedTile}</b>. Scene placement is coming next.</> : 'Pick a tile. Scene placement is coming next.'}
+            </div>
+          </div>
+        )
       )}
       {tab === 'character' && <CharacterTab hairData={hairData} gender={gender} setGender={setGender} skin={skin} tones={tones} zombieSkins={zombieSkins} skinThumbUrl={skinThumbUrl} bodyOptions={bodySources.map((b) => ({ id: b.id, label: b.label }))} bodySel={bodySourceId || bodySources[0]?.id || ''} onBody={changeBody} uvVerdict={uvVerdict} textureOptions={texSources.map((t) => ({ id: t.id, label: t.label }))} textureSel={texSourceId || texSources[0]?.id || ''} onTexture={changeTexture} onSkin={(t) => { setSkin(t); engineRef.current?.setSkin(t); }} thumbs={thumbs} hairSel={hairSel} beardSel={beardSel} hairColor={hairColor} beardColor={beardColor} matchBeard={matchBeard} onToggleMatchBeard={toggleMatchBeard} onPickPart={applyHairPart} onRecolour={recolourPart} favs={favs} onToggleFav={toggleFav} onImport={() => setImportOpen(true)} onNew={() => { void newCharacter(); }}
         savedCount={Object.keys(presets).length} onOpenSaved={() => setPresetsOpen(true)} />}
