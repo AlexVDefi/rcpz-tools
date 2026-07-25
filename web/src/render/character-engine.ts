@@ -410,7 +410,8 @@ export class CharacterEngine {
     if (!this.tileGrid) {
       const g = new THREE.GridHelper(CharacterEngine.TILE * 24, 24, 0x4a6a9a, 0x30425e);
       (g.material as THREE.Material).transparent = true; (g.material as THREE.Material).opacity = 0.5;
-      g.position.y = 0.0015; this.scene.add(g); this.tileGrid = g;
+      // shift by half a cell so grid LINES fall on tile edges (tiles fill cells, not straddle crossings)
+      g.position.set(CharacterEngine.TILE / 2, 0.0015, CharacterEngine.TILE / 2); this.scene.add(g); this.tileGrid = g;
     }
     this.tileGrid.visible = !!tex;
     this.grid.visible = tex ? false : !this.floorMesh; // one grid at a time
