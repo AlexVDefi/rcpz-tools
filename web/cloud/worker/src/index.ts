@@ -26,6 +26,7 @@ export interface Env {
   STEAM_SESSION_SECRET?: string; // secret: HMAC key for the short-lived modder session token
   MODHOST_URL?: string;          // var: hosting backend base URL (e.g. http://<vps>:8790), optional
   MODHOST_SECRET?: string;       // secret: shared secret sent to the backend in x-modhost-secret
+  ADMIN_EMAIL?: string;          // secret: the ONE account allowed to read the /admin endpoints. Unset = admin off.
 }
 
 const DEFAULT_QUOTA = 100 * 1024 * 1024;
@@ -51,6 +52,9 @@ export default {
     if (request.method === 'GET' && url.pathname === '/steam/permissions') return withCors(await steamPermissions(request, env), corsHeaders);
     if (request.method === 'POST' && url.pathname === '/steam/permission') return withCors(await steamPermission(request, env), corsHeaders);
     if (request.method === 'GET' && url.pathname === '/mods/hosted') return withCors(await hostedMods(env), corsHeaders);
+    // Admin-only (the single ADMIN_EMAIL account, re-verified server-side on every call).
+    if (request.method === 'GET' && url.pathname === '/admin/me') return withCors(await adminMe(request, env), corsHeaders);
+    if (request.method === 'GET' && url.pathname === '/admin/overview') return withCors(await adminOverview(request, env), corsHeaders);
     return withCors(json({ error: 'Not found' }, 404), corsHeaders);
   },
 };
@@ -433,14 +437,106 @@ async function hostedMods(env: Env): Promise<Response> {
 
 // Verify a Supabase access token by asking Supabase who it belongs to. Returns the user id or null.
 async function verifyUser(request: Request, env: Env): Promise<string | null> {
+  return (await verifyUserFull(request, env))?.id ?? null;
+}
+
+// Verify the Supabase token and return the account's id + email (email is what the admin check needs).
+async function verifyUserFull(request: Request, env: Env): Promise<{ id: string; email: string } | null> {
   const auth = request.headers.get('Authorization');
   if (!auth?.startsWith('Bearer ')) return null;
   const res = await fetch(`${env.SUPABASE_URL}/auth/v1/user`, {
     headers: { apikey: env.SUPABASE_ANON_KEY, Authorization: auth },
   });
   if (!res.ok) return null;
-  const u = (await res.json()) as { id?: string };
-  return u.id ?? null;
+  const u = (await res.json()) as { id?: string; email?: string };
+  return u.id ? { id: u.id, email: (u.email || '').trim().toLowerCase() } : null;
+}
+
+// The ONLY gate that matters: re-verify the token server-side and match its email to ADMIN_EMAIL.
+// Fails closed - no ADMIN_EMAIL configured means nobody is admin. A forged client can't get past this.
+async function isAdmin(request: Request, env: Env): Promise<boolean> {
+  const admin = (env.ADMIN_EMAIL || '').trim().toLowerCase();
+  if (!admin) return false;
+  const u = await verifyUserFull(request, env);
+  return !!u && u.email === admin;
+}
+
+// Cheap "am I admin?" probe so the app can decide whether to show the admin UI. Reveals nothing:
+// it is true only for the actual authenticated admin, false for everyone else.
+async function adminMe(request: Request, env: Env): Promise<Response> {
+  return json({ admin: await isAdmin(request, env) });
+}
+
+// All registered users with their cloud-storage usage, plus every modder who has authed and the mods
+// they have allowed. Service_role reads (bypass RLS). 403 for anyone but the admin.
+async function adminOverview(request: Request, env: Env): Promise<Response> {
+  if (!(await isAdmin(request, env))) return json({ error: 'Forbidden' }, 403);
+  try {
+    const [users, usage, modders] = await Promise.all([listAuthUsers(env), allUsage(env), allModders(env)]);
+    const rows = users.map((u) => {
+      const use = usage.get(u.id) || { bytes: 0, count: 0, kinds: {} };
+      return { id: u.id, email: u.email, created_at: u.created_at ?? null, last_sign_in_at: u.last_sign_in_at ?? null, bytes: use.bytes, count: use.count, kinds: use.kinds };
+    }).sort((a, b) => b.bytes - a.bytes);
+    const totalBytes = rows.reduce((n, r) => n + r.bytes, 0);
+    return json({ quotaBytes: Number(env.QUOTA_BYTES) || DEFAULT_QUOTA, userCount: rows.length, totalBytes, users: rows, modders });
+  } catch (e) {
+    return json({ error: e instanceof Error ? e.message : 'Admin query failed' }, 500);
+  }
+}
+
+// Enumerate all auth users via the GoTrue admin API (service_role). Paginates by page number and
+// stops when a page returns nothing new, robust to whatever per-page cap the project enforces.
+async function listAuthUsers(env: Env): Promise<Array<{ id: string; email: string; created_at?: string; last_sign_in_at?: string }>> {
+  const byId = new Map<string, { id: string; email: string; created_at?: string; last_sign_in_at?: string }>();
+  for (let page = 1; page <= 200; page++) {
+    const res = await fetch(`${env.SUPABASE_URL}/auth/v1/admin/users?page=${page}&per_page=200`, { headers: svc(env) });
+    if (!res.ok) throw new Error(`admin users query failed (${res.status})`);
+    const body = (await res.json()) as { users?: Array<{ id: string; email?: string; created_at?: string; last_sign_in_at?: string }> } | Array<{ id: string; email?: string; created_at?: string; last_sign_in_at?: string }>;
+    const list = Array.isArray(body) ? body : (body.users || []);
+    if (!list.length) break;
+    const before = byId.size;
+    for (const u of list) byId.set(u.id, { id: u.id, email: u.email || '', created_at: u.created_at, last_sign_in_at: u.last_sign_in_at });
+    if (byId.size === before) break; // no new ids -> the API isn't paginating, avoid a loop
+  }
+  return [...byId.values()];
+}
+
+// Sum every upload's stored size per user (bytes + share count + a per-kind tally). Pages through
+// PostgREST so more than one screen's worth of shares is counted.
+async function allUsage(env: Env): Promise<Map<string, { bytes: number; count: number; kinds: Record<string, number> }>> {
+  const map = new Map<string, { bytes: number; count: number; kinds: Record<string, number> }>();
+  const step = 1000;
+  for (let offset = 0; offset <= 1_000_000; offset += step) {
+    const res = await fetch(`${env.SUPABASE_URL}/rest/v1/uploads?select=user_id,size,kind&order=created_at.asc&limit=${step}&offset=${offset}`, { headers: svc(env) });
+    if (!res.ok) throw new Error('uploads query failed');
+    const rows = (await res.json()) as Array<{ user_id: string; size: number | string; kind?: string | null }>;
+    for (const r of rows) {
+      const e = map.get(r.user_id) || { bytes: 0, count: 0, kinds: {} };
+      e.bytes += Number(r.size) || 0; e.count += 1;
+      if (r.kind) e.kinds[r.kind] = (e.kinds[r.kind] || 0) + 1;
+      map.set(r.user_id, e);
+    }
+    if (rows.length < step) break;
+  }
+  return map;
+}
+
+// Every modder who signed in with Steam and consented to hosting, grouped by SteamID with their mods.
+async function allModders(env: Env): Promise<Array<{ steamid: string; author: string | null; count: number; allowed: number; mods: unknown[] }>> {
+  const res = await fetch(`${env.SUPABASE_URL}/rest/v1/mod_permissions?select=steamid,publishedfileid,title,status,author,host_status,preview,consented_at,updated_at&order=consented_at.desc&limit=5000`, { headers: svc(env) });
+  if (!res.ok) throw new Error('mod_permissions query failed');
+  const rows = (await res.json()) as Array<{ steamid: string; publishedfileid: string; title?: string | null; status: string; author?: string | null; host_status?: string | null; preview?: string | null; consented_at: string; updated_at?: string }>;
+  const byId = new Map<string, { steamid: string; author: string | null; mods: unknown[] }>();
+  for (const r of rows) {
+    let g = byId.get(r.steamid);
+    if (!g) { g = { steamid: r.steamid, author: r.author || null, mods: [] }; byId.set(r.steamid, g); }
+    if (!g.author && r.author) g.author = r.author;
+    g.mods.push({ publishedfileid: r.publishedfileid, title: r.title || null, status: r.status, host_status: r.host_status || null, preview: r.preview || null, consented_at: r.consented_at });
+  }
+  return [...byId.values()].map((g) => ({
+    steamid: g.steamid, author: g.author, count: g.mods.length,
+    allowed: g.mods.filter((m) => (m as { status?: string }).status === 'allowed').length, mods: g.mods,
+  }));
 }
 
 async function usageBytes(uid: string, env: Env): Promise<number> {

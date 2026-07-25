@@ -24,6 +24,9 @@ QUOTA_BYTES = "104857600"
 #                           Worker can read usage and write/delete rows on the user's behalf.
 #   STEAM_WEB_API_KEY       https://steamcommunity.com/dev/apikey - lists a modder's Workshop mods.
 #   STEAM_SESSION_SECRET    any long random string - HMAC key for the modder session token.
+#   ADMIN_EMAIL             the one account email allowed to read /admin/* (kept out of the repo on
+#                           purpose). Set with: wrangler secret put ADMIN_EMAIL   Leave unset to
+#                           disable the admin endpoints entirely (they then 403 for everyone).
 
 # Custom share domain: after `wrangler deploy`, map a domain to this Worker in the Cloudflare
 # dashboard (Workers & Pages -> pz-studio-cloud -> Settings -> Domains & Routes -> Add custom

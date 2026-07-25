@@ -10,6 +10,8 @@ import { converter } from './render/converter';
 import { CharacterViewer } from './CharacterViewer';
 import { SharedGallery } from './SharedGallery';
 import { ModderDashboard } from './ModderDashboard';
+import { AdminPanel } from './AdminPanel';
+import { adminCheck } from './cloud/api';
 import { ModsPanel, type ModTab } from './ModsBrowser';
 import { useIsMobile } from './useIsMobile';
 import { useSteam, type SteamState } from './cloud/steam';
@@ -100,10 +102,22 @@ export function App() {
   const [authOpen, setAuthOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [changePwOpen, setChangePwOpen] = useState(false);
+  const [adminOpen, setAdminOpen] = useState(false);
+  // Whether to reveal the admin UI. Cosmetic only: the server re-checks the email on every /admin call,
+  // so this just decides if the button shows. The Worker (not the client) decides who is actually admin.
+  const [isAdmin, setIsAdmin] = useState(false);
   const uploads = useCloudUploads(auth.session);
   // the Shared tab only exists while signed in - if the session ends (sign out / account deleted)
   // while it's open, fall back to the overview.
   useEffect(() => { if (view === 'shared' && auth.ready && !auth.user) setView('overview'); }, [view, auth.ready, auth.user]);
+  // Ask the server "am I admin?" whenever the session changes. True only for the ADMIN_EMAIL account.
+  useEffect(() => {
+    let live = true;
+    const tok = auth.session?.access_token;
+    if (!tok) { setIsAdmin(false); return; }
+    adminCheck(tok).then((ok) => { if (live) setIsAdmin(ok); }).catch(() => { if (live) setIsAdmin(false); });
+    return () => { live = false; };
+  }, [auth.session]);
 
   // ---- item display-name translations (item names only, not the whole UI) ----
   const [itemLang, setItemLang] = useState('EN');
@@ -480,6 +494,9 @@ export function App() {
             {steam.configured && view !== 'mods' && !mobileCharView && (
               <button className="secondary" onClick={() => setView('mods')} title="Host your Workshop mods" style={{ height: NAV_H, padding: '0 14px' }}>Modders</button>
             )}
+            {isAdmin && (
+              <button className="secondary" onClick={() => setAdminOpen(true)} title="Users and modders" style={{ height: NAV_H, padding: '0 14px', borderColor: 'var(--accent)', color: 'var(--accent)' }}>Admin</button>
+            )}
             {!isMobile && auth.configured && <AccountChip auth={auth} onSignIn={() => setAuthOpen(true)} onChangePassword={() => setChangePwOpen(true)} onDeleteAccount={() => setDeleteOpen(true)} />}
             {!isMobile && index != null && langs.length > 1 && <LanguageSelect langs={langs} value={itemLang} onChange={setItemLang} loading={langLoading} />}
             {!isMobile && <HelpButton />}
@@ -494,6 +511,7 @@ export function App() {
       )}
       {changePwOpen && auth.user && <PasswordModal auth={auth} mode="change" onClose={() => setChangePwOpen(false)} />}
       {auth.recovery && <PasswordModal auth={auth} mode="recovery" onClose={() => { /* clearRecovery handled inside */ }} />}
+      {adminOpen && isAdmin && auth.session && <AdminPanel token={auth.session.access_token} onClose={() => setAdminOpen(false)} />}
 
       {phase === 'unsupported' && (
         <div className="card" style={{ marginTop: 40, maxWidth: 560, marginInline: 'auto', textAlign: 'center', background: '#2c2226', borderColor: '#5a3a3a' }}>

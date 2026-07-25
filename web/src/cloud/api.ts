@@ -52,6 +52,30 @@ export async function deleteAccount(token: string): Promise<void> {
   if (!res.ok) throw new Error(errorFrom(await res.text(), res.status));
 }
 
+// --- Admin (owner-only) -------------------------------------------------------------------------
+// These hit endpoints the Worker gates on the signed-in email matching its ADMIN_EMAIL secret, so a
+// non-admin gets 403 no matter what the client does. adminCheck just decides whether to show the UI.
+export interface AdminUser { id: string; email: string; created_at: string | null; last_sign_in_at: string | null; bytes: number; count: number; kinds: Record<string, number>; }
+export interface AdminModderMod { publishedfileid: string; title: string | null; status: string; host_status: string | null; preview: string | null; consented_at: string; }
+export interface AdminModder { steamid: string; author: string | null; count: number; allowed: number; mods: AdminModderMod[]; }
+export interface AdminOverview { quotaBytes: number; userCount: number; totalBytes: number; users: AdminUser[]; modders: AdminModder[]; }
+
+export async function adminCheck(token: string): Promise<boolean> {
+  if (!CLOUD_API) return false;
+  try {
+    const res = await fetch(`${CLOUD_API}/admin/me`, { headers: { Authorization: `Bearer ${token}` } });
+    if (!res.ok) return false;
+    return !!((await res.json()) as { admin?: boolean }).admin;
+  } catch { return false; }
+}
+
+export async function fetchAdminOverview(token: string): Promise<AdminOverview> {
+  if (!CLOUD_API) throw new Error('Online features are not configured.');
+  const res = await fetch(`${CLOUD_API}/admin/overview`, { headers: { Authorization: `Bearer ${token}` } });
+  if (!res.ok) throw new Error(errorFrom(await res.text(), res.status));
+  return (await res.json()) as AdminOverview;
+}
+
 export const fileUrl = (key: string) => `${CLOUD_API}/f/${key}`;
 // The branded "custom player" page for a share: shows the render with the character name, the mods
 // used, and the PZ Survivor Studio brand. Served by the Worker at /p/<key>.
