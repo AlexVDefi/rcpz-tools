@@ -498,6 +498,9 @@ export class CharacterEngine {
     for (const s of this.statics.values()) s.traverse(set);
     for (const h of this.held.values()) h.holder.traverse(set);
     if (this.floorMat) this.floorMat.color.setScalar(this.light.ambient); // floor tracks ambient only
+    // placed tiles are flat like the floor - tint them by ambient too (and the hover ghost)
+    for (const c of this.cells.values()) { if (c.floor) (c.floor.material as THREE.MeshBasicMaterial).color.setScalar(this.light.ambient); if (c.rug) (c.rug.material as THREE.MeshBasicMaterial).color.setScalar(this.light.ambient); }
+    if (this.ghost) (this.ghost.material as THREE.MeshBasicMaterial).color.setScalar(this.light.ambient);
   }
   setLight(key: 'ambient' | 'keyBright' | 'kx' | 'ky' | 'kz', v: number) {
     if (key === 'kx') this.light.keyDir[0] = v; else if (key === 'ky') this.light.keyDir[1] = v; else if (key === 'kz') this.light.keyDir[2] = v;
