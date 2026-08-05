@@ -6,6 +6,7 @@
 // render at an iso icon angle. Renders serialize (one context); results are cached by the
 // provider, so this is a cold-path cost.
 import { resolveBody, resolveClothing, resolveHeldItem, resolveClip, resolveHairStyle } from '@shared/character-core.js';
+import { resolveIconAssets } from '@shared/icon-core.js';
 import { THREE, makeSkinnedMaterial, makeMaterial, CHAR_LIGHTING } from './three-core';
 import { glbToGltf, isolateSubMesh, bytesToTexture, sourceToTexture } from './loaders';
 import { normaliseClip, normalizeClothingRig, boneRestMap, captureSkeletonBind, type SkeletonBind } from './anim';
@@ -255,6 +256,22 @@ export class ThumbnailRenderer {
       const root = (await glbToGltf(r.meshGlb)).scene;
       isolateSubMesh(root, r.subMesh); // modular model file: keep only the named part
       const tex = r.texture ? await bytesToTexture(r.texture, false) : new THREE.Texture(); // glTF UV convention (see toggleHeld)
+      this.applyMat(root, this.material(tex, false));
+      return this.renderAlone(root, true);
+    };
+    const p = this.queue.then(run, run);
+    this.queue = p.catch(() => {});
+    return p as Promise<Blob>;
+  }
+
+  /** 3D-props browser thumbnail: an item's world/static model at an iso angle (same as the held icon). */
+  propThumb(rec: { item: string; mesh: string | null; textureName: string | null; scale: number; hasModelBlock: boolean }): Promise<Blob> {
+    const run = async (): Promise<Blob> => {
+      const a = await resolveIconAssets(this.ctx, rec);
+      if (!a.meshGlb) throw new Error(a.issues?.join('; ') || 'no mesh');
+      const root = (await glbToGltf(a.meshGlb)).scene;
+      isolateSubMesh(root, a.subMesh); // modular model file: keep only the named part
+      const tex = a.texture ? await bytesToTexture(a.texture, false) : new THREE.Texture();
       this.applyMat(root, this.material(tex, false));
       return this.renderAlone(root, true);
     };

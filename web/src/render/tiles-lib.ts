@@ -15,6 +15,45 @@ export interface TileInfo {
   offset: { x: number; y: number }; full: { w: number; h: number };
   category: TileCategory; props: Record<string, string> | null;
 }
+// A browsable group: for walls, one material/colour (its N/W walls, corner, pillar, window + door frames);
+// for everything else a single tile wrapped as a one-piece set, so the browser UI is uniform.
+// A piece may span several cells (a 2-tile couch, a 2x2 bed): `tiles[0]` is the anchor (placed at the
+// clicked cell), the rest carry world-cell offsets (dx,dy) so they drop alongside it. `tile` is the anchor
+// (used for the thumbnail + as the selection key).
+export interface TilePieceTile { tile: TileInfo; dx: number; dy: number; }
+export interface TilePiece { label: string; tile: TileInfo; tiles: TilePieceTile[]; }
+export interface TileSet { id: string; label: string; category: TileCategory; sheet: string; rep: TileInfo; defaultPiece: string; pieces: TilePiece[]; }
+const one = (t: TileInfo): TilePieceTile[] => [{ tile: t, dx: 0, dy: 0 }];
+// crop a canvas to the bounding box of its opaque pixels (so a composited multi-tile thumbnail is tight)
+function trimCanvas(c: HTMLCanvasElement): HTMLCanvasElement {
+  const ctx = c.getContext('2d')!; const { width: w, height: h } = c;
+  if (!w || !h) return c;
+  const d = ctx.getImageData(0, 0, w, h).data;
+  let x0 = w, y0 = h, x1 = -1, y1 = -1;
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { if (d[(y * w + x) * 4 + 3] > 8) { if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; } }
+  if (x1 < x0) return c;
+  const tw = x1 - x0 + 1, th = y1 - y0 + 1;
+  const out = document.createElement('canvas'); out.width = tw; out.height = th;
+  out.getContext('2d')!.drawImage(c, x0, y0, tw, th, 0, 0, tw, th);
+  return out;
+}
+const gridPos = (t: TileInfo) => { const [c, r] = (t.props?.SpriteGridPos ?? '0,0').split(',').map(Number); return { col: c || 0, row: r || 0 }; };
+
+// Wall piece type from its tiledef flags. PZ lays each wall material out as a 4-col x 2-row block: top row
+// [WallW, WallN, corner(WallNW), pillar/end(WallSE)], bottom row [WindowW, WindowN, DoorWallW, DoorWallN].
+function wallPieceLabel(p: Record<string, string> | null): string {
+  if (!p) return 'piece';
+  if ('WallNW' in p) return 'Corner';
+  if ('WallSE' in p) return p.PaintingType === 'pillar' ? 'Pillar' : 'End';
+  if ('DoorWallN' in p) return 'Door (N)';
+  if ('DoorWallW' in p) return 'Door (W)';
+  if ('WindowN' in p) return 'Window (N)';
+  if ('WindowW' in p) return 'Window (W)';
+  if ('WallN' in p) return 'Wall (N)';
+  if ('WallW' in p) return 'Wall (W)';
+  return 'piece';
+}
+const WALL_PIECE_ORDER = ['Wall (N)', 'Wall (W)', 'Corner', 'Pillar', 'End', 'Window (N)', 'Window (W)', 'Door (N)', 'Door (W)', 'piece'];
 
 // The starter set: whole sheets (so we get colour variants + wall orientations), grouped for the UI.
 const CURATED: Record<TileCategory, string[]> = {
@@ -41,6 +80,7 @@ export class TileLibrary {
   private packs = new Map<string, PackRef>();   // pack id -> ref (for lazy page loads)
   private pageImg = new Map<string, Promise<HTMLImageElement>>(); // `${packId}:${page}` -> decoded page
   private thumbs = new Map<string, string>();
+  private sheetW = new Map<string, number>(); // sheet -> tile columns, for the wall block-grouping geometry
   private loading: Promise<void> | null = null;
 
   constructor(resolver: Resolver) { this.resolver = resolver; }
@@ -66,6 +106,7 @@ export class TileLibrary {
       if (hit) { try { tdMaps.push(parseTileDefs(await hit.src.readBytes(hit.realPath))); } catch { /* skip */ } }
     }
     const tiledefs = mergeTileDefs(tdMaps);
+    for (const [sheet, def] of tiledefs) this.sheetW.set(sheet, def.wTiles);
     // catalogue, filtered to the curated sheets, re-classified into the sheet's curated category
     const catalogue = buildTileCatalogue(packRefs, tiledefs);
     const sheetCategory = new Map<string, TileCategory>();
@@ -84,6 +125,76 @@ export class TileLibrary {
   }
   categories(): TileCategory[] { return CATEGORIES.filter((c) => this.list(c).length > 0); }
   get(name: string): TileInfo | undefined { return this.tiles.get(name); }
+
+  /** Browsable groups for a category. Walls collapse into per-material sets (one card = one colour/
+   *  wallpaper, holding its N/W walls, corner, pillar, window and door pieces); other categories return
+   *  one single-piece set per tile so the browser stays uniform. */
+  sets(category?: TileCategory): TileSet[] {
+    const tiles = this.list(category);
+    const short = (t: TileInfo) => `${t.sheet.replace(/^(floors_|walls_|furniture_|appliances_|lighting_)/, '')} ${t.index}`;
+    const single = (t: TileInfo): TileSet => ({ id: t.name, label: short(t), category: t.category, sheet: t.sheet, rep: t, defaultPiece: t.name, pieces: [{ label: 'tile', tile: t, tiles: one(t) }] });
+    const byFirst = (rows: { first: number; set: TileSet }[]) => rows.sort((a, b) => a.set.sheet.localeCompare(b.set.sheet) || a.first - b.first).map((x) => x.set);
+
+    if (category === 'wall') {
+      // group by the 4-col x 2-row material block (see wallPieceLabel) within each sheet
+      const groups = new Map<string, TileInfo[]>();
+      for (const t of tiles) {
+        const w = this.sheetW.get(t.sheet) || 8;
+        const col = t.index % w, row = Math.floor(t.index / w);
+        const id = `${t.sheet}#${Math.floor(row / 2)}_${Math.floor(col / 4)}`;
+        const g = groups.get(id) ?? groups.set(id, []).get(id)!; g.push(t);
+      }
+      const matCount = new Map<string, number>();
+      const out: { first: number; set: TileSet }[] = [];
+      for (const ts of groups.values()) {
+        ts.sort((a, b) => a.index - b.index);
+        const pieces: TilePiece[] = ts.map((t) => ({ label: wallPieceLabel(t.props), tile: t, tiles: one(t) }))
+          .sort((a, b) => WALL_PIECE_ORDER.indexOf(a.label) - WALL_PIECE_ORDER.indexOf(b.label));
+        const material = ts.map((t) => t.props?.MaterialType).find(Boolean) || 'Wall';
+        const mk = `${ts[0].sheet}:${material}`; const n = (matCount.get(mk) ?? 0) + 1; matCount.set(mk, n);
+        const rep = pieces.find((p) => p.label === 'Corner')?.tile ?? pieces.find((p) => p.label === 'Wall (N)')?.tile ?? ts[0];
+        const def = pieces.find((p) => p.label === 'Wall (N)')?.tile ?? rep;
+        out.push({ first: ts[0].index, set: { id: `${ts[0].sheet}#${ts[0].index}`, label: `${material} ${n}`, category: 'wall', sheet: ts[0].sheet, rep, defaultPiece: def.name, pieces } });
+      }
+      return byFirst(out);
+    }
+
+    if (category === 'furniture') {
+      // group by item (CustomName + GroupName, e.g. "White Fridge"); each piece is one FACING (S/E/N/W),
+      // carrying every sprite of that orientation so a multi-tile item (couch, bed) places as a whole
+      const facing = (t: TileInfo) => (t.props?.Facing ?? '').toUpperCase().replace('-', '') || 'S';
+      const rank: Record<string, number> = { S: 0, E: 1, N: 2, W: 3 };
+      const groups = new Map<string, TileInfo[]>();
+      for (const t of tiles) {
+        const p = t.props ?? {};
+        const key = `${t.sheet}|${p.CustomName ?? short(t)}|${p.GroupName ?? ''}`;
+        const g = groups.get(key) ?? groups.set(key, []).get(key)!; g.push(t);
+      }
+      const out: { first: number; set: TileSet }[] = [];
+      for (const ts of groups.values()) {
+        ts.sort((a, b) => a.index - b.index);
+        if (ts.length === 1) { out.push({ first: ts[0].index, set: single(ts[0]) }); continue; }
+        const p0 = ts[0].props ?? {};
+        const label = ((p0.GroupName ? `${p0.GroupName} ` : '') + (p0.CustomName ?? short(ts[0]))).trim();
+        const byFacing = new Map<string, TileInfo[]>();
+        for (const t of ts) { const f = facing(t); const g = byFacing.get(f) ?? byFacing.set(f, []).get(f)!; g.push(t); }
+        const pieces: TilePiece[] = [];
+        for (const [f, sprites] of byFacing) {
+          const anchor = sprites.find((s) => gridPos(s).col === 0 && gridPos(s).row === 0) ?? sprites[0];
+          const a = gridPos(anchor);
+          const tilesOfPiece: TilePieceTile[] = sprites.map((s) => { const g = gridPos(s); return { tile: s, dx: g.col - a.col, dy: g.row - a.row }; })
+            .sort((x, y) => (x.dx * x.dx + x.dy * x.dy) - (y.dx * y.dx + y.dy * y.dy)); // anchor (0,0) first
+          pieces.push({ label: f, tile: anchor, tiles: tilesOfPiece });
+        }
+        pieces.sort((x, y) => (rank[x.label] ?? 9) - (rank[y.label] ?? 9));
+        const rep = pieces.find((p) => p.label === 'S')?.tile ?? pieces[0].tile;
+        out.push({ first: ts[0].index, set: { id: `${ts[0].sheet}#${ts[0].index}`, label, category: 'furniture', sheet: ts[0].sheet, rep, defaultPiece: rep.name, pieces } });
+      }
+      return byFirst(out);
+    }
+
+    return tiles.map(single);
+  }
 
   private page(packId: string, page: number): Promise<HTMLImageElement> {
     const key = `${packId}:${page}`;
@@ -110,6 +221,26 @@ export class TileLibrary {
     ctx.drawImage(img, t.rect.x, t.rect.y, t.rect.w, t.rect.h, 0, 0, t.rect.w, t.rect.h);
     const url = c.toDataURL('image/png');
     this.thumbs.set(name, url);
+    return url;
+  }
+
+  /** Thumbnail of a whole multi-tile piece (a 2-tile couch, a 2x2 bed): each sprite composited at its iso
+   *  cell offset (2x diamond = 128x64, so +1 in x is +64,+32 on screen), back-to-front, then trimmed. */
+  async compositeThumb(tiles: TilePieceTile[]): Promise<string> {
+    if (tiles.length <= 1) return this.thumbUrl(tiles[0]?.tile.name ?? '');
+    const key = 'grp:' + tiles.map((t) => t.tile.name).join(',');
+    const cached = this.thumbs.get(key); if (cached) return cached;
+    const HW = 64, HH = 32; // half a 2x tile diamond
+    const pos = tiles.map((t) => ({ t, sx: HW * (t.dx - t.dy), sy: HH * (t.dx + t.dy) }));
+    const imgs = await Promise.all(pos.map((p) => this.page(p.t.tile.pack, p.t.tile.page)));
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const p of pos) { minX = Math.min(minX, p.sx); minY = Math.min(minY, p.sy); maxX = Math.max(maxX, p.sx + p.t.tile.full.w); maxY = Math.max(maxY, p.sy + p.t.tile.full.h); }
+    const c = document.createElement('canvas'); c.width = maxX - minX; c.height = maxY - minY;
+    const ctx = c.getContext('2d')!; ctx.imageSmoothingEnabled = false;
+    const order = pos.map((p, i) => ({ p, img: imgs[i] })).sort((a, b) => (a.p.t.dx + a.p.t.dy) - (b.p.t.dx + b.p.t.dy) || a.p.t.dx - b.p.t.dx);
+    for (const { p, img } of order) { const t = p.t.tile; ctx.drawImage(img, t.rect.x, t.rect.y, t.rect.w, t.rect.h, p.sx - minX + t.offset.x, p.sy - minY + t.offset.y, t.rect.w, t.rect.h); }
+    const url = trimCanvas(c).toDataURL('image/png');
+    this.thumbs.set(key, url);
     return url;
   }
 

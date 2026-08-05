@@ -1,13 +1,14 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { listClips, listClothing, listHeldItems, listHair, clothingGroup, CLOTHING_GROUP_ORDER, HELD_GROUP_ORDER, SKIN_TONES, attachmentProviders, listZombieSkins, listBodySources, listBodyTextureSources, clothingBodyFit } from '@shared/character-core.js';
 import { SLOTS, bodyAttachOptions, slotsFromWorn } from '@shared/attachments.js';
-import { CharacterEngine, type Ctx, type AttachOption } from './render/character-engine';
+import { CharacterEngine, type Ctx, type AttachOption, type TileBrushPart, type PropSave, type TileSave } from './render/character-engine';
 
 type AttachSlot = { slot: string; options: AttachOption[] };
 import { ThumbnailProvider } from './render/thumbnail-provider';
 import { ClipPreview } from './render/clip-preview';
 import { FloorLibrary } from './render/floor';
-import { TileLibrary, type TileCategory } from './render/tiles-lib';
+import { TileLibrary, type TileCategory, type TileSet, type TilePiece } from './render/tiles-lib';
+import { parseMod, resolveIconAssets } from '@shared/icon-core.js';
 import { AssetGrid, type GridItem } from './AssetGrid';
 import { Thumb } from './Thumb';
 import { exportPng, exportGif, exportVideo, download, type BgConfig, type Content } from './render/export-media';
@@ -167,6 +168,10 @@ type CharPreset = {
   // items attached to the body (gun in a holster, weapon on back/belt, light on webbing, ...). Stored
   // minimally as slot+name; the exact location/transform is recomputed from the item + worn clothing on load.
   bodyAttachments?: { slot: string; name: string }[];
+  // placed 3D props (build tab): serialised by item name + transform + sticky-attach + weapon parts, re-resolved on load.
+  props?: PropSave[];
+  // placed 2D tiles (build tab): serialised by tile name + cell + slot, textures re-resolved on load.
+  tiles?: TileSave[];
   scene: ScenePreset;
 };
 // Auto-saved working character (localStorage). Stored WITHOUT the thumb data-URL, so it stays a few
@@ -220,6 +225,9 @@ function ShirtIcon({ size = 18 }: { size?: number }) {
 }
 function SunIcon({ size = 18 }: { size?: number }) {
   return <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4" /><path d="M12 2v2" /><path d="M12 20v2" /><path d="m4.93 4.93 1.41 1.41" /><path d="m17.66 17.66 1.41 1.41" /><path d="M2 12h2" /><path d="M20 12h2" /><path d="m6.34 17.66-1.41 1.41" /><path d="m19.07 4.93-1.41 1.41" /></svg>;
+}
+function BoxIcon({ size = 18 }: { size?: number }) { // Props (3D objects) overlay button
+  return <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z" /><path d="m3.3 7 8.7 5 8.7-5" /><path d="M12 22V12" /></svg>;
 }
 function EyeIcon({ size = 20 }: { size?: number }) {
   return <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M2.06 12.35a1 1 0 0 1 0-.7 10.75 10.75 0 0 1 19.88 0 1 1 0 0 1 0 .7 10.75 10.75 0 0 1-19.88 0" /><circle cx="12" cy="12" r="3" /></svg>;
@@ -443,16 +451,136 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
   const tileLib = useMemo(() => new TileLibrary(ctx.resolver as ConstructorParameters<typeof TileLibrary>[0]), [ctx]);
   const [tileReady, setTileReady] = useState<boolean | 'error'>(false);
   const [tileCat, setTileCat] = useState<TileCategory>('floor');
-  const [selectedTile, setSelectedTile] = useState<string | null>(null);
+  const [selectedTile, setSelectedTile] = useState<string | null>(null); // the exact piece placed (the brush)
+  const [selectedSet, setSelectedSet] = useState<string | null>(null);    // the material set whose pieces are shown
+  // build modes: erase (touch has no right-click) and rectangle-fill (touch has no shift) as explicit
+  // toggles; desktop keeps right-click-erase and shift-drag-rectangle too
+  const [buildMode, setBuildModeState] = useState<'place' | 'erase'>('place');
+  const [rectMode, setRectMode] = useState(false);
+  const [eraseDepth, setEraseDepth] = useState(0); // phone erase-depth stepper (0 = top layer)
+  const [canUndo, setCanUndo] = useState(false);
+  const [canRedo, setCanRedo] = useState(false);
+  const applyBuildMode = (m: 'place' | 'erase') => { setBuildModeState(m); if (m === 'erase') { setEraseDepth(0); engineRef.current?.setEraseLayer(0); } engineRef.current?.setBuildMode(m); };
+  const applyRectMode = (on: boolean) => { setRectMode(on); engineRef.current?.setRectMode(on); };
+  const applyEraseDepth = (d: number) => { const v = Math.max(0, d); setEraseDepth(v); engineRef.current?.setEraseLayer(v); };
   useEffect(() => {
     if (tab !== 'build' || tileReady) return;
     let ok = true;
     tileLib.ensure().then(() => { if (ok) setTileReady(true); }).catch(() => { if (ok) setTileReady('error'); });
     return () => { ok = false; };
   }, [tab, tileLib, tileReady]);
-  const tileItems = useMemo(() => (tileReady === true
-    ? tileLib.list(tileCat).map((t) => ({ ...t, key: t.name, label: `${t.sheet.replace(/^(floors_|walls_|furniture_|appliances_|lighting_)/, '')} ${t.index}`, facet: t.sheet, isMod: false }))
-    : []), [tileReady, tileLib, tileCat]);
+  // Browse by material set (walls collapse to one card per colour/wallpaper; other tiles are single-piece
+  // sets). Picking a set selects its default piece; multi-piece sets reveal a piece picker.
+  const tileSets = useMemo(() => (tileReady === true ? tileLib.sets(tileCat) : []), [tileReady, tileLib, tileCat]);
+  const tileItems = useMemo(() => tileSets.map((s) => ({ key: s.id, label: s.label, facet: s.sheet, isMod: false, name: s.rep.name, setId: s.id, defaultPiece: s.defaultPiece, pieceCount: s.pieces.length, thumbTiles: (s.pieces.find((p) => p.tile.name === s.defaultPiece) ?? s.pieces[0]).tiles })), [tileSets]);
+  const selectedSetObj = useMemo(() => tileSets.find((s) => s.id === selectedSet) ?? null, [tileSets, selectedSet]);
+  const selPieceTiles = useMemo(() => selectedSetObj?.pieces.find((p) => p.tile.name === selectedTile)?.tiles ?? null, [selectedSetObj, selectedTile]);
+  // 3D props: parse the item catalog for records that carry a 3D world/static model.
+  type PropRec = { item: string; variant: string; mesh: string | null; hasModelBlock: boolean; displayCategory?: string; textureName: string | null; scale: number };
+  const [buildTab, setBuildTab] = useState<'2d' | '3d'>('2d'); // Build sub-tab: 2D tile builder vs 3D-props browser
+  const [inspectorOpen, setInspectorOpen] = useState(false);   // selected-prop controls popover (anchored to the Props button)
+  const propRecords = useMemo<PropRec[]>(() => { try { return (parseMod(index as never).records as PropRec[]).filter((r) => r.variant === 'base' && !!r.mesh && r.hasModelBlock); } catch { return []; } }, [index]);
+  // Browser = every held item / weapon (their 3D model, categorised by held group) UNION the world-object props,
+  // deduped by name. Held come first so weapons keep their friendly labels + weapon categories.
+  const propItems = useMemo(() => {
+    const seen = new Set<string>();
+    const out: { key: string; label: string; facet: string; isMod: boolean; search?: string; rec: PropRec }[] = [];
+    for (const h of held) {
+      if (!h.mesh) continue; const k = h.name.toLowerCase(); if (seen.has(k)) continue; seen.add(k);
+      out.push({ key: h.name, label: h.label, facet: h.facet || 'Held', isMod: !!h.isMod, search: h.search, rec: { item: h.name, variant: 'base', mesh: h.mesh, textureName: h.texture ?? null, scale: h.scale ?? 1, hasModelBlock: true, displayCategory: h.facet } });
+    }
+    for (const r of propRecords) { const k = r.item.toLowerCase(); if (seen.has(k)) continue; seen.add(k); out.push({ key: r.item, label: r.item, facet: r.displayCategory || 'Other', isMod: false, rec: r }); }
+    return out;
+  }, [held, propRecords]);
+  const placeProp = async (rec: PropRec) => {
+    try {
+      const a = await resolveIconAssets(ctx, rec) as { meshGlb: Uint8Array | null; texture: Uint8Array | null; scale: number; subMesh: string | null };
+      if (a.meshGlb) { await engineRef.current?.beginPropPlacement(a.meshGlb, a.texture, a.scale, rec.item, a.subMesh); if (isMobile) setDrawerOpen(false); } // prop rides the cursor; click to drop
+    } catch (e) { console.warn('prop place failed', e); }
+  };
+  // Rehydrate placed props from a preset: re-resolve each by item name, restore transform + sticky + weapon parts.
+  const loadProps = async (saves: PropSave[] | undefined) => {
+    const eng = engineRef.current; if (!eng) return;
+    eng.clearProps();
+    if (!saves?.length) return;
+    for (const s of saves) {
+      try {
+        const it = propItems.find((p) => p.key === s.item); if (!it) continue; // item no longer in the loaded mod set
+        const a = await resolveIconAssets(ctx, it.rec) as { meshGlb: Uint8Array | null; texture: Uint8Array | null; scale: number; subMesh: string | null };
+        if (!a.meshGlb) continue;
+        const slots = heldSlots.get(s.item);
+        const attachments = s.attachments.map((sa) => { const opt = slots?.find((x) => x.slot === sa.slot)?.options.find((o) => o.partName === sa.partName); return opt ? { slot: sa.slot, option: opt } : null; }).filter(Boolean) as { slot: string; option: AttachOption }[];
+        await eng.addSavedProp({ glb: a.meshGlb, texture: a.texture, subMesh: a.subMesh, baseScale: a.scale, save: s, attachments });
+      } catch (e) { console.warn('prop load failed', s.item, e); }
+    }
+    eng.relinkPropAttachments();
+  };
+  // Rehydrate placed 2D tiles from a preset: re-resolve each tile's texture by name and rebuild it at its cell.
+  const loadTiles = async (saves: TileSave[] | undefined) => {
+    const eng = engineRef.current; if (!eng) return;
+    eng.clearTiles();
+    if (!saves?.length) return;
+    for (const t of saves) {
+      try {
+        if (t.slot === 'floor' || t.slot === 'rug') {
+          const tex = await tileLib.flatTexture(t.name);
+          if (tex) eng.addSavedTile(t.gx, t.gy, { tex, kind: t.slot === 'rug' ? 'rug' : 'floor', name: t.name });
+        } else {
+          const s = await tileLib.spriteTexture(t.name);
+          if (s) eng.addSavedTile(t.gx, t.gy, { tex: s.tex, kind: 'object', objectSlot: t.slot, name: t.name, fullW: s.full.w, fullH: s.full.h });
+        }
+      } catch (e) { console.warn('tile load failed', t.name, e); }
+    }
+  };
+  type PropTexXf = { flipU: boolean; flipV: boolean; rot: number };
+  const [selectedProp, setSelectedProp] = useState<{ name: string; count: number; texXf: PropTexXf; sticky: boolean; align: boolean; attached: string | null; attachments: { slot: string; partName: string }[] } | null>(null);
+  const [marqueeRect, setMarqueeRect] = useState<{ x: number; y: number; w: number; h: number } | null>(null); // shift-drag selection box, drawn over the canvas
+  const [placeHint, setPlaceHint] = useState<'character' | 'prop' | 'floor' | null>(null); // live target while a prop rides the cursor
+  const [gizmoMode, setGizmoModeState] = useState<'translate' | 'rotate' | 'scale'>('translate');
+  const applyGizmoMode = (m: 'translate' | 'rotate' | 'scale') => { setGizmoModeState(m); engineRef.current?.setGizmoMode(m); };
+  const [showGizmo, setShowGizmoFlag] = useState(false); // Blender-style: handles hidden by default, G/R/S transform
+  const toggleGizmo = (on: boolean) => { setShowGizmoFlag(on); engineRef.current?.setShowGizmo(on); };
+  const [camLock, setCamLockFlag] = useState(false); // mobile: two-finger gestures move the camera even with a prop selected
+  const toggleCamLock = (on: boolean) => { setCamLockFlag(on); engineRef.current?.setCameraLock(on); };
+  const [selectMode, setSelectModeFlag] = useState(false); // mobile: tap toggles a prop / drag draws a marquee
+  const toggleSelectMode = (on: boolean) => { setSelectModeFlag(on); engineRef.current?.setSelectMode(on); };
+  const [stickyDefault, setStickyDefaultFlag] = useState(false); // new props start sticky-armed
+  const [alignDefault, setAlignDefaultFlag] = useState(false);   // new props align to the surface (+ live preview)
+  const toggleStickyDefault = (on: boolean) => { setStickyDefaultFlag(on); engineRef.current?.setStickyDefault(on); };
+  const toggleAlignDefault = (on: boolean) => { setAlignDefaultFlag(on); engineRef.current?.setAlignDefault(on); };
+  const [modalLabel, setModalLabel] = useState<string | null>(null); // active modal-transform readout ("Move X")
+  // entering the 3D-props browser sub-tab: free-orbit camera for placing (the tile brush is dropped by the brush effect).
+  // prop clicks stay enabled on every tab (engine setPropMode(true) at boot); they just yield to an active tile brush.
+  useEffect(() => {
+    const eng = engineRef.current; if (!eng) return;
+    if (tab === 'build' && buildTab === '3d') eng.applyCameraPreset('orbit');
+  }, [tab, buildTab]);
+  // exports render the live scene, so deselect (drop the selection rim + close the inspector) before an export
+  useEffect(() => { if (tab === 'export') { engineRef.current?.selectProp(null); setInspectorOpen(false); } }, [tab]);
+  // per-prop UV fix for the selected prop (the rare mesh whose texture maps wrong, e.g. Battery)
+  const applyPropTexXf = (xf: PropTexXf) => { setSelectedProp((s) => (s ? { ...s, texXf: xf } : s)); engineRef.current?.setSelectedPropTexXf(xf); };
+  // sticky controls (the engine echoes new state back through onPropSelect, which updates selectedProp)
+  const setPropSticky = (on: boolean) => engineRef.current?.setSelectedPropSticky(on);
+  const setPropAlign = (on: boolean) => engineRef.current?.setSelectedPropAlign(on);
+  const detachProp = () => engineRef.current?.detachSelectedProp();
+  const setPropAttach = (slot: string, option: AttachOption | null) => { void engineRef.current?.setPropAttachment(slot, option); };
+  // pick a set: select its default piece; on mobile collapse the drawer only when there's no piece to choose
+  const pickSet = (item: { setId: string; defaultPiece: string; pieceCount: number }) => {
+    if (item.setId === selectedSet) { setSelectedSet(null); setSelectedTile(null); return; }
+    setSelectedSet(item.setId); setSelectedTile(item.defaultPiece);
+    if (isMobile) setDrawerOpen(false); // the piece picker rides on the compact bar, so free the canvas
+  };
+  const pickPiece = (name: string) => { setSelectedTile(name); }; // stay put; the picker is always in reach
+  // R / Shift+R step through the open set's pieces; number keys 1-9 jump straight to one. A ref keeps the
+  // key handler (registered once) reading the current set/selection without re-binding on every change.
+  const kb = useRef<{ buildMode: 'place' | 'erase'; set: TileSet | null; tile: string | null; hasProp: boolean; tilesActive: boolean }>({ buildMode, set: selectedSetObj, tile: selectedTile, hasProp: !!selectedProp, tilesActive: tab === 'build' && buildTab === '2d' });
+  kb.current = { buildMode, set: selectedSetObj, tile: selectedTile, hasProp: !!selectedProp, tilesActive: tab === 'build' && buildTab === '2d' };
+  const cyclePiece = (dir: number) => {
+    const s = kb.current.set; if (!s || s.pieces.length < 2) return;
+    const i = s.pieces.findIndex((p) => p.tile.name === kb.current.tile); const n = s.pieces.length;
+    setSelectedTile(s.pieces[(((i < 0 ? 0 : i) + dir) % n + n) % n].tile.name);
+  };
+  const selectPieceByNumber = (idx: number) => { const s = kb.current.set; if (s && idx >= 0 && idx < s.pieces.length) setSelectedTile(s.pieces[idx].tile.name); };
   // The placement brush for the selected tile: floors/rugs become flat de-sheared tiles; walls/furniture
   // become camera-facing standing sprites. Leaving the Build tab clears it. Snap to the PZ-iso camera
   // so what you place reads correctly.
@@ -460,20 +588,71 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
   useEffect(() => {
     const eng = engineRef.current; if (!eng) return;
     const info = selectedTile ? tileLib.get(selectedTile) : undefined;
-    if (tab !== 'build' || !selectedTile || !info) { eng.setBuildBrush(null); return; }
+    if (tab !== 'build' || buildTab !== '2d' || !selectedTile || !info) { eng.setBuildBrush(null); return; }
     let ok = true;
     if (eng.camMode !== 'iso') eng.applyCameraPreset('iso');
     (async () => {
       if (info.category === 'floor' || info.category === 'overlay') {
         const tex = await tileLib.flatTexture(selectedTile);
-        if (ok && tex) eng.setBuildBrush({ tex, kind: info.category === 'overlay' ? 'rug' : 'floor' });
+        if (ok && tex) eng.setBuildBrush({ tex, kind: info.category === 'overlay' ? 'rug' : 'floor', name: selectedTile });
       } else {
+        // wall or furniture (standing sprite). A multi-tile furniture facing carries sibling sprites as
+        // `parts` (offset cells) so the whole couch/bed places together and previews together.
+        const piece = selectedSetObj?.pieces.find((p) => p.tile.name === selectedTile);
         const s = await tileLib.spriteTexture(selectedTile);
-        if (ok && s) eng.setBuildBrush({ tex: s.tex, kind: 'object', fullW: s.full.w, fullH: s.full.h });
+        if (!ok || !s) return;
+        const objectSlot = info.category === 'wall' ? 'wall' as const : 'furniture' as const;
+        const parts: TileBrushPart[] = [];
+        for (const pt of (piece ? piece.tiles.slice(1) : [])) {
+          const ps = await tileLib.spriteTexture(pt.tile.name);
+          if (ps) parts.push({ tex: ps.tex, fullW: ps.full.w, fullH: ps.full.h, dx: pt.dx, dy: pt.dy, name: pt.tile.name });
+        }
+        if (ok) eng.setBuildBrush({ tex: s.tex, kind: 'object', objectSlot, name: selectedTile, fullW: s.full.w, fullH: s.full.h, parts: parts.length ? parts : undefined });
       }
     })();
     return () => { ok = false; };
-  }, [tab, selectedTile, tileLib]);
+  }, [tab, buildTab, selectedTile, selectedSetObj, tileLib]);
+  // Desktop keyboard shortcuts while on the Build tab: E toggles erase. In PLACE mode R / Shift+R step
+  // through the open set's pieces and 1-9 jump to one; in ERASE mode R cycles which stacked item is
+  // targeted. Ctrl+Z / Ctrl+Y (or Ctrl+Shift+Z) undo/redo.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const eng = engineRef.current; if (!eng) return;
+      const t = e.target as HTMLElement | null;
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return;
+      const hasProp = kb.current.hasProp, tiles = kb.current.tilesActive;
+      if (!hasProp && !tiles) return; // no build context: leave keys alone
+      if (e.ctrlKey || e.metaKey) {
+        const k = e.key.toLowerCase();
+        if (hasProp && k === 'd') { e.preventDefault(); eng.duplicateSelectedProp(); return; } // duplicate selected prop
+        if (k === 'z') { e.preventDefault(); if (e.shiftKey) eng.redo(); else eng.undo(); }
+        else if (k === 'y') { e.preventDefault(); eng.redo(); }
+        return;
+      }
+      if (e.key === 'Escape') { eng.modalCancel(); eng.cancelPropPlacement(); return; } // cancel a modal transform, else bail out of placement
+      if (hasProp) { // a selected prop (any tab): Blender-style G move, R rotate, S scale, X/Y/Z lock axis, Enter confirm, Del delete
+        if (e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); eng.deleteSelectedProp(); return; }
+        if (e.key === 'Enter') { e.preventDefault(); eng.modalConfirm(); return; }
+        const gk = e.key.toLowerCase();
+        if (gk === 'g') { e.preventDefault(); eng.startModalTransform('move'); return; }
+        if (gk === 'r') { e.preventDefault(); eng.startModalTransform('rotate'); return; }
+        if (gk === 's') { e.preventDefault(); eng.startModalTransform('scale'); return; }
+        if (gk === 'x' || gk === 'y' || gk === 'z') { e.preventDefault(); eng.modalSetAxis(gk); return; }
+        return;
+      }
+      if (!tiles || e.altKey) return; // tile keybindings only while the 2D tile builder is active
+      const mode = kb.current.buildMode;
+      const k = e.key.toLowerCase();
+      if (k === 'e') { e.preventDefault(); applyBuildMode(mode === 'erase' ? 'place' : 'erase'); }
+      else if (k === 'r') {
+        e.preventDefault();
+        if (mode === 'erase') { eng.cycleEraseLayer(1); setEraseDepth(eng.eraseLayerInfo().index); }
+        else cyclePiece(e.shiftKey ? -1 : 1);
+      } else if (mode === 'place' && e.key >= '1' && e.key <= '9') { e.preventDefault(); selectPieceByNumber(Number(e.key) - 1); }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
   // single-tile floor, used when loading a saved character whose floor was a specific tile
   const pickFloor = async (name: string) => { setFloorSel(name); try { engineRef.current?.setFloor(await floorLib.texture(name), 1); } catch { /* ignore */ } };
   const pickPreset = async (name: string, tiles: string[]) => {
@@ -498,6 +677,12 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
     eng.onPlaying = setPlaying; // a one-shot clip finishing flips the play/pause button back to play
     eng.onCamMode = setCamMode; // keep the Scene-tab toggle in sync with auto-switches
     eng.onViewfinder = setViewfinder; // studio letterbox rect (CSS px)
+    eng.onHistory = (u, r) => { setCanUndo(u); setCanRedo(r); }; // enable/disable undo+redo affordances
+    eng.onPropSelect = (info) => { setSelectedProp(info); if (info) { if (isMobileRef.current) setDrawerOpen(false); else setInspectorOpen(true); setSceneOpen(false); setEquipOpen(false); } }; // desktop: open the detail popover. mobile: the bottom bar owns it, so just free the canvas
+    eng.onMarquee = (r) => setMarqueeRect(r); // shift-drag box: draw it over the canvas
+    eng.onPlacementHint = setPlaceHint; // live "will drop on: character/prop/floor" hint while placing
+    eng.onModalChange = setModalLabel; // Blender-style modal-transform status ("Move X")
+    eng.setPropMode(true); // prop clicks enabled on every tab (the engine yields to an active tile brush)
     engineRef.current = eng;
     const ro = new ResizeObserver(() => eng.resize());
     if (canvasRef.current?.parentElement) ro.observe(canvasRef.current.parentElement);
@@ -785,6 +970,7 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
         name: nm, gender: g, skin: tone || skin, thumb,
         hair: { sel: hairSelName, color: hairColorHex }, beard: { sel: beardSelName, color: beardColorHex },
         clothing: eng.clothingState(), held: eng.heldState(),
+        props: eng.propsState(), tiles: eng.tilesState(),
         scene: { bg, turntable, camPreset, studioAspect, facing, floor: floorSel, light, grid, shadow },
       };
       setPresets((pr) => ({ ...pr, [nm]: preset }));
@@ -819,6 +1005,8 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
     clothing: engineRef.current?.clothingState() ?? [],
     held: engineRef.current?.heldState() ?? [],
     bodyAttachments: (engineRef.current?.bodyAttachState() ?? []).map((b) => ({ slot: b.slotType, name: b.itemName })),
+    props: engineRef.current?.propsState() ?? [],
+    tiles: engineRef.current?.tilesState() ?? [],
     scene: { bg, turntable, camPreset, studioAspect, facing, floor: floorSel, light, grid, shadow },
   });
   // Front-35mm portrait snapshot of the current character (facing the camera), for the preset card.
@@ -902,6 +1090,9 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
       if (opt) { try { await eng.attachToBody(item, b.slot, opt.attachmentName, opt.transform); } catch { /* skip */ } }
     }
     applyScene(preset.scene);
+    await loadTiles(preset.tiles); // placed 2D tiles (build tab)
+    await loadProps(preset.props); // placed 3D props (build tab) - after the body + scene exist (bone attachments need the skeleton)
+    engineRef.current?.resetHistory(); // a loaded preset is a fresh start, not undo steps back into the old scene
     setEquipTick((t) => t + 1);
     setNowPlaying(preset.name ? `loaded ${preset.name}` : ''); // an unnamed look is the restored working char
     emitCharName(preset.name || null);
@@ -940,16 +1131,19 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
 
   // the active tab's content - rendered in the side panel on desktop, in a bottom drawer on mobile
   const panelBody = (
+    // Each tab stays MOUNTED and is toggled with display (contents when active, none when hidden) rather
+    // than conditionally rendered, so its AssetGrid keeps its search/facet/sort/scroll when you leave and
+    // come back. `display: contents` means the active pane lays out exactly as if the wrapper weren't there.
     <div style={{ flex: 1, minHeight: 0 }}>
-      {tab === 'animate' && (
+      <div style={{ display: tab === 'animate' ? 'contents' : 'none' }}>{(
         <AssetGrid<typeof clipItems[number] & GridItem>
           items={clipItems as (typeof clipItems[number] & GridItem)[]}
           facetLabel="categories"
           active={(it) => it.id === currentClipId}
           onPick={(it) => playClip(it)}
           renderThumb={(it) => <ClipThumb clip={it} thumbs={thumbs} preview={preview} />} />
-      )}
-      {tab === 'clothing' && (
+      )}</div>
+      <div style={{ display: tab === 'clothing' ? 'contents' : 'none' }}>{(
         <AssetGrid<typeof clothing[number] & GridItem>
           items={clothingShown as (typeof clothing[number] & GridItem)[]}
           facetLabel="groups"
@@ -1001,8 +1195,8 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
             </>
           )}
           renderThumb={(it) => <Thumb depKey={`c:${it.name}:${gender}:${clothOnBody}`} getUrl={() => thumbs.clothing(it, gender, clothOnBody)} />} />
-      )}
-      {tab === 'held' && (
+      )}</div>
+      <div style={{ display: tab === 'held' ? 'contents' : 'none' }}>{(
         <AssetGrid<typeof held[number] & GridItem>
           items={held as (typeof held[number] & GridItem)[]}
           facetLabel="types"
@@ -1038,8 +1232,15 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
             );
           }}
           renderThumb={(it) => <Thumb depKey={`h:${it.name}`} getUrl={() => thumbs.held(it)} />} />
-      )}
-      {tab === 'build' && (
+      )}</div>
+      <div style={{ display: tab === 'build' ? 'flex' : 'none', flexDirection: 'column', height: '100%', minHeight: 0 }}>
+        <div style={{ display: 'flex', gap: 4, padding: 6, borderBottom: '1px solid var(--line)', flexShrink: 0 }}>
+          {(['2d', '3d'] as const).map((t) => (
+            <button key={t} className="secondary" onClick={() => setBuildTab(t)}
+              style={{ flex: 1, padding: '7px 10px', fontSize: 12.5, fontWeight: 600, borderRadius: 7, cursor: 'pointer', background: buildTab === t ? 'var(--accent)' : 'transparent', color: buildTab === t ? '#fff' : 'var(--text)', border: `1px solid ${buildTab === t ? 'var(--accent)' : 'var(--line)'}` }}>{t === '2d' ? '2D Tiles' : '3D Props'}</button>
+          ))}
+        </div>
+        <div style={{ display: buildTab === '2d' ? 'flex' : 'none', flexDirection: 'column', flex: 1, minHeight: 0 }}>{(
         tileReady === 'error' || (tileReady === true && !tileLib.list().length) ? (
           <div style={{ padding: 20, color: 'var(--muted)', fontSize: 13, lineHeight: 1.55 }}>
             Building scenes from tiles reads the vanilla tile packs, which are only available from your
@@ -1059,30 +1260,61 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
               ))}
               <button className="secondary" onClick={() => engineRef.current?.clearTiles()} title="Remove every placed tile" style={{ marginLeft: 'auto', padding: '6px 12px', borderRadius: 6, border: '1px solid var(--line)' }}>Clear tiles</button>
             </div>
+            <div style={{ padding: '6px 8px', display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap', borderBottom: '1px solid var(--line)' }}>
+              <span style={{ fontSize: 11, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.05em' }}>mode</span>
+              <BuildModeChips buildMode={buildMode} rectMode={rectMode} onMode={applyBuildMode} onRect={applyRectMode} showRect={isMobile} />
+              {buildMode === 'erase' && <EraseDepthStepper depth={eraseDepth} onChange={applyEraseDepth} />}
+              <div style={{ marginLeft: 'auto' }}>
+                <HistoryButtons canUndo={canUndo} canRedo={canRedo} onUndo={() => engineRef.current?.undo()} onRedo={() => engineRef.current?.redo()} />
+              </div>
+            </div>
             <div style={{ flex: 1, minHeight: 0 }}>
               <AssetGrid<typeof tileItems[number] & GridItem>
                 key={tileCat}
                 items={tileItems as (typeof tileItems[number] & GridItem)[]}
                 facetLabel="sheets"
-                active={(it) => it.name === selectedTile}
-                onPick={(it) => setSelectedTile(it.name === selectedTile ? null : it.name)}
-                renderThumb={(it) => <Thumb depKey={`tile:${it.name}`} getUrl={() => tileLib.thumbUrl(it.name)} />} />
+                active={(it) => it.setId === selectedSet}
+                onPick={(it) => pickSet(it)}
+                renderThumb={(it) => <Thumb depKey={`grp:${it.thumbTiles.map((t) => t.tile.name).join(',')}`} getUrl={() => tileLib.compositeThumb(it.thumbTiles)} />} />
             </div>
             <div style={{ padding: '8px 12px', borderTop: '1px solid var(--line)', fontSize: 12, color: 'var(--muted)', lineHeight: 1.4 }}>
-              {selectedTileInfo ? <><b style={{ color: 'var(--text)' }}>Click the ground</b> to place. Right-click erases, drag orbits. Floors are the base; rugs, walls and furniture stack on the cell.</>
+              {selectedTileInfo ? <><b style={{ color: 'var(--text)' }}>Click or drag</b> to place. Shift before dragging fills a rectangle; Shift during a drag locks a straight line. Erase mode (or right-click) removes; the red item is what goes. Keys: <b>E</b> erase, <b>R</b> / <b>Shift+R</b> next/prev piece (in erase: cycle layer), <b>1-9</b> pick piece, <b>Ctrl+Z / Ctrl+Y</b> undo/redo. Touch: one finger acts, two fingers pan/zoom. Rugs, walls and furniture stack (a lamp goes on a table).</>
                 : 'Pick a tile, then click the ground (in the PZ-iso view) to place it.'}
             </div>
           </div>
         )
-      )}
-      {tab === 'character' && <CharacterTab hairData={hairData} gender={gender} setGender={setGender} skin={skin} tones={tones} zombieSkins={zombieSkins} skinThumbUrl={skinThumbUrl} bodyOptions={bodySources.map((b) => ({ id: b.id, label: b.label }))} bodySel={bodySourceId || bodySources[0]?.id || ''} onBody={changeBody} uvVerdict={uvVerdict} textureOptions={texSources.map((t) => ({ id: t.id, label: t.label }))} textureSel={texSourceId || texSources[0]?.id || ''} onTexture={changeTexture} onSkin={(t) => { setSkin(t); engineRef.current?.setSkin(t); }} thumbs={thumbs} hairSel={hairSel} beardSel={beardSel} hairColor={hairColor} beardColor={beardColor} matchBeard={matchBeard} onToggleMatchBeard={toggleMatchBeard} onPickPart={applyHairPart} onRecolour={recolourPart} favs={favs} onToggleFav={toggleFav} onImport={() => setImportOpen(true)} onNew={() => { void newCharacter(); }}
-        savedCount={Object.keys(presets).length} onOpenSaved={() => setPresetsOpen(true)} />}
-      {tab === 'export' && (
+      )}</div>
+        <div style={{ display: buildTab === '3d' ? 'flex' : 'none', flexDirection: 'column', flex: 1, minHeight: 0 }}>
+          {propItems.length === 0 ? (
+            <div style={{ padding: 20, color: 'var(--muted)', fontSize: 13, lineHeight: 1.55 }}>
+              Loading 3D item models needs your installed game files. Switch to <b>use my game files</b> (local mode) to browse and place props.
+            </div>
+          ) : (
+            <AssetGrid<typeof propItems[number] & GridItem>
+              items={propItems as (typeof propItems[number] & GridItem)[]}
+              facetLabel="categories"
+              active={() => false}
+              onPick={(it) => placeProp(it.rec)}
+              renderThumb={(it) => <Thumb depKey={`prop:${it.rec.item}`} getUrl={() => thumbs.prop(it.rec)} />} />
+          )}
+          <div style={{ padding: '8px 12px', borderTop: '1px solid var(--line)', display: 'flex', alignItems: 'center', gap: 14, fontSize: 12, color: 'var(--muted)' }}>
+            <span style={{ fontSize: 10, letterSpacing: '.04em' }}>NEW PROPS</span>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 4 }} title="New props start sticky-armed (a drag onto the character or another prop attaches + follows)"><input type="checkbox" checked={stickyDefault} onChange={(e) => toggleStickyDefault(e.target.checked)} />sticky</label>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 4 }} title="New props orient to the surface they are dropped on (live preview while dragging)"><input type="checkbox" checked={alignDefault} onChange={(e) => toggleAlignDefault(e.target.checked)} />align to surface</label>
+          </div>
+          <div style={{ padding: '8px 12px', borderTop: '1px solid var(--line)', fontSize: 12, color: 'var(--muted)', lineHeight: 1.4 }}>
+            Pick an item, then <b style={{ color: 'var(--text)' }}>click</b> to drop it (on the character or a prop it sticks + follows; right-click or Esc cancels). Placed props can be clicked and moved from <b style={{ color: 'var(--text)' }}>any tab</b>; select one to open its controls, then <b style={{ color: 'var(--text)' }}>G</b> move, <b style={{ color: 'var(--text)' }}>R</b> rotate, <b style={{ color: 'var(--text)' }}>S</b> scale.
+          </div>
+        </div>
+      </div>
+      <div style={{ display: tab === 'character' ? 'contents' : 'none' }}><CharacterTab hairData={hairData} gender={gender} setGender={setGender} skin={skin} tones={tones} zombieSkins={zombieSkins} skinThumbUrl={skinThumbUrl} bodyOptions={bodySources.map((b) => ({ id: b.id, label: b.label }))} bodySel={bodySourceId || bodySources[0]?.id || ''} onBody={changeBody} uvVerdict={uvVerdict} textureOptions={texSources.map((t) => ({ id: t.id, label: t.label }))} textureSel={texSourceId || texSources[0]?.id || ''} onTexture={changeTexture} onSkin={(t) => { setSkin(t); engineRef.current?.setSkin(t); }} thumbs={thumbs} hairSel={hairSel} beardSel={beardSel} hairColor={hairColor} beardColor={beardColor} matchBeard={matchBeard} onToggleMatchBeard={toggleMatchBeard} onPickPart={applyHairPart} onRecolour={recolourPart} favs={favs} onToggleFav={toggleFav} onImport={() => setImportOpen(true)} onNew={() => { void newCharacter(); }}
+        savedCount={Object.keys(presets).length} onOpenSaved={() => setPresetsOpen(true)} /></div>
+      <div style={{ display: tab === 'export' ? 'contents' : 'none' }}>{(
         <div style={{ padding: 12, overflow: 'auto', height: '100%' }}>
           <ExportSection cloud={cloud}
             studio={{ camPreset, setCamPreset, studioAspect, setStudioAspect, bg, setBg, turntable, setTurntable, gifMode, setGifMode, mp4Seconds, setMp4Seconds, exporting, runExport }} />
         </div>
-      )}
+      )}</div>
     </div>
   );
 
@@ -1134,15 +1366,21 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
           {idleClip && <button data-tour="idle" className="secondary" title="Reset to idle animation" onClick={() => playClip(idleClip)} style={{ padding: isMobile ? '9px 14px' : '4px 10px', fontSize: isMobile ? 14 : 12, lineHeight: 1, flexShrink: 0 }}>↺ Idle</button>}
         </div>
         <div style={{ position: 'absolute', right: isMobile ? 8 : 12, top: isMobile ? 8 : 12, display: 'flex', flexDirection: 'column', gap: 8, alignItems: 'flex-end' }}>
-          <div style={{ display: 'flex', gap: isMobile ? 6 : 8, alignItems: 'flex-start' }}>
-            <button className="secondary" title="Equipped items" aria-label="Equipped items" onClick={() => { setEquipOpen((v) => !v); setSceneOpen(false); }}
+          <div style={{ display: 'flex', gap: isMobile ? 6 : 8, alignItems: 'flex-start', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+            <button className="secondary" title="Equipped items" aria-label="Equipped items" onClick={() => { setEquipOpen((v) => !v); setSceneOpen(false); setInspectorOpen(false); }}
               style={{ position: 'relative', borderRadius: 6, padding: isMobile ? 0 : '7px 12px', width: isMobile ? 36 : undefined, height: isMobile ? 36 : undefined, display: isMobile ? 'grid' : undefined, placeItems: isMobile ? 'center' : undefined, fontSize: 13, lineHeight: 1, border: '1px solid var(--line)', background: equipOpen ? 'var(--accent)' : 'var(--panel)', color: equipOpen ? '#fff' : 'var(--text)' }}>
               {isMobile ? (<><ShirtIcon />{(equipList.length + bodyEquip.length) > 0 && <span style={{ position: 'absolute', top: -6, right: -6, minWidth: 16, height: 16, padding: '0 4px', borderRadius: 999, background: 'var(--accent)', color: '#fff', fontSize: 10.5, fontWeight: 700, display: 'grid', placeItems: 'center', border: '1.5px solid #0e0e13' }}>{equipList.length + bodyEquip.length}</span>}</>) : `Equipped${(equipList.length + bodyEquip.length) ? ` (${equipList.length + bodyEquip.length})` : ''}`}
             </button>
-            <button data-tour="scenebtn" className="secondary" title="Scene, lighting & floor" aria-label="Scene, lighting and floor" onClick={() => { setSceneOpen((v) => !v); setEquipOpen(false); }}
+            <button data-tour="scenebtn" className="secondary" title="Scene, lighting & floor" aria-label="Scene, lighting and floor" onClick={() => { setSceneOpen((v) => !v); setEquipOpen(false); setInspectorOpen(false); }}
               style={{ borderRadius: 6, padding: isMobile ? 0 : '7px 12px', width: isMobile ? 36 : undefined, height: isMobile ? 36 : undefined, display: isMobile ? 'grid' : undefined, placeItems: isMobile ? 'center' : undefined, fontSize: 13, lineHeight: 1, border: '1px solid var(--line)', background: sceneOpen ? 'var(--accent)' : 'var(--panel)', color: sceneOpen ? '#fff' : 'var(--text)' }}>
               {isMobile ? <SunIcon /> : 'Scene'}
             </button>
+            {selectedProp && !isMobile && (
+              <button title="Selected prop controls" aria-label="Selected prop controls" onClick={() => { setInspectorOpen((v) => !v); setSceneOpen(false); setEquipOpen(false); }}
+                style={{ borderRadius: 6, padding: isMobile ? 0 : '7px 12px', width: isMobile ? 36 : undefined, height: isMobile ? 36 : undefined, display: isMobile ? 'grid' : undefined, placeItems: isMobile ? 'center' : undefined, fontSize: 13, lineHeight: 1, border: '1px solid var(--line)', background: inspectorOpen ? 'var(--accent)' : 'var(--panel)', color: inspectorOpen ? '#fff' : 'var(--text)' }}>
+                {isMobile ? <BoxIcon /> : (selectedProp.count > 1 ? `Props (${selectedProp.count})` : 'Prop')}
+              </button>
+            )}
             <div data-tour="camera" style={{ display: 'flex', border: '1px solid var(--line)', borderRadius: 6, overflow: 'hidden', height: isMobile ? 36 : undefined }}>
               <button className="secondary" title={camMode === 'orbit' ? 'Free orbit (click again to recenter)' : 'Free orbit'} onClick={() => { if (camMode === 'orbit') recenterView(); else applyCam('orbit'); }}
                 style={{ borderRadius: 0, padding: isMobile ? 0 : '5px 11px', width: isMobile ? 36 : undefined, height: isMobile ? '100%' : undefined, display: isMobile ? 'grid' : undefined, placeItems: isMobile ? 'center' : undefined, fontSize: isMobile ? 20 : 24, lineHeight: 1, ...(isMobile ? { border: 'none' } : null), background: camMode === 'orbit' ? 'var(--accent)' : 'var(--panel)', color: camMode === 'orbit' ? '#fff' : 'var(--text)' }}>⟳</button>
@@ -1298,6 +1536,79 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
               scene={{ light, setL, grid, setGrid: (v) => { setGrid(v); engineRef.current?.setGridVisible(v); }, shadow, setShadow: (v) => { setShadow(v); engineRef.current?.setShadowVisible(v); }, onReset: resetScene }} />
           </div>
         )}
+        {/* Selected-prop inspector: same panel style as Scene/Equipped, anchored under the Prop button. */}
+        {selectedProp && inspectorOpen && (() => {
+          const sp = selectedProp;
+          const multi = sp.count > 1; // several props selected: shared actions only (texture/attachments are single-prop)
+          const secLabel: React.CSSProperties = { fontSize: 10, textTransform: 'uppercase', letterSpacing: '.05em', color: 'var(--muted)', marginBottom: 4 };
+          const btn = (accent = false, danger = false): React.CSSProperties => ({ padding: '4px 9px', fontSize: 11, borderRadius: 6, cursor: 'pointer', border: `1px solid ${danger ? '#c0392b' : accent ? 'var(--accent)' : 'var(--line)'}`, background: accent ? 'var(--accent)' : 'var(--panel)', color: danger ? '#e74c3c' : accent ? '#fff' : 'var(--text)' });
+          const chip = (active: boolean): React.CSSProperties => ({ padding: '2px 8px', fontSize: 11, borderRadius: 6, cursor: 'pointer', maxWidth: 130, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', border: '1px solid var(--line)', background: active ? 'var(--accent)' : 'var(--panel)', color: active ? '#fff' : 'var(--text)' });
+          const row: React.CSSProperties = { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', fontSize: 11, color: 'var(--muted)' };
+          const slots = heldSlots.get(sp.name);
+          const cur = (slot: string) => sp.attachments.find((a) => a.slot === slot)?.partName ?? null;
+          return (
+            <div style={{ position: 'absolute', right: isMobile ? 6 : 12, top: isMobile ? 48 : 54, width: isMobile ? 'min(300px, calc(100% - 12px))' : 280, maxHeight: '74%', overflow: 'auto', background: '#0e0e13f2', border: '1px solid var(--line)', borderRadius: 8, padding: 10 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                <span style={{ fontSize: 12, color: 'var(--text)', maxWidth: 210, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{multi ? `${sp.count} props selected` : sp.name}</span>
+                <span role="button" onClick={() => setInspectorOpen(false)} title="Close (the prop stays selected)" style={{ cursor: 'pointer', color: 'var(--muted)', padding: '0 4px' }}>✕</span>
+              </div>
+              <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
+                {!multi && <button className="secondary" onClick={() => toggleGizmo(!showGizmo)} title="Show draggable gizmo handles (otherwise use G / R / S)" style={btn(showGizmo)}>gizmos</button>}
+                <button className="secondary" onClick={() => engineRef.current?.duplicateSelectedProp()} title={multi ? 'Duplicate all selected (Ctrl+D)' : 'Duplicate (Ctrl+D)'} style={btn()}>duplicate</button>
+                <button className="secondary" onClick={() => engineRef.current?.resetSelectedProp()} title={multi ? 'Reset rotation + scale on all selected' : 'Reset rotation + scale'} style={btn()}>reset</button>
+                <button className="secondary" onClick={() => engineRef.current?.deleteSelectedProp()} title={multi ? 'Delete all selected (Del)' : 'Delete (Del)'} style={btn(false, true)}>delete</button>
+                <button className="secondary" onClick={() => engineRef.current?.selectProp(null)} title="Deselect" style={btn()}>deselect</button>
+              </div>
+              {multi && <div style={{ fontSize: 10, color: 'var(--muted)', marginTop: 6 }}>{isMobile ? 'Transforms and Select apply to all selected. Texture and attachments are single-prop.' : 'G / R / S transform all selected around their shared centre. Texture and attachments are single-prop.'}</div>}
+              {showGizmo && !multi && (
+                <div style={{ display: 'flex', gap: 5, marginTop: 6 }}>
+                  {(['translate', 'rotate', 'scale'] as const).map((m) => (
+                    <button key={m} className="secondary" onClick={() => applyGizmoMode(m)} style={btn(gizmoMode === m)}>{m === 'translate' ? 'move' : m}</button>
+                  ))}
+                </div>
+              )}
+              <div style={{ borderTop: '1px solid var(--line)', marginTop: 10, paddingTop: 9 }}>
+                <div style={secLabel}>Sticky</div>
+                <div style={row}>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: 3 }} title="When on, dragging this prop onto the character or another prop makes it stick and follow"><input type="checkbox" checked={sp.sticky} onChange={(e) => setPropSticky(e.target.checked)} />sticky</label>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: 3, opacity: sp.sticky ? 1 : 0.4 }} title="On attach, orient the prop to the surface (vs keep its current rotation)"><input type="checkbox" checked={sp.align} disabled={!sp.sticky} onChange={(e) => setPropAlign(e.target.checked)} />align</label>
+                  {multi
+                    ? <button className="secondary" onClick={detachProp} title="Release any attachments in the selection (props stay put)" style={btn()}>detach all</button>
+                    : sp.attached
+                    ? <><span style={{ color: 'var(--accent)', flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>on {sp.attached}</span><button className="secondary" onClick={detachProp} title="Release the attachment (prop stays put)" style={btn()}>detach</button></>
+                    : <span style={{ opacity: 0.6 }}>{sp.sticky ? 'drag onto a target' : 'grounded'}</span>}
+                </div>
+              </div>
+              {!multi && (
+              <div style={{ borderTop: '1px solid var(--line)', marginTop: 10, paddingTop: 9 }}>
+                <div style={secLabel}>Texture</div>
+                <div style={row}>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: 3 }}><input type="checkbox" checked={sp.texXf.flipU} onChange={(e) => applyPropTexXf({ ...sp.texXf, flipU: e.target.checked })} />flip U</label>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: 3 }}><input type="checkbox" checked={sp.texXf.flipV} onChange={(e) => applyPropTexXf({ ...sp.texXf, flipV: e.target.checked })} />flip V</label>
+                  <button className="secondary" onClick={() => applyPropTexXf({ ...sp.texXf, rot: (sp.texXf.rot + 90) % 360 })} title="rotate texture 90 degrees" style={btn()}>rot {sp.texXf.rot}</button>
+                </div>
+              </div>
+              )}
+              {!multi && slots?.length ? (
+                <div style={{ borderTop: '1px solid var(--line)', marginTop: 10, paddingTop: 9 }}>
+                  <div style={secLabel}>Attachments</div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+                    {slots.map((s) => (
+                      <div key={s.slot} style={{ display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap', fontSize: 11 }}>
+                        <span style={{ minWidth: 50, color: 'var(--text)' }}>{s.slot}</span>
+                        <button className="secondary" onClick={() => setPropAttach(s.slot, null)} style={chip(cur(s.slot) === null)}>None</button>
+                        {s.options.map((o) => (<button key={o.partName} className="secondary" title={o.partName} onClick={() => setPropAttach(s.slot, o)} style={chip(cur(s.slot) === o.partName)}>{o.partName}</button>))}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+            </div>
+          );
+        })()}
+        {marqueeRect && marqueeRect.w > 1 && marqueeRect.h > 1 && (
+          <div style={{ position: 'absolute', left: marqueeRect.x, top: marqueeRect.y, width: marqueeRect.w, height: marqueeRect.h, border: '1px solid var(--accent)', background: '#5b8cff22', pointerEvents: 'none', zIndex: 6 }} />
+        )}
         <div style={{ position: 'absolute', left: 12, bottom: 12, right: 12, display: 'flex', gap: isMobile ? 6 : 8, alignItems: 'center', background: '#000000aa', borderRadius: 8, padding: isMobile ? '6px 8px' : '6px 10px' }}>
           <button className="secondary" onClick={togglePlay} style={{ padding: isMobile ? '4px 10px' : '4px 12px', flexShrink: 0 }}>{playing ? '❚❚' : '▶'}</button>
           <button className="secondary" title="Play from the start" aria-label="Replay from start" onClick={() => { engineRef.current?.replay(); setPlaying(true); }}
@@ -1363,6 +1674,93 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
         </div>
         </>
       )}
+
+
+      {/* Placement hint: while a prop rides the cursor, show what a click will drop it onto. */}
+      {placeHint && (
+        <div style={{ position: 'fixed', top: 'calc(env(safe-area-inset-top, 0px) + 10px)', left: '50%', transform: 'translateX(-50%)', zIndex: 67, pointerEvents: 'none', display: 'flex', alignItems: 'center', gap: 8, padding: '7px 12px', fontSize: 12, background: 'var(--panel)', border: `1px solid ${placeHint === 'floor' ? 'var(--line)' : 'var(--accent)'}`, borderRadius: 999, boxShadow: '0 8px 28px #000a' }}>
+          <span style={{ color: 'var(--muted)' }}>click to place</span>
+          {placeHint === 'floor'
+            ? <span style={{ color: 'var(--text)' }}>on the floor</span>
+            : <span style={{ color: 'var(--accent)', fontWeight: 600 }}>{placeHint === 'character' ? 'on the character (sticks + follows)' : 'on the prop (sticks + follows)'}</span>}
+        </div>
+      )}
+
+      {/* Active Blender-style modal transform: status + how to confirm/cancel/lock. */}
+      {modalLabel && (
+        <div style={{ position: 'fixed', bottom: 'calc(env(safe-area-inset-bottom, 0px) + 16px)', left: '50%', transform: 'translateX(-50%)', zIndex: 67, pointerEvents: 'none', display: 'flex', alignItems: 'center', gap: 10, padding: '7px 14px', fontSize: 12, background: 'var(--panel)', border: '1px solid var(--accent)', borderRadius: 999, boxShadow: '0 8px 28px #000a' }}>
+          <span style={{ color: 'var(--accent)', fontWeight: 700 }}>{modalLabel}</span>
+          <span style={{ color: 'var(--muted)' }}>X Y Z lock axis · click or Enter confirm · Esc cancel</span>
+        </div>
+      )}
+
+      {/* Desktop: the open set's pieces as a draggable hotbar over the canvas (1-9 shortcuts), with a
+          Place/Erase toggle stacked at its left. */}
+      {!isMobile && tab === 'build' && selectedSetObj && selectedSetObj.pieces.length > 1 && (
+        <BuildHotbar set={selectedSetObj} selected={selectedTile} onPick={pickPiece} thumb={(p) => tileLib.compositeThumb(p.tiles)} buildMode={buildMode} onMode={applyBuildMode} />
+      )}
+
+      {/* Mobile build: floating undo/redo, top-left, out of the way of the camera compass (top-right). */}
+      {isMobile && tab === 'build' && !drawerOpen && (
+        <div style={{ position: 'fixed', left: 10, top: 'calc(env(safe-area-inset-top, 0px) + 10px)', zIndex: 65 }}>
+          <HistoryButtons big canUndo={canUndo} canRedo={canRedo} onUndo={() => engineRef.current?.undo()} onRedo={() => engineRef.current?.redo()} />
+        </div>
+      )}
+
+      {/* Mobile build: once a tile is picked the browser drawer collapses so the canvas is reachable.
+          A slim floating bar keeps the selected tile, the mode chips (+ erase-layer stepper), and a way back. */}
+      {isMobile && tab === 'build' && buildTab === '2d' && selectedTile && !drawerOpen && (
+        <div style={{ position: 'fixed', left: 10, right: 10, bottom: 'calc(env(safe-area-inset-bottom, 0px) + 66px)', zIndex: 65, display: 'flex', flexDirection: 'column', background: 'var(--panel)', border: '1px solid var(--line)', borderRadius: 12, boxShadow: '0 8px 28px #000a', overflow: 'hidden' }}>
+          {selectedSetObj && selectedSetObj.pieces.length > 1 && buildMode === 'place' && (
+            <PiecePicker set={selectedSetObj} selected={selectedTile} onPick={pickPiece} thumb={(p) => tileLib.compositeThumb(p.tiles)} bordered={false} />
+          )}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: 8, borderTop: selectedSetObj && selectedSetObj.pieces.length > 1 && buildMode === 'place' ? '1px solid var(--line)' : undefined }}>
+            <div style={{ width: 40, height: 40, flexShrink: 0, borderRadius: 6, overflow: 'hidden', background: '#101014', border: '1px solid var(--line)' }}>
+              {selPieceTiles ? <Thumb depKey={`grp:${selPieceTiles.map((t) => t.tile.name).join(',')}`} getUrl={() => tileLib.compositeThumb(selPieceTiles)} /> : <Thumb depKey={`tile:${selectedTile}`} getUrl={() => tileLib.thumbUrl(selectedTile)} />}
+            </div>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flex: 1, overflowX: 'auto' }}>
+              <BuildModeChips buildMode={buildMode} rectMode={rectMode} onMode={applyBuildMode} onRect={applyRectMode} showRect={isMobile} />
+              {buildMode === 'erase' && <EraseDepthStepper depth={eraseDepth} onChange={applyEraseDepth} />}
+            </div>
+            <button className="secondary" onClick={() => engineRef.current?.clearTiles()} title="Remove every placed tile" style={{ flexShrink: 0, padding: '6px 10px', borderRadius: 6, border: '1px solid var(--line)' }}>Clear</button>
+            <button className="secondary" onClick={() => setDrawerOpen(true)} style={{ flexShrink: 0, padding: '6px 12px', borderRadius: 6, border: '1px solid var(--accent)', background: 'var(--accent)', color: '#fff' }}>Tiles</button>
+          </div>
+        </div>
+      )}
+
+      {/* Mobile props: a docked bar mirroring the tile bar. Persistent on the 3D-props tab (so Select mode is
+          reachable before anything is picked) and whenever a prop is selected on any tab. Keeps the scene live. */}
+      {isMobile && !drawerOpen && (tab === 'build' ? buildTab === '3d' : !!selectedProp) && (() => {
+        const barBtn: React.CSSProperties = { flexShrink: 0, padding: '6px 10px', fontSize: 12, borderRadius: 6, border: '1px solid var(--line)', background: 'var(--panel)', color: 'var(--text)', cursor: 'pointer' };
+        const multi = (selectedProp?.count ?? 0) > 1;
+        return (
+          <div style={{ position: 'fixed', left: 10, right: 10, bottom: 'calc(env(safe-area-inset-bottom, 0px) + 66px)', zIndex: 65, display: 'flex', flexDirection: 'column', gap: 8, background: 'var(--panel)', border: '1px solid var(--line)', borderRadius: 12, boxShadow: '0 8px 28px #000a', padding: 8 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <span style={{ flex: 1, minWidth: 0, fontSize: 12, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {selectedProp ? (multi ? `${selectedProp.count} props selected` : selectedProp.name) : (selectMode ? 'Tap props or drag a box' : 'Tap a prop to select')}
+              </span>
+              {selectedProp && <>
+                <button className="secondary" onClick={() => engineRef.current?.duplicateSelectedProp()} title={multi ? 'Duplicate all selected' : 'Duplicate'} style={barBtn}>dup</button>
+                <button className="secondary" onClick={() => engineRef.current?.deleteSelectedProp()} title={multi ? 'Delete all selected' : 'Delete'} style={{ ...barBtn, color: '#e74c3c', border: '1px solid #c0392b' }}>del</button>
+                <button className="secondary" onClick={() => engineRef.current?.selectProp(null)} title="Deselect" style={barBtn}>done</button>
+              </>}
+              <button className="secondary" onClick={() => { setTab('build'); setBuildTab('3d'); setDrawerOpen(true); }} title="Browse props" style={{ ...barBtn, border: '1px solid var(--accent)', background: 'var(--accent)', color: '#fff' }}>Props</button>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+              <button className="secondary" onClick={() => toggleSelectMode(!selectMode)} title="Tap props to multi-select, or drag a box around them" style={{ ...barBtn, background: selectMode ? 'var(--accent)' : 'var(--panel)', color: selectMode ? '#fff' : 'var(--text)', border: `1px solid ${selectMode ? 'var(--accent)' : 'var(--line)'}` }}>select</button>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 11, color: camLock ? 'var(--accent)' : 'var(--muted)' }} title="Two fingers pan/zoom the camera instead of transforming the prop"><input type="checkbox" checked={camLock} onChange={(e) => toggleCamLock(e.target.checked)} />cam lock</label>
+              {selectedProp && !multi && <button className="secondary" onClick={() => { setInspectorOpen(true); setSceneOpen(false); setEquipOpen(false); }} title="Texture, attachments, sticky, reset" style={barBtn}>more</button>}
+            </div>
+            <div style={{ fontSize: 10, color: 'var(--muted)', lineHeight: 1.35 }}>
+              {selectMode
+                ? 'Tap props to add or remove, or drag a box. Turn select off to move and pose.'
+                : selectedProp
+                ? <>One finger drags{multi ? ' the group' : ''}. Two fingers twist to rotate, pinch to scale{multi ? ' around the shared centre' : ''}.</>
+                : 'Tap a prop to select it, then one finger drags and two fingers twist/pinch.'}
+            </div>
+          </div>
+        );
+      })()}
 
       {tourStep !== null && <ViewerTour steps={tourSteps} step={tourStep} onNext={advanceTour} onSkip={skipTour} />}
     </div>
@@ -1489,6 +1887,150 @@ function ClipThumb({ clip, thumbs, preview }: { clip: { id: string; rel: string;
   );
 }
 
+// Build-tool mode chips (shared by the desktop panel toolbar and the mobile compact bar): Place/Erase
+// (touch has no right-click) and a Rect toggle (touch has no shift). Desktop keeps its shortcuts too.
+function BuildModeChips({ buildMode, rectMode, onMode, onRect, showRect }: {
+  buildMode: 'place' | 'erase'; rectMode: boolean; onMode: (m: 'place' | 'erase') => void; onRect: (on: boolean) => void; showRect?: boolean;
+}) {
+  const chip = (on: boolean) => ({ padding: '6px 12px', borderRadius: 6, border: '1px solid var(--line)', background: on ? 'var(--accent)' : 'var(--panel)', color: on ? '#fff' : 'var(--text)', cursor: 'pointer' }) as const;
+  return (
+    <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+      <button className="secondary" onClick={() => onMode('place')} style={chip(buildMode === 'place')}>Place</button>
+      <button className="secondary" onClick={() => onMode('erase')} style={chip(buildMode === 'erase')}>Erase</button>
+      {/* desktop uses Shift-drag for rectangles, so the toggle is only offered on touch */}
+      {showRect && <button className="secondary" onClick={() => onRect(!rectMode)} title="Rectangle fill: drag one corner to the opposite" style={chip(rectMode)}>Rect</button>}
+    </div>
+  );
+}
+
+// Undo / redo pair. `big` renders the touch-sized floating version for phones.
+function HistoryButtons({ canUndo, canRedo, onUndo, onRedo, big }: {
+  canUndo: boolean; canRedo: boolean; onUndo: () => void; onRedo: () => void; big?: boolean;
+}) {
+  const s = big ? 22 : 15, pad = big ? 10 : 6;
+  const btn = (on: boolean) => ({ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: pad, borderRadius: 8, border: '1px solid var(--line)', background: 'var(--panel)', color: 'var(--text)', opacity: on ? 1 : 0.35, cursor: on ? 'pointer' : 'default' }) as const;
+  const arrow = (redo: boolean) => (
+    <svg width={s} height={s} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      {redo ? <><path d="M15 14l5-5-5-5" /><path d="M20 9H9a5 5 0 0 0 0 10h4" /></> : <><path d="M9 14 4 9l5-5" /><path d="M4 9h11a5 5 0 0 1 0 10H11" /></>}
+    </svg>
+  );
+  return (
+    <div style={{ display: 'flex', gap: 6 }}>
+      <button className="secondary" disabled={!canUndo} onClick={onUndo} title="Undo (Ctrl+Z)" aria-label="Undo" style={btn(canUndo)}>{arrow(false)}</button>
+      <button className="secondary" disabled={!canRedo} onClick={onRedo} title="Redo (Ctrl+Y)" aria-label="Redo" style={btn(canRedo)}>{arrow(true)}</button>
+    </div>
+  );
+}
+
+// Erase-depth stepper (phone, no hover): which stacked item to delete, counted from the top.
+function EraseDepthStepper({ depth, onChange }: { depth: number; onChange: (d: number) => void }) {
+  const btn = { padding: '6px 11px', borderRadius: 6, border: '1px solid var(--line)', background: 'var(--panel)', color: 'var(--text)', cursor: 'pointer', fontSize: 15, lineHeight: 1 } as const;
+  return (
+    <div style={{ display: 'flex', gap: 4, alignItems: 'center', flexShrink: 0 }} title="Which stacked item to delete, from the top">
+      <span style={{ fontSize: 11, color: 'var(--muted)' }}>layer</span>
+      <button className="secondary" onClick={() => onChange(depth - 1)} style={btn}>-</button>
+      <span style={{ fontSize: 12, minWidth: 38, textAlign: 'center', whiteSpace: 'nowrap' }}>{depth === 0 ? 'top' : `top-${depth}`}</span>
+      <button className="secondary" onClick={() => onChange(depth + 1)} style={btn}>+</button>
+    </div>
+  );
+}
+
+// The pieces of the selected wall set (N/W walls, corner, pillar, window + door frames): pick which one
+// to place while keeping the same material/colour. A horizontal strip of labelled thumbnails.
+function PiecePicker({ set, selected, onPick, thumb, bordered = true, numbered = false, orientation = 'row' }: {
+  set: TileSet; selected: string | null; onPick: (name: string) => void; thumb: (p: TilePiece) => Promise<string>; bordered?: boolean; numbered?: boolean; orientation?: 'row' | 'column';
+}) {
+  const col = orientation === 'column';
+  return (
+    <div style={{ padding: 8, borderTop: bordered ? '1px solid var(--line)' : undefined, display: 'flex', flexDirection: col ? 'column' : 'row', gap: 6, overflowX: col ? undefined : 'auto', overflowY: col ? 'auto' : undefined, alignItems: col ? 'center' : 'flex-end' }}>
+      {set.pieces.map((p, i) => {
+        const on = selected === p.tile.name;
+        return (
+          <button key={p.tile.name} className="secondary" onClick={() => onPick(p.tile.name)} title={numbered && i < 9 ? `${p.label} (${i + 1})` : p.label}
+            style={{ position: 'relative', flexShrink: 0, width: 62, padding: 4, borderRadius: 6, border: `1px solid ${on ? 'var(--accent)' : 'var(--line)'}`, background: on ? '#5b8cff22' : '#14141a', display: 'flex', flexDirection: 'column', gap: 3, cursor: 'pointer' }}>
+            <div style={{ width: '100%', height: 48, background: '#101014', borderRadius: 4, overflow: 'hidden' }}>
+              <Thumb depKey={`grp:${p.tiles.map((t) => t.tile.name).join(',')}`} getUrl={() => thumb(p)} />
+            </div>
+            {numbered && i < 9 && <span style={{ position: 'absolute', top: 2, left: 2, fontSize: 9, fontWeight: 700, background: '#000a', color: '#fff', borderRadius: 3, padding: '0 4px', lineHeight: '14px' }}>{i + 1}</span>}
+            <div style={{ fontSize: 9.5, textAlign: 'center', color: on ? 'var(--text)' : 'var(--muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{p.label}</div>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+// Desktop place-mode hotbar: the open set's pieces as a draggable bar floating over the canvas, numbered
+// to match the 1-9 shortcuts. Its position is remembered; default is bottom-centre.
+function BuildHotbar({ set, selected, onPick, thumb, buildMode, onMode }: {
+  set: TileSet; selected: string | null; onPick: (name: string) => void; thumb: (p: TilePiece) => Promise<string>;
+  buildMode: 'place' | 'erase'; onMode: (m: 'place' | 'erase') => void;
+}) {
+  const [pos, setPos] = useState<{ x: number; y: number } | null>(() => { try { return JSON.parse(localStorage.getItem('pz-hotbar-pos') || 'null'); } catch { return null; } });
+  const [dragging, setDragging] = useState(false);
+  const [hovered, setHovered] = useState(false);
+  const [open, setOpen] = useState(false); // settings popout
+  const grab = useRef<{ dx: number; dy: number } | null>(null);
+  useEffect(() => { if (pos) try { localStorage.setItem('pz-hotbar-pos', JSON.stringify(pos)); } catch { /* ignore */ } }, [pos]);
+  const onDown = (e: React.PointerEvent) => {
+    const box = (e.currentTarget.parentElement as HTMLElement).getBoundingClientRect();
+    grab.current = { dx: e.clientX - box.left, dy: e.clientY - box.top }; setDragging(true);
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+  };
+  const onMove = (e: React.PointerEvent) => {
+    if (!grab.current) return;
+    setPos({ x: Math.max(4, Math.min(window.innerWidth - 90, e.clientX - grab.current.dx)), y: Math.max(4, Math.min(window.innerHeight - 40, e.clientY - grab.current.dy)) });
+  };
+  const onUp = () => { grab.current = null; setDragging(false); };
+  const [cfg, setCfg] = useState<{ autoFade: boolean; vertical: boolean }>(() => { try { return { autoFade: false, vertical: false, ...JSON.parse(localStorage.getItem('pz-hotbar-cfg') || '{}') }; } catch { return { autoFade: false, vertical: false }; } });
+  useEffect(() => { try { localStorage.setItem('pz-hotbar-cfg', JSON.stringify(cfg)); } catch { /* ignore */ } }, [cfg]);
+  const vert = cfg.vertical;
+  const place: React.CSSProperties = pos ? { left: pos.x, top: pos.y } : (vert ? { left: 16, top: '50%', transform: 'translateY(-50%)' } : { left: '50%', bottom: 22, transform: 'translateX(-50%)' });
+  const faded = cfg.autoFade && !hovered && !dragging && !open;
+  const trailing = vert ? { borderBottom: '1px solid var(--line)' } : { borderRight: '1px solid var(--line)' };
+  const modeBtn = (on: boolean, last = false) => ({ display: 'flex', alignItems: 'center', justifyContent: 'center', flex: 1, padding: '5px 8px', border: 'none', ...(last ? {} : (vert ? { borderRight: '1px solid var(--line)' } : { borderBottom: '1px solid var(--line)' })), background: on ? 'var(--accent)' : 'transparent', color: on ? '#fff' : 'var(--muted)', cursor: 'pointer' }) as const;
+  const toggle = (label: string, val: boolean, set: () => void) => (
+    <button onClick={set} style={{ display: 'flex', width: '100%', alignItems: 'center', gap: 9, padding: '7px 6px', background: 'transparent', border: 'none', color: 'var(--text)', cursor: 'pointer', fontSize: 12.5, textAlign: 'left' }}>
+      <span style={{ width: 16, height: 16, flexShrink: 0, borderRadius: 4, border: `1px solid ${val ? 'var(--accent)' : 'var(--line)'}`, background: val ? 'var(--accent)' : 'transparent', display: 'grid', placeItems: 'center', color: '#fff' }}>{val && <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6 9 17l-5-5" /></svg>}</span>
+      {label}
+    </button>
+  );
+  return (
+    <div onPointerEnter={() => setHovered(true)} onPointerLeave={() => setHovered(false)}
+      style={{ position: 'fixed', zIndex: 60, maxWidth: vert ? undefined : 'calc(100vw - 16px)', maxHeight: vert ? 'calc(100vh - 16px)' : undefined, display: 'flex', flexDirection: vert ? 'column' : 'row', alignItems: 'stretch', background: 'var(--panel)', border: '1px solid var(--line)', borderRadius: 10, boxShadow: '0 8px 28px #000a', opacity: faded ? 0.25 : 1, transition: 'opacity .18s ease', ...place }}>
+      <div onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp} title="Drag to move"
+        style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: vert ? '5px 0' : '0 7px', cursor: 'grab', color: 'var(--muted)', touchAction: 'none', ...trailing }}>
+        <svg width={vert ? 18 : 8} height={vert ? 8 : 18} viewBox={vert ? '0 0 18 8' : '0 0 8 18'} fill="currentColor" aria-hidden="true">{vert ? <><circle cx="3" cy="2" r="1.3" /><circle cx="3" cy="6" r="1.3" /><circle cx="9" cy="2" r="1.3" /><circle cx="9" cy="6" r="1.3" /><circle cx="15" cy="2" r="1.3" /><circle cx="15" cy="6" r="1.3" /></> : <><circle cx="2" cy="3" r="1.3" /><circle cx="6" cy="3" r="1.3" /><circle cx="2" cy="9" r="1.3" /><circle cx="6" cy="9" r="1.3" /><circle cx="2" cy="15" r="1.3" /><circle cx="6" cy="15" r="1.3" /></>}</svg>
+      </div>
+      {/* Place / Erase / settings, perpendicular to the bar, at the left (or top) of the first piece */}
+      <div style={{ display: 'flex', flexDirection: vert ? 'row' : 'column', ...trailing }}>
+        <button onClick={() => onMode('place')} title="Place (E)" aria-label="Place" style={modeBtn(buildMode === 'place')}>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M9.06 11.9l8.07-8.06a2.85 2.85 0 1 1 4.03 4.03l-8.06 8.08" /><path d="M7.07 14.94c-1.66 0-3 1.35-3 3.02 0 1.33-2.5 1.52-2 2.02 1.08 1.1 2.49 2.02 4 2.02 2.2 0 4-1.8 4-4.04a3.01 3.01 0 0 0-3-3.02z" /></svg>
+        </button>
+        <button onClick={() => onMode('erase')} title="Erase (E)" aria-label="Erase" style={modeBtn(buildMode === 'erase')}>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m7 21-4.3-4.3c-1-1-1-2.5 0-3.4l9.6-9.6c1-1 2.5-1 3.4 0l5.6 5.6c1 1 1 2.5 0 3.4L13 21" /><path d="M22 21H7" /><path d="m5 11 9 9" /></svg>
+        </button>
+        <button onClick={() => setOpen((o) => !o)} title="Hotbar settings" aria-label="Hotbar settings" style={modeBtn(open, true)}>
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" /></svg>
+        </button>
+      </div>
+      <div style={{ display: 'flex', minHeight: 0, minWidth: 0, opacity: buildMode === 'erase' ? 0.5 : 1 }}>
+        <PiecePicker set={set} selected={selected} onPick={onPick} thumb={thumb} bordered={false} numbered orientation={vert ? 'column' : 'row'} />
+      </div>
+      {open && (
+        <>
+          <div onClick={() => setOpen(false)} style={{ position: 'fixed', inset: 0, zIndex: 59 }} />
+          <div style={{ position: 'absolute', zIndex: 61, ...(vert ? { left: '100%', top: 0, marginLeft: 8 } : { bottom: '100%', left: 0, marginBottom: 8 }), width: 210, background: 'var(--panel)', border: '1px solid var(--line)', borderRadius: 8, boxShadow: '0 8px 28px #000a', padding: 6 }}>
+            <div style={{ fontSize: 11, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.05em', padding: '2px 6px 4px' }}>Hotbar</div>
+            {toggle('Auto-fade when idle', cfg.autoFade, () => setCfg((c) => ({ ...c, autoFade: !c.autoFade })))}
+            {toggle('Vertical bar', cfg.vertical, () => setCfg((c) => ({ ...c, vertical: !c.vertical })))}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 // 3x3 compass; degrees are the character's Y facing. Positions are rotated one step
 // clockwise from the cardinal layout so the buttons line up with what's seen in the viewer.
 const FACING_GRID: ([string, number] | null)[] = [
@@ -1536,13 +2078,23 @@ function SceneControls({ floorSel, onPreset, onClear, scene }: {
 }) {
   const { light, setL, grid, setGrid, shadow, setShadow } = scene;
   const label = { color: 'var(--muted)', fontSize: 11, textTransform: 'uppercase', letterSpacing: '.05em', display: 'block', margin: '12px 0 6px' } as const;
-  const slider = (k: keyof Light, name: string, min: number, max: number) => (
-    <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 5 }}>
-      <span style={{ width: 62, fontSize: 12, color: 'var(--muted)' }}>{name}</span>
-      <input type="range" min={min} max={max} step={0.01} value={light[k]} onChange={(e) => setL(k, Number(e.target.value))} style={{ flex: 1, accentColor: '#5b8cff' }} />
-      <span style={{ width: 34, fontSize: 11, textAlign: 'right', fontFamily: 'monospace', color: 'var(--muted)' }}>{light[k].toFixed(2)}</span>
-    </div>
-  );
+  const slider = (k: keyof Light, name: string, min: number, max: number) => {
+    const atDefault = Math.abs(light[k] - LIGHT_DEFAULT[k]) < 1e-6;
+    return (
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 5 }}>
+        <span style={{ width: 62, fontSize: 12, color: 'var(--muted)' }}>{name}</span>
+        <input type="range" min={min} max={max} step={0.01} value={light[k]} onChange={(e) => setL(k, Number(e.target.value))} style={{ flex: 1, accentColor: '#5b8cff' }} />
+        <span style={{ width: 34, fontSize: 11, textAlign: 'right', fontFamily: 'monospace', color: 'var(--muted)' }}>{light[k].toFixed(2)}</span>
+        <button className="secondary" onClick={() => setL(k, LIGHT_DEFAULT[k])} disabled={atDefault}
+          title={`Reset ${name} to ${LIGHT_DEFAULT[k]}`} aria-label={`Reset ${name}`}
+          style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 3, opacity: atDefault ? 0.3 : 1, cursor: atDefault ? 'default' : 'pointer' }}>
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M3 12a9 9 0 1 0 3-6.7" /><path d="M3 4v4h4" />
+          </svg>
+        </button>
+      </div>
+    );
+  };
   const toggle = (on: boolean) => ({ padding: '6px 12px', fontSize: 12, background: on ? 'var(--accent)' : 'var(--panel)', color: on ? '#fff' : 'var(--text)' }) as const;
   return (
     <div>

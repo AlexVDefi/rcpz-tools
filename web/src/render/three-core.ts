@@ -123,7 +123,9 @@ export function makeOrbit(getCamera: () => THREE.Camera, dom: HTMLElement, targe
   let lastX = 0, lastY = 0;
   // lockRotate: while the scene builder is active, left-drag must NOT rotate/leave the iso camera (it
   // places tiles instead) - but right-drag pan and wheel zoom stay live.
-  const api = { state, apply, setTarget, dispose, lockRotate: false, onInteract: undefined as (() => void) | undefined, onAdjust: undefined as (() => void) | undefined };
+  // suspendTouch: the engine claims a touch (e.g. a two-finger prop rotate/scale) so the camera ignores it.
+  // Queried by finger count at gesture start so one-finger orbit on empty space still works.
+  const api = { state, apply, setTarget, dispose, lockRotate: false, enabled: true, onInteract: undefined as (() => void) | undefined, onAdjust: undefined as (() => void) | undefined, suspendTouch: undefined as ((touchCount: number) => boolean) | undefined };
 
   function apply() {
     const camera = getCamera() as THREE.PerspectiveCamera & THREE.OrthographicCamera & { __aspect?: number };
@@ -156,6 +158,7 @@ export function makeOrbit(getCamera: () => THREE.Camera, dom: HTMLElement, targe
   }
 
   const onDown = (e: MouseEvent) => {
+    if (!api.enabled) return; // suspended while dragging a 3D prop / its gizmo
     if (e.button === 2) { mode = 'pan'; e.preventDefault(); } // pan keeps the current (e.g. iso) camera
     else if (e.button === 0 && !api.lockRotate) { mode = 'rotate'; api.onInteract?.(); } // only rotating leaves a locked camera
     else return; // left-button while lockRotate: leave it to the tile placer (no orbit action)
@@ -171,6 +174,7 @@ export function makeOrbit(getCamera: () => THREE.Camera, dom: HTMLElement, targe
     else pan(dx, dy);
   };
   const onWheel = (e: WheelEvent) => {
+    if (!api.enabled) return;
     e.preventDefault();
     api.onAdjust?.();
     state.radius = Math.max(0.6, Math.min(8, state.radius * (1 + Math.sign(e.deltaY) * 0.1)));
@@ -183,6 +187,8 @@ export function makeOrbit(getCamera: () => THREE.Camera, dom: HTMLElement, targe
   // sets touch-action:none so these gestures don't scroll/zoom the page.
   let pinch = 0;
   const onTouchStart = (e: TouchEvent) => {
+    if (!api.enabled) return;
+    if (api.suspendTouch?.(e.touches.length)) { mode = 'none'; return; } // the engine owns this gesture (e.g. two-finger prop transform)
     api.onAdjust?.();
     if (e.touches.length === 1 && !api.lockRotate) { mode = 'rotate'; api.onInteract?.(); lastX = e.touches[0].clientX; lastY = e.touches[0].clientY; }
     else if (e.touches.length >= 2) {
@@ -194,6 +200,7 @@ export function makeOrbit(getCamera: () => THREE.Camera, dom: HTMLElement, targe
   };
   const onTouchMove = (e: TouchEvent) => {
     if (mode === 'none') return;
+    if (!api.enabled || api.suspendTouch?.(e.touches.length)) { mode = 'none'; return; } // stop if a prop grab/gesture took over mid-move
     e.preventDefault();
     if (e.touches.length === 1 && mode === 'rotate') {
       const dx = e.touches[0].clientX - lastX, dy = e.touches[0].clientY - lastY;
@@ -211,7 +218,10 @@ export function makeOrbit(getCamera: () => THREE.Camera, dom: HTMLElement, targe
   };
   const onTouchEnd = (e: TouchEvent) => {
     if (e.touches.length === 0) { mode = 'none'; pinch = 0; }
-    else if (e.touches.length === 1) { mode = 'rotate'; lastX = e.touches[0].clientX; lastY = e.touches[0].clientY; }
+    // lifting from two fingers to one: only resume rotate if the camera isn't locked (in build mode the
+    // leftover finger must not rotate the iso view - the tile placer owns single-finger input there)
+    else if (e.touches.length === 1 && !api.lockRotate && !api.suspendTouch?.(1)) { mode = 'rotate'; lastX = e.touches[0].clientX; lastY = e.touches[0].clientY; }
+    else if (e.touches.length === 1) { mode = 'none'; }
   };
 
   dom.addEventListener('mousedown', onDown);

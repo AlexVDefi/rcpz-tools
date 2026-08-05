@@ -66,6 +66,7 @@ export function parseMod(index, opts = {}) {
     const model = models.get(stripModule(modelName).toLowerCase());
     records.push({
       item: it.name, icon, baseIcon: icon, variant: 'base', modelField, modelName,
+      displayCategory: prop(it.block, 'DisplayCategory') || 'Other',
       mesh: model ? model.mesh : null, textureName: model ? model.texture : null,
       scale: model ? model.scale : 1,
       isCookable: String(prop(it.block, 'IsCookable') || '').trim().toLowerCase() === 'true',
@@ -99,16 +100,19 @@ export function parseMod(index, opts = {}) {
 
 /** Async: resolve a record's mesh (-> glb bytes) + texture (-> png bytes). */
 export async function resolveIconAssets(ctx, rec) {
-  const out = { item: rec.item, icon: rec.icon, meshGlb: null, texture: null, scale: rec.scale, issues: [] };
+  const out = { item: rec.item, icon: rec.icon, meshGlb: null, texture: null, scale: rec.scale, subMesh: null, issues: [] };
   if (!rec.icon) out.issues.push('item has no Icon field');
   if (!rec.hasModelBlock && !rec.mesh) { out.issues.push(`model block "${rec.modelName}" not found`); return out; }
 
   const m = rec.mesh ? await ctx.resolver.resolveMesh(rec.mesh) : null;
-  if (m && !m.unsupported) out.meshGlb = await ctx.converter.convertToGlb(await m.src.readBytes(m.realPath), m.format);
+  if (m && !m.unsupported) { out.meshGlb = await ctx.converter.convertToGlb(await m.src.readBytes(m.realPath), m.format); out.subMesh = m.subMesh || null; } // modular file: which part to keep
   else if (m && m.unsupported) out.issues.push(`mesh "${rec.mesh}" is a ${m.format} mesh (unsupported)`);
   else if (rec.mesh) out.issues.push(`no mesh media/models_x/${String(rec.mesh).toLowerCase()}.fbx|.x`);
 
-  const tHit = rec.textureName ? await ctx.resolver.resolveTexture(rec.textureName) : null;
+  // texture: the model's texture field, else a texture named after the mesh (weapons often omit the field;
+  // this mirrors resolveHeldItem + the game, which falls back to the mesh-named .png)
+  let tHit = rec.textureName ? await ctx.resolver.resolveTexture(rec.textureName) : null;
+  if (!tHit && rec.mesh) tHit = await ctx.resolver.resolveTexture(rec.mesh);
   if (tHit) out.texture = await tHit.src.readBytes(tHit.realPath);
   else if (rec.textureName) out.issues.push(`no texture media/textures/${String(rec.textureName).toLowerCase()}.png`);
 

@@ -78,25 +78,62 @@ export async function exportGif(eng: ExportEngine, w: number, h: number, bg: BgC
   const delay = clipLoop
     ? Math.max(20, Math.round((dur / speed / frames) * 1000))         // whole loop lasts dur/speed seconds
     : Math.round(1000 / opts.fps);
+  const seekTo = (p: number) => {
+    if (opts.content === 'turntable') eng.setSpinAngle(p * Math.PI * 2);
+    else if (clipLoop) eng.seek(p);                                    // clip time = p*dur; last frame is just before the seam
+    else eng.seek(((p * opts.seconds) % dur) / dur);
+  };
   try {
+    // Pass 1: render + composite every frame, keep its pixels. We build ONE palette shared by all frames
+    // (a per-frame palette drifts between frames -> colour flicker, and can drop the transparent entry ->
+    // a black box in that frame). One palette = stable colours and one consistent transparent index.
+    const framesData: Uint8ClampedArray[] = [];
     for (let i = 0; i < frames; i++) {
-      const p = i / frames;
-      if (opts.content === 'turntable') eng.setSpinAngle(p * Math.PI * 2);
-      else if (clipLoop) eng.seek(p);                                  // clip time = p*dur; last frame is just before the seam
-      else eng.seek(((p * opts.seconds) % dur) / dur);
+      seekTo(i / frames);
       eng.renderFrame();
       composite(ctx, w, h, eng, bg);
-      const { data } = ctx.getImageData(0, 0, w, h);
-      const palette = quantize(data, 256, { format });
-      const index = applyPalette(data, palette, format);
-      const tIndex = transparent ? palette.findIndex((c) => c[3] === 0) : -1;
-      gif.writeFrame(index, w, h, { palette, delay, transparent: tIndex >= 0, transparentIndex: tIndex >= 0 ? tIndex : 0 });
-      opts.onProgress?.((i + 1) / frames);
+      framesData.push(ctx.getImageData(0, 0, w, h).data);
+      opts.onProgress?.(((i + 1) / frames) * 0.6);
       if (i % 4 === 0) await new Promise((r) => setTimeout(r, 0)); // yield so the UI can paint progress
+    }
+    // One global palette from a subsample of all frames. oneBitAlpha keeps transparency crisp + reserves a
+    // real transparent entry, so every frame shares the same transparent index (no stray black frame).
+    const sample = sampleFrames(framesData, w * h);
+    const qopts = (transparent ? { format, oneBitAlpha: true } : { format }) as Parameters<typeof quantize>[2];
+    let palette = quantize(sample, 256, qopts);
+    let tIndex = -1;
+    if (transparent) {
+      tIndex = palette.findIndex((c) => c[3] === 0);
+      if (tIndex < 0) { if (palette.length >= 256) palette = palette.slice(0, 255); palette = [...palette, [0, 0, 0, 0]]; tIndex = palette.length - 1; }
+    }
+    // Pass 2: apply the shared palette to every frame
+    for (let i = 0; i < frames; i++) {
+      const index = applyPalette(framesData[i], palette, format);
+      gif.writeFrame(index, w, h, { palette, delay, transparent: tIndex >= 0, transparentIndex: tIndex >= 0 ? tIndex : 0 });
+      opts.onProgress?.(0.6 + ((i + 1) / frames) * 0.4);
+      if (i % 8 === 0) await new Promise((r) => setTimeout(r, 0));
     }
     gif.finish();
     return new Blob([gif.bytes() as unknown as BlobPart], { type: 'image/gif' });
   } finally { restore(); }
+}
+
+// Subsample pixels across every frame (capped) so the single quantise stays fast but representative.
+function sampleFrames(frames: Uint8ClampedArray[], perFramePx: number): Uint8ClampedArray {
+  const MAX = 1 << 18; // ~262k sample pixels is plenty for a 256-colour palette
+  const total = frames.length * perFramePx;
+  const stride = Math.max(1, Math.floor(total / MAX));
+  const out = new Uint8ClampedArray(Math.ceil(total / stride) * 4);
+  let o = 0, g = 0;
+  for (const fd of frames) {
+    for (let px = 0; px < perFramePx; px++, g++) {
+      if (g % stride) continue;
+      const si = px << 2, di = o << 2;
+      out[di] = fd[si]; out[di + 1] = fd[si + 1]; out[di + 2] = fd[si + 2]; out[di + 3] = fd[si + 3];
+      o++;
+    }
+  }
+  return out.subarray(0, o << 2);
 }
 
 function pickVideoMime(): string {

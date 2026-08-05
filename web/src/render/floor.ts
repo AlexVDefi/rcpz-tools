@@ -71,7 +71,7 @@ export class FloorLibrary {
     const rec = this.recs.get(name); if (!rec) return null;
     const tex = new THREE.CanvasTexture(this.deshear(await this.pageImage(rec.page), rec.tile, TEX_SIZE));
     tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
-    tex.colorSpace = THREE.NoColorSpace;
+    tex.colorSpace = THREE.SRGBColorSpace; // atlas is sRGB; linearise on sample so it isn't double-gamma bright (matches build-tab tiles)
     tex.magFilter = THREE.NearestFilter;
     tex.minFilter = THREE.NearestFilter; // crisp pixel grass like the game (no mipmap/bilinear blur)
     tex.generateMipmaps = false;
@@ -137,7 +137,7 @@ export class FloorLibrary {
     }
     const tex = new THREE.CanvasTexture(big);
     tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
-    tex.colorSpace = THREE.NoColorSpace;
+    tex.colorSpace = THREE.SRGBColorSpace; // atlas is sRGB; linearise on sample so it isn't double-gamma bright (matches build-tab tiles)
     tex.magFilter = THREE.NearestFilter;
     tex.minFilter = THREE.NearestFilter; // crisp pixel grass like the game (no mipmap/bilinear blur)
     tex.generateMipmaps = false;

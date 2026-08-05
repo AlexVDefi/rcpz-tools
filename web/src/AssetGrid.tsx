@@ -79,6 +79,13 @@ export function AssetGrid<T extends GridItem>({
     ro.observe(el); setWidth(el.clientWidth);
     return () => ro.disconnect();
   }, []);
+  // When a hidden tab pane (display:none, clientWidth 0) is shown again, the parent re-renders (tab
+  // changed) so this bare layout effect measures the now-real width synchronously before paint - no
+  // one-frame flash at the width=0 fallback card size while the ResizeObserver catches up.
+  useLayoutEffect(() => {
+    const el = scrollRef.current;
+    if (el && el.clientWidth && el.clientWidth !== width) setWidth(el.clientWidth);
+  });
 
   const setCols = (n: number) => { setColPref(n); localStorage.setItem('pz-grid-cols', String(n)); };
   const cols = Math.max(1, colPref);

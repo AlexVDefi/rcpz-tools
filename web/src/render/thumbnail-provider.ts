@@ -4,7 +4,7 @@
 import { ThumbnailRenderer, type Ctx, type IdleClip } from './thumbnail-renderer';
 import { idbCache } from '../platform/idb';
 
-const VERSION = 10; // bump to invalidate all cached thumbnails (v10: held-item texture flipY fix)
+const VERSION = 12; // bump to invalidate all cached thumbnails (v12: props isolate modular sub-mesh + mesh-named texture fallback)
 const HAIR_TINT = [0.353, 0.227, 0.125]; // neutral brown (#5a3a20) so hair/beard shapes read
 
 export class ThumbnailProvider {
@@ -38,6 +38,10 @@ export class ThumbnailProvider {
 
   held(item: { name: string }): Promise<string> {
     return this.resolveKey(`thumb:held:${item.name}:v${VERSION}`, () => this.renderer.heldThumb(item));
+  }
+
+  prop(rec: { item: string; mesh: string | null; textureName: string | null; scale: number; hasModelBlock: boolean }): Promise<string> {
+    return this.resolveKey(`thumb:prop:${rec.item}:v${VERSION}`, () => this.renderer.propThumb(rec));
   }
 
   hair(style: { name: string; model?: string; texture?: string }, kind: 'hair' | 'beard', gender: 'male' | 'female'): Promise<string> {

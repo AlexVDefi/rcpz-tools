@@ -412,18 +412,12 @@ export function App() {
   }, []);
 
   const toggleMod = (key: string) => setActiveKeys((ks) => ks.includes(key) ? ks.filter((k) => k !== key) : [...ks, key]);
-  const addAllMods = () => setActiveKeys(mods.map((m) => m.key));
-  const clearMods = () => setActiveKeys([]);
-  const moveMod = (key: string, dir: -1 | 1) => setActiveKeys((ks) => {
-    const i = ks.indexOf(key); const j = i + dir;
-    if (i < 0 || j < 0 || j >= ks.length) return ks;
-    const next = ks.slice(); [next[i], next[j]] = [next[j], next[i]]; return next;
+  // enable/disable a batch (Select all / Deselect all in the mods panel); enabling appends in the given order
+  const setManyModsLocal = (keys: string[], enabled: boolean) => setActiveKeys((ks) => {
+    if (enabled) { const have = new Set(ks); return [...ks, ...keys.filter((k) => !have.has(k))]; }
+    const rm = new Set(keys); return ks.filter((k) => !rm.has(k));
   });
   const applyMods = () => { if (installHandle) rebuild(installHandle, activeMods); };
-
-  const [modFilter, setModFilter] = useState('');
-  const inactiveAll = mods.filter((m) => !activeKeys.includes(m.key));
-  const inactiveMods = inactiveAll.filter((m) => !modFilter || m.name.toLowerCase().includes(modFilter.toLowerCase()));
   const wide = view === 'character' && index != null;
 
   const firstRun = !installHandle && !counts;
@@ -675,49 +669,17 @@ export function App() {
 
           {mods.length > 0 && assetSource !== 'hosted' && (
             <div className="card">
-              <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginBottom: 12, flexWrap: 'wrap' }}>
-                <b style={{ fontSize: 13 }}>Mods</b>
-                <span style={{ color: 'var(--muted)', fontSize: 12 }}>{activeMods.length} of {mods.length} active · top of the list overrides those below and vanilla</span>
-                <span style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
-                  <button className="secondary" onClick={addAllMods} disabled={phase === 'scanning'} style={{ padding: '5px 11px', fontSize: 12 }}>Add all</button>
-                  <button className="secondary" onClick={clearMods} disabled={phase === 'scanning'} style={{ padding: '5px 11px', fontSize: 12 }}>Clear</button>
-                  <button onClick={applyMods} disabled={!installHandle || phase === 'scanning'} style={{ padding: '5px 13px' }}>Apply & rescan</button>
-                </span>
-              </div>
-
-              <div className="modlabel" style={{ marginBottom: 6 }}>Active</div>
-              <div style={{ maxHeight: 220, overflow: 'auto', display: 'grid', gap: 4 }}>
-                {activeMods.map((m, i) => (
-                  <div key={m.key} className="modrow">
-                    <div style={{ display: 'flex', gap: 3 }}>
-                      <button className="iconbtn" onClick={() => moveMod(m.key, -1)} disabled={i === 0} title="move up">↑</button>
-                      <button className="iconbtn" onClick={() => moveMod(m.key, 1)} disabled={i === activeMods.length - 1} title="move down">↓</button>
-                    </div>
-                    <ModName mod={m} />
-                    <button className="iconbtn danger" onClick={() => toggleMod(m.key)} title="remove"><TrashIcon /></button>
-                  </div>
-                ))}
-                {!activeMods.length && <div style={{ color: 'var(--muted)', fontSize: 12.5, padding: '10px 4px' }}>No active mods yet. Add some from the list below.</div>}
-              </div>
-
-              {inactiveAll.length > 0 && (
-                <>
-                  <div style={{ display: 'flex', gap: 8, alignItems: 'center', margin: '14px 0 6px' }}>
-                    <span className="modlabel">Available</span>
-                    <input value={modFilter} onChange={(e) => setModFilter(e.target.value)} placeholder="filter…"
-                      style={{ marginLeft: 'auto', width: 170, background: '#14141a', color: 'var(--text)', border: '1px solid var(--line)', borderRadius: 6, padding: '5px 8px', fontSize: 12 }} />
-                  </div>
-                  <div style={{ maxHeight: 200, overflow: 'auto', display: 'grid', gap: 4 }}>
-                    {inactiveMods.map((m) => (
-                      <div key={m.key} className="modrow">
-                        <ModName mod={m} />
-                        <button className="iconbtn add" onClick={() => toggleMod(m.key)} title="add">+</button>
-                      </div>
-                    ))}
-                    {!inactiveMods.length && <div style={{ color: 'var(--muted)', fontSize: 12.5, padding: '10px 4px' }}>No mods match “{modFilter}”.</div>}
-                  </div>
-                </>
-              )}
+              {(() => {
+                const busy = phase === 'scanning';
+                const tab: ModTab = {
+                  key: 'local', label: 'Mods', title: 'Mods',
+                  onToggle: toggleMod, onSetMany: setManyModsLocal, onLabel: 'Active', offLabel: 'Inactive',
+                  items: mods.map((m) => ({ id: m.key, title: m.name, author: m.author, enabled: activeKeys.includes(m.key), poster: m.poster })),
+                  note: <>{activeMods.length} of {mods.length} active. Enable the mods whose content you want layered over vanilla, then rescan. Earlier-enabled mods override later ones.</>,
+                  controls: <button onClick={applyMods} disabled={!installHandle || busy} style={{ padding: '6px 12px', fontSize: 12.5 }}>Apply &amp; rescan</button>,
+                };
+                return <ModsPanel tabs={[tab]} busy={busy} divided={false} />;
+              })()}
             </div>
           )}
 
@@ -1133,25 +1095,6 @@ function SafetyInfo() {
   );
 }
 
-const TrashIcon = () => (
-  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
-    <path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14M10 11v5M14 11v5" />
-  </svg>
-);
-
-// One mod row's label: name on top, author (from mod.info) below. The second line is always
-// reserved so rows keep a consistent height whether or not an author is known.
-function ModName({ mod }: { mod: DiscoveredMod }) {
-  const ellip = { whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' } as const;
-  return (
-    <div style={{ flex: 1, minWidth: 0 }}>
-      <div style={{ fontSize: 13, ...ellip }}>{mod.name}</div>
-      <div style={{ fontSize: 11, color: 'var(--muted)', minHeight: 14, ...ellip }}>{mod.author ? 'by ' + mod.author : ''}</div>
-    </div>
-  );
-}
-
-// A connected/unconnected folder tile for the Sources card.
 // Small "i" info button that reveals a popover on click - inline field help.
 function InfoDot({ text }: { text: ReactNode }) {
   const [open, setOpen] = useState(false);
