@@ -19,3 +19,7 @@ tools/modhost/.env
 
 # Supabase service_role key (backend only) for the modhost .env. Never commit.
 .supabase.env
+
+# Junction to the live PZ install (vanilla Lua/anims used at runtime). It is the
+# whole game folder, never ours to commit.
+ZomboidLua/
