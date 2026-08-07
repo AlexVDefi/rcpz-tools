@@ -579,8 +579,8 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
   const pickPiece = (name: string) => { setSelectedTile(name); }; // stay put; the picker is always in reach
   // R / Shift+R step through the open set's pieces; number keys 1-9 jump straight to one. A ref keeps the
   // key handler (registered once) reading the current set/selection without re-binding on every change.
-  const kb = useRef<{ buildMode: 'place' | 'erase'; set: TileSet | null; tile: string | null; hasProp: boolean; tilesActive: boolean }>({ buildMode, set: selectedSetObj, tile: selectedTile, hasProp: !!selectedProp, tilesActive: tab === 'build' && buildTab === '2d' });
-  kb.current = { buildMode, set: selectedSetObj, tile: selectedTile, hasProp: !!selectedProp, tilesActive: tab === 'build' && buildTab === '2d' };
+  const kb = useRef<{ buildMode: 'place' | 'erase'; set: TileSet | null; tile: string | null; hasProp: boolean; tilesActive: boolean; editing: boolean }>({ buildMode, set: selectedSetObj, tile: selectedTile, hasProp: !!selectedProp, tilesActive: tab === 'build' && buildTab === '2d', editing: editState.active });
+  kb.current = { buildMode, set: selectedSetObj, tile: selectedTile, hasProp: !!selectedProp, tilesActive: tab === 'build' && buildTab === '2d', editing: editState.active };
   const cyclePiece = (dir: number) => {
     const s = kb.current.set; if (!s || s.pieces.length < 2) return;
     const i = s.pieces.findIndex((p) => p.tile.name === kb.current.tile); const n = s.pieces.length;
@@ -626,8 +626,8 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
       const eng = engineRef.current; if (!eng) return;
       const t = e.target as HTMLElement | null;
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return;
-      const hasProp = kb.current.hasProp, tiles = kb.current.tilesActive;
-      if (!hasProp && !tiles) return; // no build context: leave keys alone
+      const hasProp = kb.current.hasProp, tiles = kb.current.tilesActive, editing = kb.current.editing;
+      if (!hasProp && !tiles && !editing) return; // no build/edit context: leave keys alone
       if (e.ctrlKey || e.metaKey) {
         const k = e.key.toLowerCase();
         if (hasProp && k === 'd') { e.preventDefault(); eng.duplicateSelectedProp(); return; } // duplicate selected prop
@@ -688,6 +688,7 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
     eng.onMarquee = (r) => setMarqueeRect(r); // shift-drag box: draw it over the canvas
     eng.onEditState = (s) => { setEditState(s); if (s.active) setSaveAsName(s.clip ? s.clip + '_Edited' : ''); else { setSelectedBones([]); setBoneSearch(''); } };
     eng.onBoneSelect = setSelectedBones;
+    eng.onBoneEdit = () => setBoneTick((t) => t + 1); // a gizmo drag changed a bone: refresh the panel readouts
     eng.onPlacementHint = setPlaceHint; // live "will drop on: character/prop/floor" hint while placing
     eng.onModalChange = setModalLabel; // Blender-style modal-transform status ("Move X")
     eng.setPropMode(true); // prop clicks enabled on every tab (the engine yields to an active tile brush)
@@ -1653,7 +1654,7 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
                 <span style={{ fontSize: 12, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>Editing {editState.clip}</span>
                 <span role="button" onClick={() => eng?.exitEditMode()} title="Exit pose editing" style={{ cursor: 'pointer', color: 'var(--muted)', padding: '0 4px' }}>✕</span>
               </div>
-              <input value={boneSearch} onChange={(e) => setBoneSearch(e.target.value)} placeholder="filter bones..." style={{ width: '100%', boxSizing: 'border-box', fontSize: 12, padding: '5px 7px', borderRadius: 6, border: '1px solid var(--line)', background: 'var(--panel)', color: 'var(--text)', marginBottom: 6 }} />
+              <div style={{ fontSize: 10, color: 'var(--muted)', marginBottom: 8, lineHeight: 1.4 }}>Drag a handle to pose. Blue hands/feet reach (IK); orange elbows/knees set the bend; teal spine/chest/neck/head bend toward the cursor; purple hips move the body. Scrub to pose at a frame.</div>
               <div style={{ maxHeight: 168, overflow: 'auto', border: '1px solid var(--line)', borderRadius: 6 }}>
                 {bones.map((b) => {
                   const sel = selectedBones.includes(b);
@@ -1671,7 +1672,7 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
                 <div style={{ borderTop: '1px solid var(--line)', marginTop: 10, paddingTop: 9 }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
                     <span style={{ fontSize: 11.5, color: 'var(--text)' }}>{primary.replace(/^Bip01_?/, '')}{selectedBones.length > 1 ? ` (+${selectedBones.length - 1})` : ''}</span>
-                    <button className="secondary" onClick={() => { eng?.setBoneEdit(primary, [0, 0, 0], [0, 0, 0]); setBoneTick((t) => t + 1); }} style={{ padding: '3px 8px', fontSize: 11, borderRadius: 6, border: '1px solid var(--line)' }}>reset</button>
+                    <button className="secondary" onClick={() => { eng?.resetBones([primary]); setBoneTick((t) => t + 1); }} style={{ padding: '3px 8px', fontSize: 11, borderRadius: 6, border: '1px solid var(--line)' }}>reset</button>
                   </div>
                   <div style={secLabel}>Rotation (deg)</div>
                   {[0, 1, 2].map((i) => (
@@ -1709,8 +1710,12 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
               </div>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 10, fontSize: 10.5, color: 'var(--muted)' }}>
                 <span>{edited.size} bone{edited.size === 1 ? '' : 's'} edited</span>
-                {edited.size > 0 && <button className="secondary" onClick={() => { eng?.clearBoneEdits(); setBoneTick((t) => t + 1); }} style={{ padding: '3px 8px', fontSize: 11, borderRadius: 6, border: '1px solid var(--line)' }}>clear all</button>}
+                {edited.size > 0 && <div style={{ display: 'flex', gap: 6 }}>
+                  <button className="secondary" onClick={() => { eng?.mirrorPose(); setBoneTick((t) => t + 1); }} title="Mirror the pose left to right" style={{ padding: '3px 8px', fontSize: 11, borderRadius: 6, border: '1px solid var(--line)' }}>mirror L/R</button>
+                  <button className="secondary" onClick={() => { eng?.clearBoneEdits(); setBoneTick((t) => t + 1); }} style={{ padding: '3px 8px', fontSize: 11, borderRadius: 6, border: '1px solid var(--line)' }}>clear all</button>
+                </div>}
               </div>
+              <div style={{ fontSize: 10, color: 'var(--muted)', marginTop: 6, lineHeight: 1.4 }}>Right-click a handle to reset that limb. Ctrl+Z / Ctrl+Y to undo/redo.</div>
             </div>
           );
         })()}
