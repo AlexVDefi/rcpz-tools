@@ -12,6 +12,7 @@ export interface NativeBridge {
   readText(path: string): Promise<string>;
   readBytes(path: string): Promise<Uint8Array>;
   stat(path: string): Promise<NativeStat | null>;
+  writeFile?(path: string, bytes: Uint8Array): Promise<string>;      // write a file straight to disk -> path
 }
 
 export const nativeBridge = (): NativeBridge | null =>

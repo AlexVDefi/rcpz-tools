@@ -30,6 +30,8 @@ async function stat(p) {
 const readText = (p) => fs.readFile(p, 'utf8');
 // return a fresh, exactly-sized Uint8Array so structured-clone across the context bridge stays cheap
 const readBytes = async (p) => new Uint8Array(await fs.readFile(p));
+// Write one file (the animation editor saving an edited .x into a mod folder). Returns the path.
+const writeFile = async (p, bytes) => { await fs.writeFile(p, Buffer.from(bytes)); return p; };
 
 contextBridge.exposeInMainWorld('pzDesktop', {
   pickDirectory: (id) => ipcRenderer.invoke('pzdesktop:pick', id), // native folder dialog (main process)
@@ -37,4 +39,5 @@ contextBridge.exposeInMainWorld('pzDesktop', {
   stat,
   readText,
   readBytes,
+  writeFile,
 });

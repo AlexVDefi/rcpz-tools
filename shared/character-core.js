@@ -483,7 +483,8 @@ export async function resolveClip(ctx, clip) {
   const hit = await ctx.resolver.locate(clip.rel.toLowerCase());
   if (!hit) return { error: `clip not found: ${clip.rel}` };
   const srcBytes = await readResolved(hit);
-  return { id: clip.id, name: clip.name, format: clip.format, glb: await ctx.converter.convertToGlb(srcBytes, clip.format) };
+  // `src` is the raw source bytes (before glb conversion); the animation editor keeps them for .x clips.
+  return { id: clip.id, name: clip.name, format: clip.format, src: srcBytes, glb: await ctx.converter.convertToGlb(srcBytes, clip.format) };
 }
 
 async function resolveMasks(ctx, masks) {

@@ -7,6 +7,7 @@ import { THREE, makeSkinnedMaterial, makeMaterial, CHAR_LIGHTING, partMatrix, ma
 import { glbToGltf, isolateSubMesh, bytesToTexture, sourceToTexture } from './loaders';
 import { TransformControls } from 'three/addons/controls/TransformControls.js';
 import { normaliseClip, retargetAttachments, boneRestMap, normalizeClothingRig, captureSkeletonBind, type SkeletonBind } from './anim';
+import { applyDelta, applyTranslationDelta, renameSet, appDeltaToX, appPosToX, type Quat } from '../anim-edit/xedit';
 import { composeBody } from './canvas-image-ops';
 import { RigSet } from './rigset';
 
@@ -130,6 +131,17 @@ export class CharacterEngine {
   onViewfinder?: (rect: { left: number; top: number; width: number; height: number } | null) => void;
   private bodyRest = new Map<string, THREE.Quaternion>();
   private bodySkel: SkeletonBind | null = null;
+  // --- animation editor: edit a loaded .x clip's pose (Phase 1+) ---
+  private editText: string | null = null;          // raw .x source of the current clip (null unless format is .x)
+  private editClipName: string | null = null;      // the loaded clip's name / AnimationSet name
+  private editMode = false;                         // pose editing active: playback paused, joints pickable, overrides applied
+  private boneEdits = new Map<string, { rot: THREE.Quaternion; pos: THREE.Vector3 }>(); // author's app-space per-bone deltas
+  private boneBase = new Map<string, { quat: THREE.Quaternion; pos: THREE.Vector3 }>();  // the clip pose of edited bones at the current frame
+  private bodyBones = new Map<string, THREE.Bone>(); // bone name -> Bone on the body rig (selection / gizmo / base capture)
+  private jointGroup: THREE.Group | null = null;   // pickable joint spheres shown while editing
+  private selectedBones: string[] = [];            // current bone selection (primary = last)
+  onEditState?: (info: { active: boolean; clip: string | null; editable: boolean; bones: string[] }) => void;
+  onBoneSelect?: (names: string[]) => void;
   private currentBody: { skinTexture: Uint8Array } | null = null;
   private textureSource: unknown = null; // pins skin textures to a source (Vanilla vs a texture mod), or null = mod-over-vanilla
   private uvVerdictVal: { score: number; compatible: boolean } | null = null; // modded body vs vanilla UV layout; null when the body IS vanilla
@@ -174,12 +186,14 @@ export class CharacterEngine {
       if (this.turntable) { this.spin = (this.spin + dt * 0.6) % (Math.PI * 2); this.rigs.setFacing(this.spin); }
       if (this.rigs.clip && this.playing) {
         this.rigs.update(dt * this.speed);
+        if (this.editMode) { this.captureBoneBase(); this.applyBoneOverrides(); } // re-base off the fresh clip pose so the edit rides the motion (no compounding)
         if (this.rigs.finishedOnce()) { this.playing = false; this.finished = true; this.onPlaying?.(false); } // one-shot done: stop, arm replay
       }
       if (this.rigs.clip) this.onFrame?.(this.rigs.time(), this.rigs.duration());
       if (this.billboards.length) { const q = this.camera.quaternion; for (const m of this.billboards) m.quaternion.copy(q); } // standing tiles face the camera
       this.updateStickyProps(); // sticky props follow their bone/prop target after the pose is updated
       if (this.outline.length) this.updateOutline(); // keep the selection rim glued to the (posed) prop
+      if (this.editMode) this.updateJoints(); // keep the joint pickers glued to the (posed) bones
       this.drawFrame();
     };
     loop();
@@ -617,6 +631,11 @@ export class CharacterEngine {
     canvas.addEventListener('pointerdown', (e) => {
       if (this.modal) return; // a modal is active: a press does nothing - the RELEASE confirms (pointerup), so one click can't also deselect
       if (this.pending) { this.pendingDown = { x: e.clientX, y: e.clientY }; return; } // placing a 3D prop
+      if (this.editMode) { // pose editing owns input: a joint hit selects (shift toggles); empty space orbits
+        const name = this.raycastJoint(e);
+        if (name) { this.orbit.enabled = false; if (e.shiftKey) this.toggleBone(name); else this.selectBone(name); }
+        return;
+      }
       if (this.propMode && !this.brush) { // select a prop (click) or grab it to free-drag on the ground (yields to a tile brush)
         if (this.gizmo?.axis) return; // a gizmo handle: let TransformControls own it
         const hit = this.raycastProp(e, e.pointerType === 'touch');
@@ -717,6 +736,7 @@ export class CharacterEngine {
 
     canvas.addEventListener('pointerup', (e) => {
       if (this.modal) { if (e.button === 2) this.modalCancel(); else this.modalConfirm(); return; } // the release confirms (or right-click cancels) and nothing else, so the prop stays selected
+      if (this.editMode) { this.orbit.enabled = true; return; } // re-enable orbit after a joint press
       if (this.pending) { // drop the prop where it sits (a click/tap), or right-click to cancel
         const d = this.pendingDown; this.pendingDown = null;
         if (e.button === 2) { this.cancelPropPlacement(); return; }
@@ -1664,7 +1684,7 @@ export class CharacterEngine {
   }
 
   // ---- transport ----
-  seek(frac: number) { this.rigs.setTime(frac * this.rigs.duration()); }
+  seek(frac: number) { this.rigs.setTime(frac * this.rigs.duration()); if (this.editMode) { this.captureBoneBase(); this.applyBoneOverrides(); } } // re-base the edit on the new frame
   getTime() { return this.rigs.time(); }
   getDuration() { return this.rigs.duration(); }
   setLoop(on: boolean) { this.rigs.setLoop(on); if (on && this.finished) this.replay(); } // turning loop back on revives a stopped clip
@@ -1845,8 +1865,12 @@ export class CharacterEngine {
   }
 
   async playClip(clip: Clip) {
+    if (this.editMode) this.exitEditMode(); // picking a new clip drops any in-progress edit
+    this.boneEdits.clear(); // edits are per-clip
     const r = await resolveClip(this.ctx, clip);
     if (r.error) throw new Error(r.error);
+    this.editText = clip.format === 'x' && r.src ? new TextDecoder().decode(r.src) : null; // kept for the pose editor
+    this.editClipName = clip.name;
     const gltf = await glbToGltf(r.glb);
     if (!gltf.animations?.length) throw new Error('no animation in ' + clip.name);
     const norm = normaliseClip(gltf.animations[0], clip.format, { clipScene: gltf.scene, bodySkel: this.bodySkel ?? undefined, clipRest: boneRestMap(gltf.scene), bodyRest: this.bodyRest });
@@ -1867,6 +1891,132 @@ export class CharacterEngine {
   }
 
   togglePlay() { if (this.finished) { this.replay(); return true; } this.playing = !this.playing; return this.playing; }
+
+  // --- animation pose editor (Phase 1: enter/exit, joints, bone selection, per-bone override) ---
+  /** The current clip can be pose-edited (its source is a .x we kept). */
+  canEditClip(): boolean { return !!this.editText; }
+  isEditing(): boolean { return this.editMode; }
+  enterEditMode() {
+    if (!this.editText || this.editMode) return;
+    this.editMode = true;
+    this.playing = false; this.finished = false; this.onPlaying?.(false); // pause: the mixer holds this frame
+    this.gizmo?.detach();
+    this.buildBoneMap();
+    this.rigs.setTime(this.rigs.time()); // clean clip pose at the current frame (drop any stale override)
+    this.captureBoneBase();
+    this.applyBoneOverrides();
+    this.showJoints(true);
+    this.onEditState?.({ active: true, clip: this.editClipName, editable: true, bones: [...this.bodyBones.keys()] });
+  }
+  exitEditMode() {
+    if (!this.editMode) return;
+    this.editMode = false;
+    this.showJoints(false);
+    this.selectedBones = []; this.onBoneSelect?.([]);
+    this.rigs.setTime(this.rigs.time()); this.rigs.bodyRig()?.root.updateMatrixWorld(true); // restore the clip pose
+    this.onEditState?.({ active: false, clip: this.editClipName, editable: !!this.editText, bones: [] });
+  }
+  private buildBoneMap() {
+    this.bodyBones.clear();
+    const root = this.rigs.bodyRig()?.root; if (!root) return;
+    root.updateMatrixWorld(true);
+    root.traverse((o) => { const b = o as THREE.Bone; if (b.isBone && b.name) this.bodyBones.set(b.name, b); });
+  }
+  private captureBoneBase() {
+    this.boneBase.clear();
+    for (const [name, bone] of this.bodyBones) this.boneBase.set(name, { quat: bone.quaternion.clone(), pos: bone.position.clone() });
+  }
+  /** Re-pose the body from base + each bone's app-space delta (base * rot, pos + delta). */
+  private applyBoneOverrides() {
+    for (const [name, bone] of this.bodyBones) {
+      const base = this.boneBase.get(name); if (!base) continue;
+      const edit = this.boneEdits.get(name);
+      if (edit) { bone.quaternion.copy(base.quat).multiply(edit.rot); bone.position.copy(base.pos).add(edit.pos); }
+      else { bone.quaternion.copy(base.quat); bone.position.copy(base.pos); }
+    }
+    this.rigs.bodyRig()?.root.updateMatrixWorld(true);
+    this.updateJoints();
+  }
+  /** Set (or clear, when zero) a bone's app-space delta: euler degrees on the three.js axes + a position offset. */
+  setBoneEdit(name: string, euler: [number, number, number], pos: [number, number, number]) {
+    const zero = euler.every((v) => v === 0) && pos.every((v) => v === 0);
+    if (zero) this.boneEdits.delete(name);
+    else this.boneEdits.set(name, {
+      rot: new THREE.Quaternion().setFromEuler(new THREE.Euler(euler[0] * Math.PI / 180, euler[1] * Math.PI / 180, euler[2] * Math.PI / 180, 'XYZ')),
+      pos: new THREE.Vector3(pos[0], pos[1], pos[2]),
+    });
+    if (this.editMode) this.applyBoneOverrides();
+  }
+  /** The app-space delta a bone currently carries, as euler degrees + pos (for the editor panel). */
+  boneEditOf(name: string): { euler: [number, number, number]; pos: [number, number, number] } {
+    const e = this.boneEdits.get(name);
+    if (!e) return { euler: [0, 0, 0], pos: [0, 0, 0] };
+    const eu = new THREE.Euler().setFromQuaternion(e.rot, 'XYZ');
+    return { euler: [eu.x * 180 / Math.PI, eu.y * 180 / Math.PI, eu.z * 180 / Math.PI], pos: [e.pos.x, e.pos.y, e.pos.z] };
+  }
+  clearBoneEdits() { this.boneEdits.clear(); if (this.editMode) this.applyBoneOverrides(); }
+  editedBoneNames(): string[] { return [...this.boneEdits.keys()]; }
+  /** The AnimationSet name declared in the loaded .x (usually the clip name). */
+  private editSetName(): string | null { const m = this.editText ? /AnimationSet\s+(\S+)\s*\{/.exec(this.editText) : null; return m ? m[1] : null; }
+  /** Bake the current bone edits into an edited .x (app-space deltas -> .x via the verified calibration).
+   *  saveAs renames the AnimationSet so vanilla is never clobbered. Returns null if nothing to bake. */
+  bakeEdits(saveAs?: string): { name: string; text: string; bones: number } | null {
+    if (!this.editText || !this.boneEdits.size) return null;
+    const setName = this.editSetName();
+    let text = this.editText, bones = 0;
+    for (const [bone, edit] of this.boneEdits) {
+      const A: Quat = [edit.rot.w, edit.rot.x, edit.rot.y, edit.rot.z];
+      const rotId = Math.abs(A[0]) > 0.9999995; // ~identity rotation
+      const hasPos = !!(edit.pos.x || edit.pos.y || edit.pos.z);
+      let touched = false;
+      if (!rotId) { try { text = applyDelta(text, bone, appDeltaToX(A), setName, 'post').text; touched = true; } catch { /* bone has no R keys in this .x */ } }
+      if (hasPos) { try { text = applyTranslationDelta(text, bone, appPosToX([edit.pos.x, edit.pos.y, edit.pos.z]), setName).text; touched = true; } catch { /* no T keys */ } }
+      if (touched) bones++;
+    }
+    let name = this.editClipName || setName || 'edited';
+    const target = saveAs?.trim().replace(/[^A-Za-z0-9_]/g, '_'); // AnimationSet names + filenames must be identifier-safe
+    if (target && setName && target !== setName) { text = renameSet(text, setName, target).text; name = target; }
+    else if (target) name = target;
+    return { name, text, bones };
+  }
+
+  private showJoints(on: boolean) {
+    if (!on) {
+      if (this.jointGroup) { this.scene.remove(this.jointGroup); this.jointGroup.traverse((o) => { const m = o as THREE.Mesh; if (m.isMesh) { m.geometry.dispose(); (m.material as THREE.Material).dispose(); } }); this.jointGroup = null; }
+      return;
+    }
+    if (this.jointGroup) return;
+    const g = new THREE.Group();
+    const geo = new THREE.SphereGeometry(0.013, 10, 8);
+    for (const name of this.bodyBones.keys()) {
+      const s = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color: 0x5b8cff, depthTest: false, transparent: true, opacity: 0.9 }));
+      s.renderOrder = 999; s.frustumCulled = false; s.userData.boneName = name;
+      g.add(s);
+    }
+    this.scene.add(g); this.jointGroup = g;
+    this.updateJoints();
+  }
+  private updateJoints() {
+    if (!this.jointGroup) return;
+    const wp = new THREE.Vector3();
+    for (const s of this.jointGroup.children as THREE.Mesh[]) {
+      const bone = this.bodyBones.get(s.userData.boneName as string); if (!bone) continue;
+      bone.getWorldPosition(wp); s.position.copy(wp);
+      const sel = this.selectedBones.includes(s.userData.boneName as string);
+      (s.material as THREE.MeshBasicMaterial).color.setHex(sel ? 0xffcc33 : this.boneEdits.has(s.userData.boneName as string) ? 0x33cc66 : 0x5b8cff);
+      s.scale.setScalar(sel ? 1.7 : 1);
+    }
+  }
+  private raycastJoint(e: { clientX: number; clientY: number }): string | null {
+    if (!this.jointGroup) return null;
+    const r = this.renderer.domElement.getBoundingClientRect();
+    this.raycaster.setFromCamera(new THREE.Vector2(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1), this.camera);
+    const hit = this.raycaster.intersectObjects(this.jointGroup.children, false)[0];
+    return hit ? (hit.object.userData.boneName as string) : null;
+  }
+  selectBones(names: string[]) { this.selectedBones = names; this.updateJoints(); this.onBoneSelect?.(names); }
+  selectBone(name: string | null) { this.selectBones(name ? [name] : []); }
+  toggleBone(name: string) { this.selectBones(this.selectedBones.includes(name) ? this.selectedBones.filter((n) => n !== name) : [...this.selectedBones, name]); }
 
   private setBodyTexture(tex: THREE.Texture) {
     const body = this.rigs.bodyRig();
