@@ -197,6 +197,15 @@ export function ticksPerSecond(text: string): number {
   return m ? parseInt(m[1], 10) : DEFAULT_TICKS_PER_SECOND;
 }
 
+/** Every distinct key tick present in the set = the clip's own frames (for a dopesheet grid / snapping). */
+export function clipFrameTicks(text: string, animSet: string | null = null): number[] {
+  const [lo, hi] = findSetSpan(text, animSet);
+  const seg = text.slice(lo, hi);
+  const s = new Set<number>();
+  for (const m of seg.matchAll(new RegExp(R_KEY_FULL_SRC, 'g'))) s.add(parseInt(m[1], 10));
+  for (const m of seg.matchAll(new RegExp(T_KEY_FULL_SRC, 'g'))) s.add(parseInt(m[1], 10));
+  return [...s].sort((a, b) => a - b);
+}
 /** (first, last) key tick across the set = the clip's duration in ticks. */
 export function clipTickSpan(text: string, animSet: string | null = null): [number, number] {
   const [lo, hi] = findSetSpan(text, animSet);

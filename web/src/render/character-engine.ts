@@ -7,12 +7,14 @@ import { THREE, makeSkinnedMaterial, makeMaterial, CHAR_LIGHTING, partMatrix, ma
 import { glbToGltf, isolateSubMesh, bytesToTexture, sourceToTexture } from './loaders';
 import { TransformControls } from 'three/addons/controls/TransformControls.js';
 import { normaliseClip, retargetAttachments, boneRestMap, normalizeClothingRig, captureSkeletonBind, type SkeletonBind } from './anim';
-import { applyDelta, applyTranslationDelta, renameSet, appDeltaToX, appPosToX, type Quat } from '../anim-edit/xedit';
+import { applyDelta, applyTranslationDelta, applyRotTimeline, applyPosTimeline, renameSet, appDeltaToX, appPosToX, clipTickSpan, clipFrameTicks, ticksPerSecond } from '../anim-edit/xedit';
 import { composeBody } from './canvas-image-ops';
 import { RigSet } from './rigset';
 
 export interface Ctx { resolver: unknown; converter: unknown; }
 type Clip = { id: string; name: string; format: string; rel: string };
+type BoneKey = { tick: number; rot: THREE.Quaternion; pos: THREE.Vector3 }; // one app-space delta keyframe on a bone's edit timeline
+type EditSnap = { keys: BoneKey[] | null; pending: { rot: THREE.Quaternion; pos: THREE.Vector3 } | null }; // undo snapshot of a bone's edit state
 
 interface Equip { kind: string; maskTextures: Uint8Array[]; baseTextures: Uint8Array[]; tint: number[] | null; hatCategory: string | null; layer: number; }
 type Socket = { offset: number[]; rotate: number[]; scale?: number };
@@ -135,7 +137,9 @@ export class CharacterEngine {
   private editText: string | null = null;          // raw .x source of the current clip (null unless format is .x)
   private editClipName: string | null = null;      // the loaded clip's name / AnimationSet name
   private editMode = false;                         // pose editing active: playback paused, joints pickable, overrides applied
-  private boneEdits = new Map<string, { rot: THREE.Quaternion; pos: THREE.Vector3 }>(); // author's app-space per-bone deltas
+  private boneKeys = new Map<string, BoneKey[]>();  // author's app-space delta timeline per bone (sorted by tick; 1 key = constant pose)
+  private liveEdits = new Map<string, { rot: THREE.Quaternion; pos: THREE.Vector3 }>(); // live uncommitted delta (auto-key off) until Add Key
+  private autoKey = true;                            // on: posing writes/updates a key at the current time; off: pose is live until Add Key
   private boneBase = new Map<string, { quat: THREE.Quaternion; pos: THREE.Vector3 }>();  // the clip pose of edited bones at the current frame
   private bodyBones = new Map<string, THREE.Bone>(); // bone name -> Bone on the body rig (selection / gizmo / base capture)
   private selectedBones: string[] = [];            // current bone selection (primary = last)
@@ -146,7 +150,7 @@ export class CharacterEngine {
   private boneOverlay: THREE.Group | null = null;  // the curated IK/pose handle markers
   private drag: { mode: 'ik' | 'pole' | 'aim' | 'move'; grab: string; affected: string[]; chain?: string[]; l1: number; l2: number; twistDir?: number; handTarget?: THREE.Vector3; endQuat?: THREE.Quaternion; planePt?: THREE.Vector3; offset?: THREE.Vector3; pins?: { chain: string[]; target: THREE.Vector3; pole: THREE.Vector3; l1: number; l2: number; footQuat: THREE.Quaternion }[]; headHold?: THREE.Quaternion; lastX?: number; lastY?: number } | null = null;
   private poleTargets = new Map<string, THREE.Vector3>(); // per-limb elbow/knee pole point (keyed by the IK end bone)
-  private dragBefore: Map<string, { rot: THREE.Quaternion; pos: THREE.Vector3 } | null> | null = null; // affected bones' edits at grab, for undo
+  private dragBefore: Map<string, EditSnap> | null = null; // affected bones' edits at grab, for undo
   private currentBody: { skinTexture: Uint8Array } | null = null;
   private textureSource: unknown = null; // pins skin textures to a source (Vanilla vs a texture mod), or null = mod-over-vanilla
   private uvVerdictVal: { score: number; compatible: boolean } | null = null; // modded body vs vanilla UV layout; null when the body IS vanilla
@@ -190,6 +194,7 @@ export class CharacterEngine {
       const dt = this.clock.getDelta();
       if (this.turntable) { this.spin = (this.spin + dt * 0.6) % (Math.PI * 2); this.rigs.setFacing(this.spin); }
       if (this.rigs.clip && this.playing) {
+        if (this.editMode) this.restoreBase(); // undo the override so the mixer re-poses from a clean base
         this.rigs.update(dt * this.speed);
         if (this.editMode) { this.captureBoneBase(); this.applyBoneOverrides(); } // re-base off the fresh clip pose so the edit rides the motion (no compounding)
         if (this.rigs.finishedOnce()) { this.playing = false; this.finished = true; this.onPlaying?.(false); } // one-shot done: stop, arm replay
@@ -1709,7 +1714,9 @@ export class CharacterEngine {
   }
 
   // ---- transport ----
-  seek(frac: number) { this.rigs.setTime(frac * this.rigs.duration()); if (this.editMode) { this.captureBoneBase(); this.applyBoneOverrides(); } } // re-base the edit on the new frame
+  seek(frac: number) { if (this.editMode) this.restoreBase(); this.rigs.setTime(frac * this.rigs.duration()); if (this.editMode) { this.liveEdits.clear(); this.captureBoneBase(); this.applyBoneOverrides(); } } // scrub reverts any uncommitted (auto-key off) pose and re-bases on the new frame
+  /** Move the scrub bar to a specific edit-timeline tick (dopesheet click). */
+  seekTick(tick: number) { const [lo, hi] = this.clipTickRange(); this.seek(hi > lo ? (tick - lo) / (hi - lo) : 0); this.onFrame?.(this.rigs.time(), this.rigs.duration()); }
   getTime() { return this.rigs.time(); }
   getDuration() { return this.rigs.duration(); }
   setLoop(on: boolean) { this.rigs.setLoop(on); if (on && this.finished) this.replay(); } // turning loop back on revives a stopped clip
@@ -1891,7 +1898,7 @@ export class CharacterEngine {
 
   async playClip(clip: Clip) {
     if (this.editMode) this.exitEditMode(); // picking a new clip drops any in-progress edit
-    this.boneEdits.clear(); // edits are per-clip
+    this.boneKeys.clear(); this.liveEdits.clear(); // edits are per-clip
     const r = await resolveClip(this.ctx, clip);
     if (r.error) throw new Error(r.error);
     this.editText = clip.format === 'x' && r.src ? new TextDecoder().decode(r.src) : null; // kept for the pose editor
@@ -1940,7 +1947,7 @@ export class CharacterEngine {
     this.setupOverlay(false);
     this.hoverBone = null; this.drag = null; this.renderer.domElement.style.cursor = '';
     this.selectedBones = []; this.onBoneSelect?.([]);
-    this.rigs.setTime(this.rigs.time()); this.rigs.bodyRig()?.root.updateMatrixWorld(true); // restore the clip pose
+    this.restoreBase(); this.rigs.setTime(this.rigs.time()); this.rigs.bodyRig()?.root.updateMatrixWorld(true); // drop overrides on clip-animated AND non-animated bones, back to the clean clip pose
     this.onEditState?.({ active: false, clip: this.editClipName, editable: !!this.editText, bones: [] });
   }
   private buildBoneMap() {
@@ -1954,54 +1961,113 @@ export class CharacterEngine {
     this.poleTargets.clear(); // world-space pole points go stale when the pose re-bases (seek)
     for (const [name, bone] of this.bodyBones) this.boneBase.set(name, { quat: bone.quaternion.clone(), pos: bone.position.clone() });
   }
-  /** Re-pose the body from base + each bone's app-space delta (base * rot, pos + delta). */
+  /** Put every bone back on its clean base pose, undoing the applied override. Needed before the mixer
+   *  re-poses (playback/seek): the mixer only overwrites bones the clip animates, so edited bones the
+   *  clip leaves alone would otherwise feed their overridden transform back in and compound the delta. */
+  private restoreBase() {
+    for (const [name, bone] of this.bodyBones) { const b = this.boneBase.get(name); if (b) { bone.quaternion.copy(b.quat); bone.position.copy(b.pos); } }
+  }
+  // --- keyframe timeline (per-bone app-space delta over the clip's tick range) ---
+  private clipTickRange(): [number, number] { if (!this.editText) return [0, 0]; try { return clipTickSpan(this.editText, this.editSetName()); } catch { return [0, 0]; } }
+  /** The tick on the edit timeline the scrub bar currently sits at. */
+  currentTick(): number {
+    const [lo, hi] = this.clipTickRange(), dur = this.rigs.duration();
+    const frac = dur > 1e-6 ? Math.max(0, Math.min(1, this.rigs.time() / dur)) : 0;
+    return Math.round(lo + frac * (hi - lo));
+  }
+  /** Sample a sorted key list at `tick` (slerp rot, lerp pos), held flat outside the range. */
+  private sampleList(keys: BoneKey[], tick: number): { rot: THREE.Quaternion; pos: THREE.Vector3 } {
+    if (keys.length === 1 || tick <= keys[0].tick) return keys[0];
+    const last = keys[keys.length - 1]; if (tick >= last.tick) return last;
+    for (let i = 0; i < keys.length - 1; i++) {
+      const a = keys[i], b = keys[i + 1];
+      if (a.tick <= tick && tick <= b.tick) { const f = b.tick > a.tick ? (tick - a.tick) / (b.tick - a.tick) : 0; return { rot: a.rot.clone().slerp(b.rot, f), pos: a.pos.clone().lerp(b.pos, f) }; }
+    }
+    return last;
+  }
+  /** The effective app-space delta a bone carries at `tick`: a pending live edit wins, else its keys. */
+  private sampleBoneDelta(name: string, tick: number): { rot: THREE.Quaternion; pos: THREE.Vector3 } | null {
+    const pend = this.liveEdits.get(name); if (pend) return pend;
+    const keys = this.boneKeys.get(name); return keys && keys.length ? this.sampleList(keys, tick) : null;
+  }
+  private keyIsIdentity(rot: THREE.Quaternion, pos: THREE.Vector3): boolean { return Math.abs(rot.w) > 0.9999995 && pos.lengthSq() < 1e-12; }
+  /** Insert or replace a bone's key at `tick`. Unless keepIdentity, drop the bone if that leaves only a
+   *  lone identity key (so a zeroed drag clears the edit); Add Key sets keepIdentity to hold a rest pose. */
+  private setKey(name: string, tick: number, rot: THREE.Quaternion, pos: THREE.Vector3, keepIdentity = false) {
+    const list = this.boneKeys.get(name) ?? [], k: BoneKey = { tick, rot: rot.clone(), pos: pos.clone() };
+    const i = list.findIndex((x) => x.tick === tick);
+    if (i >= 0) list[i] = k; else { list.push(k); list.sort((a, b) => a.tick - b.tick); }
+    if (!keepIdentity && list.length === 1 && this.keyIsIdentity(k.rot, k.pos)) this.boneKeys.delete(name); else this.boneKeys.set(name, list);
+  }
+  /** Commit the delta a pose produced for `name` at the current tick, honouring the auto-key toggle. */
+  private writeEdit(name: string, rot: THREE.Quaternion, pos: THREE.Vector3) {
+    if (this.autoKey) { this.liveEdits.delete(name); this.setKey(name, this.currentTick(), rot, pos); }
+    else if (this.keyIsIdentity(rot, pos)) this.liveEdits.delete(name);
+    else this.liveEdits.set(name, { rot: rot.clone(), pos: pos.clone() });
+  }
+  /** A bone's key list with any pending live edit folded in as a key at the current tick (for baking). */
+  private effectiveKeyList(name: string, tick: number): BoneKey[] {
+    const base = this.boneKeys.get(name) ?? [], pend = this.liveEdits.get(name);
+    if (!pend) return base;
+    return base.filter((k) => k.tick !== tick).concat([{ tick, rot: pend.rot.clone(), pos: pend.pos.clone() }]).sort((a, b) => a.tick - b.tick);
+  }
+  /** Re-pose the body from base + each bone's sampled app-space delta at the current tick. */
   private applyBoneOverrides() {
+    const tick = this.currentTick();
     for (const [name, bone] of this.bodyBones) {
       const base = this.boneBase.get(name); if (!base) continue;
-      const edit = this.boneEdits.get(name);
-      if (edit) { bone.quaternion.copy(base.quat).multiply(edit.rot); bone.position.copy(base.pos).add(edit.pos); }
+      const d = this.sampleBoneDelta(name, tick);
+      if (d) { bone.quaternion.copy(base.quat).multiply(d.rot); bone.position.copy(base.pos).add(d.pos); }
       else { bone.quaternion.copy(base.quat); bone.position.copy(base.pos); }
     }
     this.rigs.bodyRig()?.root.updateMatrixWorld(true);
     this.updateBoneHighlight();
   }
-  /** Set (or clear, when zero) a bone's app-space delta: euler degrees on the three.js axes + a position offset. */
+  /** Set a bone's app-space delta at the current time: euler degrees on the three.js axes + a position offset. */
   setBoneEdit(name: string, euler: [number, number, number], pos: [number, number, number]) {
-    const zero = euler.every((v) => v === 0) && pos.every((v) => v === 0);
-    if (zero) this.boneEdits.delete(name);
-    else this.boneEdits.set(name, {
-      rot: new THREE.Quaternion().setFromEuler(new THREE.Euler(euler[0] * Math.PI / 180, euler[1] * Math.PI / 180, euler[2] * Math.PI / 180, 'XYZ')),
-      pos: new THREE.Vector3(pos[0], pos[1], pos[2]),
-    });
+    const rot = new THREE.Quaternion().setFromEuler(new THREE.Euler(euler[0] * Math.PI / 180, euler[1] * Math.PI / 180, euler[2] * Math.PI / 180, 'XYZ'));
+    this.writeEdit(name, rot, new THREE.Vector3(pos[0], pos[1], pos[2]));
     if (this.editMode) this.applyBoneOverrides();
   }
-  /** The app-space delta a bone currently carries, as euler degrees + pos (for the editor panel). */
+  /** The app-space delta a bone carries at the current time, as euler degrees + pos (for the editor panel). */
   boneEditOf(name: string): { euler: [number, number, number]; pos: [number, number, number] } {
-    const e = this.boneEdits.get(name);
+    const e = this.sampleBoneDelta(name, this.currentTick());
     if (!e) return { euler: [0, 0, 0], pos: [0, 0, 0] };
     const eu = new THREE.Euler().setFromQuaternion(e.rot, 'XYZ');
     return { euler: [eu.x * 180 / Math.PI, eu.y * 180 / Math.PI, eu.z * 180 / Math.PI], pos: [e.pos.x, e.pos.y, e.pos.z] };
   }
   // --- pose edit history (shares the prop/tile undo stack) ---
-  private snapshotEdits(names: string[]): Map<string, { rot: THREE.Quaternion; pos: THREE.Vector3 } | null> {
-    const m = new Map<string, { rot: THREE.Quaternion; pos: THREE.Vector3 } | null>();
-    for (const n of names) { const e = this.boneEdits.get(n); m.set(n, e ? { rot: e.rot.clone(), pos: e.pos.clone() } : null); }
+  private cloneKeys(keys: BoneKey[]): BoneKey[] { return keys.map((k) => ({ tick: k.tick, rot: k.rot.clone(), pos: k.pos.clone() })); }
+  private snapshotEdits(names: string[]): Map<string, EditSnap> {
+    const m = new Map<string, EditSnap>();
+    for (const n of names) {
+      const keys = this.boneKeys.get(n), pend = this.liveEdits.get(n);
+      m.set(n, { keys: keys ? this.cloneKeys(keys) : null, pending: pend ? { rot: pend.rot.clone(), pos: pend.pos.clone() } : null });
+    }
     return m;
   }
-  private restoreEdits(snap: Map<string, { rot: THREE.Quaternion; pos: THREE.Vector3 } | null>) {
-    for (const [n, e] of snap) { if (e) this.boneEdits.set(n, { rot: e.rot.clone(), pos: e.pos.clone() }); else this.boneEdits.delete(n); }
+  private restoreEdits(snap: Map<string, EditSnap>) {
+    for (const [n, s] of snap) {
+      if (s.keys) this.boneKeys.set(n, this.cloneKeys(s.keys)); else this.boneKeys.delete(n);
+      if (s.pending) this.liveEdits.set(n, { rot: s.pending.rot.clone(), pos: s.pending.pos.clone() }); else this.liveEdits.delete(n);
+    }
     if (this.editMode) this.applyBoneOverrides();
     this.onBoneEdit?.();
   }
-  private pushBoneHistory(before: Map<string, { rot: THREE.Quaternion; pos: THREE.Vector3 } | null>, after: Map<string, { rot: THREE.Quaternion; pos: THREE.Vector3 } | null>) {
+  private keysEqual(a: BoneKey[] | null, b: BoneKey[] | null): boolean {
+    if (!a || !b) return !a === !b;
+    if (a.length !== b.length) return false;
+    return a.every((k, i) => k.tick === b[i].tick && k.rot.equals(b[i].rot) && k.pos.equals(b[i].pos));
+  }
+  private pushBoneHistory(before: Map<string, EditSnap>, after: Map<string, EditSnap>) {
     let changed = false;
-    for (const [n, b] of before) { const a = after.get(n); if (!!a !== !!b || (a && b && (!a.rot.equals(b.rot) || !a.pos.equals(b.pos)))) { changed = true; break; } }
+    for (const [n, b] of before) { const a = after.get(n); if (!a || !this.keysEqual(a.keys, b.keys) || !!a.pending !== !!b.pending) { changed = true; break; } }
     if (changed) this.pushProp(() => this.restoreEdits(before), () => this.restoreEdits(after));
   }
   /** Reset the edits on these bones to the clip pose (one undo entry). */
   resetBones(names: string[]) {
     const before = this.snapshotEdits(names);
-    for (const n of names) this.boneEdits.delete(n);
+    for (const n of names) { this.boneKeys.delete(n); this.liveEdits.delete(n); }
     if (this.editMode) this.applyBoneOverrides();
     this.onBoneEdit?.();
     this.pushBoneHistory(before, this.snapshotEdits(names));
@@ -2027,14 +2093,58 @@ export class CharacterEngine {
   }
   private resetHandle(h: { bone: string; role: 'ik' | 'pole' | 'aim' | 'move'; chain?: string[] }) { this.resetBones(this.affectedForHandle(h)); this.selectBone(h.bone); }
   clearBoneEdits() {
-    const names = [...this.boneEdits.keys()]; if (!names.length) return;
+    const names = this.editedBoneNames(); if (!names.length) return;
     const before = this.snapshotEdits(names);
-    this.boneEdits.clear();
+    this.boneKeys.clear(); this.liveEdits.clear();
     if (this.editMode) this.applyBoneOverrides();
     this.onBoneEdit?.();
     this.pushBoneHistory(before, this.snapshotEdits(names));
   }
-  editedBoneNames(): string[] { return [...this.boneEdits.keys()]; }
+  editedBoneNames(): string[] { return [...new Set([...this.boneKeys.keys(), ...this.liveEdits.keys()])]; }
+  // --- dopesheet API ---
+  autoKeyOn(): boolean { return this.autoKey; }
+  setAutoKey(on: boolean) { this.autoKey = on; }
+  /** Key the current pose (at the current tick) of every edited AND selected bone - so a freshly selected,
+   *  un-moved bone can be keyed at its rest pose without dragging it first (Add Key button). */
+  addKeyAtCurrent() {
+    const tick = this.currentTick(), names = [...new Set([...this.editedBoneNames(), ...this.selectedBones])].filter((n) => this.bodyBones.has(n));
+    if (!names.length) return;
+    const before = this.snapshotEdits(names);
+    for (const name of names) {
+      const d = this.sampleBoneDelta(name, tick) ?? { rot: new THREE.Quaternion(), pos: new THREE.Vector3() }; // rest pose = identity delta
+      this.liveEdits.delete(name); this.setKey(name, tick, d.rot, d.pos, true); // keep the key even if it's a rest pose
+    }
+    if (this.editMode) this.applyBoneOverrides();
+    this.onBoneEdit?.();
+    this.pushBoneHistory(before, this.snapshotEdits(names));
+  }
+  deleteKey(bone: string, tick: number) {
+    const list = this.boneKeys.get(bone); if (!list?.some((k) => k.tick === tick)) return;
+    const before = this.snapshotEdits([bone]);
+    const nl = list.filter((k) => k.tick !== tick);
+    if (nl.length) this.boneKeys.set(bone, nl); else this.boneKeys.delete(bone);
+    if (this.editMode) this.applyBoneOverrides();
+    this.onBoneEdit?.();
+    this.pushBoneHistory(before, this.snapshotEdits([bone]));
+  }
+  moveKey(bone: string, fromTick: number, toTick: number) {
+    const list = this.boneKeys.get(bone); const k = list?.find((x) => x.tick === fromTick); if (!list || !k) return;
+    const [lo, hi] = this.clipTickRange(); const to = Math.round(Math.max(lo, Math.min(hi, toTick))); if (to === fromTick) return;
+    const before = this.snapshotEdits([bone]);
+    const nl = list.filter((x) => x.tick !== fromTick && x.tick !== to); nl.push({ tick: to, rot: k.rot.clone(), pos: k.pos.clone() }); nl.sort((a, b) => a.tick - b.tick);
+    this.boneKeys.set(bone, nl);
+    if (this.editMode) this.applyBoneOverrides();
+    this.onBoneEdit?.();
+    this.pushBoneHistory(before, this.snapshotEdits([bone]));
+  }
+  /** The clip's own frame ticks (for a dopesheet grid + snapping). */
+  clipFrames(): number[] { if (!this.editText) return []; try { return clipFrameTicks(this.editText, this.editSetName()); } catch { return []; } }
+  /** Dopesheet state: clip tick range, frames, current tick, ticks-per-second, auto-key, and a keyframe track per edited bone. */
+  keyframeTimeline(): { range: [number, number]; frames: number[]; tick: number; tps: number; autoKey: boolean; tracks: { bone: string; keys: number[] }[] } {
+    const tps = this.editText ? ticksPerSecond(this.editText) : 0;
+    const tracks = [...this.boneKeys.entries()].map(([bone, keys]) => ({ bone, keys: keys.map((k) => k.tick) })).sort((a, b) => a.bone.localeCompare(b.bone));
+    return { range: this.clipTickRange(), frames: this.clipFrames(), tick: this.currentTick(), tps, autoKey: this.autoKey, tracks };
+  }
 
   // --- mirror the pose left <-> right across the body's sagittal plane (world-space, so it is
   //     independent of each bone's local-axis convention) ---
@@ -2048,7 +2158,7 @@ export class CharacterEngine {
     const n = rp.clone().sub(lp); if (n.lengthSq() < 1e-9) return; n.normalize(); // body left-right axis (thigh joints are symmetric, set by the pelvis)
     const plane = lp.add(rp).multiplyScalar(0.5);
     const set = new Set<string>();
-    for (const name of this.boneEdits.keys()) { set.add(name); set.add(this.mirrorName(name)); }
+    for (const name of this.editedBoneNames()) { set.add(name); set.add(this.mirrorName(name)); }
     const bones = [...set].filter((x) => this.bodyBones.has(x)); if (!bones.length) return;
     const world = new Map<string, { quat: THREE.Quaternion; pos: THREE.Vector3 }>();
     for (const name of bones) { const b = this.bodyBones.get(name)!; world.set(name, { quat: b.getWorldQuaternion(new THREE.Quaternion()), pos: b.getWorldPosition(new THREE.Vector3()) }); }
@@ -2061,10 +2171,11 @@ export class CharacterEngine {
       if (name === 'Bip01_Pelvis' && b.parent) b.position.copy(b.parent.worldToLocal(this.mirrorPoint(src.pos, n, plane))); // mirror the hip shift; other bones keep their base position
       b.updateMatrixWorld(true);
     }
+    const tick = this.currentTick();
     for (const name of bones) {
       const b = this.bodyBones.get(name)!, base = this.boneBase.get(name); if (!base) continue;
       const rot = base.quat.clone().invert().multiply(b.quaternion), pos = b.position.clone().sub(base.pos);
-      if (Math.abs(rot.w) > 0.9999995 && pos.lengthSq() < 1e-10) this.boneEdits.delete(name); else this.boneEdits.set(name, { rot, pos });
+      this.liveEdits.delete(name); this.setKey(name, tick, rot, pos); // mirror commits a key at the current frame
     }
     this.applyBoneOverrides();
     this.onBoneEdit?.();
@@ -2075,16 +2186,28 @@ export class CharacterEngine {
   /** Bake the current bone edits into an edited .x (app-space deltas -> .x via the verified calibration).
    *  saveAs renames the AnimationSet so vanilla is never clobbered. Returns null if nothing to bake. */
   bakeEdits(saveAs?: string): { name: string; text: string; bones: number } | null {
-    if (!this.editText || !this.boneEdits.size) return null;
-    const setName = this.editSetName();
+    const names = this.editedBoneNames();
+    if (!this.editText || !names.length) return null;
+    const setName = this.editSetName(), tick = this.currentTick();
     let text = this.editText, bones = 0;
-    for (const [bone, edit] of this.boneEdits) {
-      const A: Quat = [edit.rot.w, edit.rot.x, edit.rot.y, edit.rot.z];
-      const rotId = Math.abs(A[0]) > 0.9999995; // ~identity rotation
-      const hasPos = !!(edit.pos.x || edit.pos.y || edit.pos.z);
+    for (const bone of names) {
+      const keys = this.effectiveKeyList(bone, tick); if (!keys.length) continue;
+      const ticks = keys.map((k) => k.tick);
       let touched = false;
-      if (!rotId) { try { text = applyDelta(text, bone, appDeltaToX(A), setName, 'post').text; touched = true; } catch { /* bone has no R keys in this .x */ } }
-      if (hasPos) { try { text = applyTranslationDelta(text, bone, appPosToX([edit.pos.x, edit.pos.y, edit.pos.z]), setName).text; touched = true; } catch { /* no T keys */ } }
+      if (keys.some((k) => Math.abs(k.rot.w) <= 0.9999995)) { // any non-identity rotation over the timeline
+        try {
+          if (keys.length === 1) text = applyDelta(text, bone, appDeltaToX([keys[0].rot.w, keys[0].rot.x, keys[0].rot.y, keys[0].rot.z]), setName, 'post').text;
+          else text = applyRotTimeline(text, bone, (tk) => { const r = this.sampleList(keys, tk).rot; return appDeltaToX([r.w, r.x, r.y, r.z]); }, ticks, setName, 'post').text;
+          touched = true;
+        } catch { /* bone has no R keys in this .x */ }
+      }
+      if (keys.some((k) => k.pos.lengthSq() > 1e-12)) { // any non-zero translation over the timeline
+        try {
+          if (keys.length === 1) text = applyTranslationDelta(text, bone, appPosToX([keys[0].pos.x, keys[0].pos.y, keys[0].pos.z]), setName).text;
+          else text = applyPosTimeline(text, bone, (tk) => { const p = this.sampleList(keys, tk).pos; return appPosToX([p.x, p.y, p.z]); }, ticks, setName).text;
+          touched = true;
+        } catch { /* no T keys */ }
+      }
       if (touched) bones++;
     }
     let name = this.editClipName || setName || 'edited';
@@ -2127,7 +2250,7 @@ export class CharacterEngine {
     const geo = new THREE.SphereGeometry(0.019, 14, 12);
     for (const h of CharacterEngine.HANDLES) {
       if (!this.bodyBones.has(h.bone)) continue;
-      const base = h.role === 'pole' ? 0xff9944 : h.role === 'move' ? 0xcc66ff : h.role === 'aim' ? 0x33cc99 : 0x5b8cff; // elbow/knee orange, hips purple, torso teal, hands/feet blue
+      const base = h.role === 'pole' ? 0xff3db1 : h.role === 'move' ? 0xcc66ff : h.role === 'aim' ? 0x33cc99 : 0x5b8cff; // elbow/knee pink, hips purple, torso teal, hands/feet blue
       const m = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color: base, depthTest: false, transparent: true, opacity: 0.8 }));
       m.renderOrder = 1000; m.frustumCulled = false; m.userData = { bone: h.bone, role: h.role, chain: h.chain, base, baseScale: h.role === 'pole' ? 0.66 : 1 };
       g.add(m);
@@ -2143,7 +2266,7 @@ export class CharacterEngine {
       if (m.userData.role === 'aim') wp.copy(this.aimHandlePos(bone)); else bone.getWorldPosition(wp); // aim nodes sit on the body at the spine segment midpoints
       m.position.copy(wp);
       const isSel = name === sel, isHover = name === this.hoverBone, bs = m.userData.baseScale as number, mat = m.material as THREE.MeshBasicMaterial;
-      mat.color.setHex(isSel ? 0xffcc33 : isHover ? 0x66d9ff : this.boneEdits.has(name) ? 0x33cc66 : (m.userData.base as number));
+      mat.color.setHex(isSel ? 0xffcc33 : isHover ? 0x66d9ff : (this.boneKeys.has(name) || this.liveEdits.has(name)) ? 0x33cc66 : (m.userData.base as number));
       mat.opacity = isSel || isHover ? 1 : 0.5; // subtle at rest, solid on hover/select
       m.scale.setScalar(bs * (isSel ? 1.5 : isHover ? 1.3 : 1));
     }
@@ -2359,7 +2482,7 @@ export class CharacterEngine {
     for (const name of d.affected) {
       const bone = this.bodyBones.get(name), base = this.boneBase.get(name); if (!bone || !base) continue;
       const rot = base.quat.clone().invert().multiply(bone.quaternion), pos = bone.position.clone().sub(base.pos);
-      if (Math.abs(rot.w) > 0.9999995 && pos.lengthSq() < 1e-12) this.boneEdits.delete(name); else this.boneEdits.set(name, { rot, pos });
+      this.writeEdit(name, rot, pos);
     }
     this.applyBoneOverrides();
     this.onBoneEdit?.();

@@ -360,6 +360,24 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
   const bootedRef = useRef(false); // first body load + restore done -> safe to start auto-saving
   const scrubRef = useRef<HTMLInputElement>(null);
   const scrubbingRef = useRef(false);
+  const playheadRef = useRef<HTMLDivElement>(null); // dopesheet playhead, positioned by onFrame without a re-render
+  const rulerRef = useRef<HTMLDivElement>(null);    // dopesheet track area, for mapping cursor x to a tick
+  const scrollRef = useRef<HTMLDivElement>(null);   // dopesheet horizontal scroll viewport
+  const thumbRef = useRef<HTMLDivElement>(null);    // custom slim scrollbar thumb
+  const thumbDragRef = useRef<{ startX: number; startLeft: number } | null>(null);
+  const panRef = useRef<{ startX: number; startLeft: number } | null>(null); // middle-mouse drag pan
+  const zoomRef = useRef(1);                         // live zoom for the native wheel handler (avoids a stale closure)
+  const baseWidthRef = useRef(1);                     // dopesheet timeline width in px at zoom 1 (px-per-frame * frames)
+  const trackGeomRef = useRef({ pad: 6, usable: 1 }); // dopesheet tick->px mapping (inset so edge diamonds don't overflow), read by onFrame
+  const pendingScrollRef = useRef<number | null>(null); // scrollLeft to apply after a wheel-zoom re-render (cursor-anchored)
+  const updateThumb = useCallback(() => { // size + place the custom thumb from the scroll state; hidden when nothing overflows
+    const sc = scrollRef.current, th = thumbRef.current; if (!sc || !th) return;
+    const cw = sc.clientWidth, sw = sc.scrollWidth;
+    if (sw <= cw + 1) { th.style.display = 'none'; return; } // nothing to scroll
+    th.style.display = 'block';
+    th.style.width = `${(cw / sw) * 100}%`;
+    th.style.left = `${(sc.scrollLeft / sw) * 100}%`;
+  }, []);
 
   const clips: Clip[] = useMemo(() => listClips(index), [index]);
   const clipItems = useMemo(() => clips.map((c) => ({ ...c, key: c.id, label: c.name, facet: clipCategory(c.name), source: c.modName || 'Vanilla' })), [clips]);
@@ -537,6 +555,27 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
   const [selectedProp, setSelectedProp] = useState<{ name: string; count: number; texXf: PropTexXf; sticky: boolean; align: boolean; attached: string | null; attachments: { slot: string; partName: string }[] } | null>(null);
   const [marqueeRect, setMarqueeRect] = useState<{ x: number; y: number; w: number; h: number } | null>(null); // shift-drag selection box, drawn over the canvas
   const [editState, setEditState] = useState<{ active: boolean; clip: string | null; editable: boolean; bones: string[] }>({ active: false, clip: null, editable: false, bones: [] }); // animation pose editor
+  const [autoKey, setAutoKeyState] = useState(true); // dopesheet: pose writes a key at the current time
+  const [keyDrag, setKeyDrag] = useState<{ bone: string; from: number; frac: number } | null>(null); // a keyframe being dragged along its track
+  const [selOnly, setSelOnly] = useState(false); // dopesheet: only show tracks for the selected bone(s)
+  const [zoom, setZoom] = useState(1);            // dopesheet horizontal zoom (1 = fit)
+  zoomRef.current = zoom;                          // keep the native wheel handler's zoom fresh
+  useLayoutEffect(() => { if (pendingScrollRef.current != null && scrollRef.current) { scrollRef.current.scrollLeft = pendingScrollRef.current; pendingScrollRef.current = null; } updateThumb(); }, [zoom, updateThumb]); // apply a cursor-anchored zoom, then resize the thumb
+  useLayoutEffect(() => { const cw = scrollRef.current?.clientWidth; if (editState.active && !isMobile && cw && baseWidthRef.current > 0) { pendingScrollRef.current = 0; setZoom(Math.max(0.02, (cw - 2) / baseWidthRef.current)); } }, [editState.active]); // fit all frames when entering edit mode (-2px so it never overflows)
+  useEffect(() => { // dopesheet wheel: zoom in/out, anchored to the cursor (Blender-style; native listener so preventDefault works)
+    const el = scrollRef.current; if (!el || !editState.active || isMobile) return;
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      const z = zoomRef.current, bw = baseWidthRef.current;
+      const rect = el.getBoundingClientRect(), cursorX = e.clientX - rect.left, innerW = bw * z;
+      const frac = innerW > 0 ? (el.scrollLeft + cursorX) / innerW : 0;
+      const nz = Math.max(0.02, Math.min(40, +(z * (e.deltaY < 0 ? 1.25 : 1 / 1.25)).toFixed(3)));
+      pendingScrollRef.current = frac * (bw * nz) - cursorX; // keep the frame under the cursor fixed
+      setZoom(nz);
+    };
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
+  }, [editState.active, isMobile]);
   const [selectedBones, setSelectedBones] = useState<string[]>([]);
   const [boneTick, setBoneTick] = useState(0); // bump after setBoneEdit so the panel re-reads engine values
   const [boneSearch, setBoneSearch] = useState('');
@@ -679,7 +718,7 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
   useEffect(() => {
     const eng = new CharacterEngine(canvasRef.current!, ctx);
     eng.onClipName = setNowPlaying;
-    eng.onFrame = (t, dur) => { const el = scrubRef.current; if (el && !scrubbingRef.current) el.value = String(dur ? (Math.min(t, dur) / dur) * 1000 : 0); };
+    eng.onFrame = (t, dur) => { const frac = dur ? Math.min(t, dur) / dur : 0; const el = scrubRef.current; if (el && !scrubbingRef.current) el.value = String(frac * 1000); if (playheadRef.current) { const g = trackGeomRef.current; playheadRef.current.style.left = `${g.pad + frac * g.usable}px`; } };
     eng.onPlaying = setPlaying; // a one-shot clip finishing flips the play/pause button back to play
     eng.onCamMode = setCamMode; // keep the Scene-tab toggle in sync with auto-switches
     eng.onViewfinder = setViewfinder; // studio letterbox rect (CSS px)
@@ -1654,7 +1693,7 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
                 <span style={{ fontSize: 12, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>Editing {editState.clip}</span>
                 <span role="button" onClick={() => eng?.exitEditMode()} title="Exit pose editing" style={{ cursor: 'pointer', color: 'var(--muted)', padding: '0 4px' }}>✕</span>
               </div>
-              <div style={{ fontSize: 10, color: 'var(--muted)', marginBottom: 8, lineHeight: 1.4 }}>Drag a handle to pose. Blue hands/feet reach (IK); orange elbows/knees set the bend; teal spine/chest/neck/head bend toward the cursor; purple hips move the body. Scrub to pose at a frame.</div>
+              <div style={{ fontSize: 10, color: 'var(--muted)', marginBottom: 8, lineHeight: 1.4 }}>Drag a handle to pose. Blue hands/feet reach (IK); pink elbows/knees set the bend; teal spine/chest/head bend the torso; purple hips move the body. Scrub the timeline and pose again to keyframe (dopesheet below).</div>
               <div style={{ maxHeight: 168, overflow: 'auto', border: '1px solid var(--line)', borderRadius: 6 }}>
                 {bones.map((b) => {
                   const sel = selectedBones.includes(b);
@@ -1719,14 +1758,102 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
             </div>
           );
         })()}
-        <div style={{ position: 'absolute', left: 12, bottom: 12, right: 12, display: 'flex', gap: isMobile ? 6 : 8, alignItems: 'center', background: '#000000aa', borderRadius: 8, padding: isMobile ? '6px 8px' : '6px 10px' }}>
+        <div style={{ position: 'absolute', left: 12, bottom: 12, right: 12, background: '#000000cc', border: '1px solid var(--line)', borderRadius: 8, overflow: 'hidden' }}>
+          {editState.active && !isMobile && (() => {
+            void boneTick; const eng = engineRef.current; if (!eng) return null;
+            const tl = eng.keyframeTimeline(); const [lo, hi] = tl.range; const span = Math.max(1, hi - lo);
+            const frames = tl.frames;
+            const baseWidth = Math.max(140, frames.length * 14); baseWidthRef.current = baseWidth; // px timeline width at zoom 1
+            const innerW = baseWidth * zoom;
+            const PAD = 6, usable = Math.max(1, innerW - 2 * PAD); trackGeomRef.current = { pad: PAD, usable }; // inset so edge diamonds/labels stay inside the track (no overflow -> no scrollbar)
+            const clampZoom = (z: number) => Math.max(0.02, Math.min(40, +z.toFixed(3)));
+            const doFit = () => { const cw = scrollRef.current?.clientWidth; if (cw) { pendingScrollRef.current = 0; setZoom(Math.max(0.02, (cw - 2) / baseWidth)); requestAnimationFrame(updateThumb); } }; // -2px so the timeline never overflows; refresh the thumb even if zoom is unchanged
+            const tracks = selOnly ? tl.tracks.filter((t) => selectedBones.includes(t.bone)) : tl.tracks;
+            const xPct = (tick: number) => `${PAD + ((tick - lo) / span) * usable}px`;
+            const fracAt = (clientX: number) => { const r = rulerRef.current?.getBoundingClientRect(); return r && r.width > 0 ? Math.max(0, Math.min(1, (clientX - r.left - PAD) / usable)) : 0; };
+            const snap = (tick: number) => frames.length ? frames.reduce((best, f) => Math.abs(f - tick) < Math.abs(best - tick) ? f : best, frames[0]) : Math.round(tick);
+            const tickAt = (clientX: number) => snap(lo + fracAt(clientX) * span);
+            const btn = (on: boolean): React.CSSProperties => ({ padding: '2px 8px', fontSize: 11, borderRadius: 6, border: '1px solid var(--line)', background: on ? 'var(--accent)' : 'var(--panel)', color: on ? '#fff' : 'var(--text)', cursor: 'pointer' });
+            const pxPerFrame = frames.length ? innerW / frames.length : innerW;
+            const gridStep = Math.max(1, Math.ceil(6 / Math.max(0.01, pxPerFrame)));           // keep >= ~6px between drawn frame lines
+            const labelStep = gridStep * Math.max(1, Math.round(48 / (pxPerFrame * gridStep))); // a frame number roughly every 48px
+            return (
+              <div style={{ padding: '6px 10px 7px', borderBottom: '1px solid var(--line)' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 5 }}>
+                  <span style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '.05em', color: 'var(--muted)' }}>Dopesheet</span>
+                  <span style={{ fontSize: 10, color: 'var(--muted)' }}>{frames.length} frames - scroll to zoom, middle-drag to pan</span>
+                  <span style={{ flex: 1 }} />
+                  <button className="secondary" title="Only show tracks for the selected bone" onClick={() => setSelOnly((v) => !v)} style={btn(selOnly)}>selected only</button>
+                  <button className="secondary" title="Fit all frames in view" onClick={doFit} style={btn(false)}>fit</button>
+                  <span style={{ display: 'inline-flex', border: '1px solid var(--line)', borderRadius: 6, overflow: 'hidden' }}>
+                    <button className="secondary" title="Zoom out" onClick={() => setZoom((z) => clampZoom(z / 1.6))} style={{ padding: '2px 7px', fontSize: 12, border: 'none', background: 'var(--panel)', color: 'var(--text)', cursor: 'pointer' }}>-</button>
+                    <span style={{ padding: '2px 6px', fontSize: 10.5, color: 'var(--muted)', minWidth: 40, textAlign: 'center', borderLeft: '1px solid var(--line)', borderRight: '1px solid var(--line)' }}>{zoom < 1 ? zoom.toFixed(2) : zoom.toFixed(1)}x</span>
+                    <button className="secondary" title="Zoom in" onClick={() => setZoom((z) => clampZoom(z * 1.6))} style={{ padding: '2px 7px', fontSize: 12, border: 'none', background: 'var(--panel)', color: 'var(--text)', cursor: 'pointer' }}>+</button>
+                  </span>
+                  <button className="secondary" title="When on, posing a bone writes/updates a keyframe at the current time" onClick={() => { const n = !autoKey; setAutoKeyState(n); eng.setAutoKey(n); }} style={btn(autoKey)}>auto-key {autoKey ? 'on' : 'off'}</button>
+                  <button className="secondary" title="Key the current pose of the selected and edited bones at this time" onClick={() => { eng.addKeyAtCurrent(); setBoneTick((t) => t + 1); }} style={btn(false)}>add key</button>
+                </div>
+                <div style={{ display: 'flex', gap: 6 }}>
+                  <div style={{ width: 66, flexShrink: 0 }}>
+                    <div style={{ height: 17 }} />
+                    {tracks.map((t) => <div key={t.bone} title={t.bone} style={{ height: 15, fontSize: 10.5, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', lineHeight: '15px' }}>{t.bone.replace(/^Bip01_?/, '')}</div>)}
+                  </div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <style>{'.ds-scroll::-webkit-scrollbar{display:none}'}</style>
+                    <div ref={scrollRef} className="ds-scroll" onScroll={updateThumb} style={{ overflowX: 'scroll', overflowY: 'hidden', scrollbarWidth: 'none' }}>
+                      <div ref={rulerRef} style={{ position: 'relative', width: `${innerW}px`, overflow: 'hidden', cursor: 'ew-resize', touchAction: 'none' }}
+                      onMouseDown={(e) => { if (e.button === 1) e.preventDefault(); }}
+                      onPointerDown={(e) => { (e.currentTarget as Element).setPointerCapture(e.pointerId); if (e.button === 1) panRef.current = { startX: e.clientX, startLeft: scrollRef.current?.scrollLeft ?? 0 }; else if (e.button === 0) { scrubbingRef.current = true; eng.seekTick(tickAt(e.clientX)); } }}
+                      onPointerMove={(e) => { if (panRef.current && scrollRef.current) scrollRef.current.scrollLeft = panRef.current.startLeft - (e.clientX - panRef.current.startX); else if (scrubbingRef.current) eng.seekTick(tickAt(e.clientX)); }}
+                      onPointerUp={(e) => { scrubbingRef.current = false; panRef.current = null; try { (e.currentTarget as Element).releasePointerCapture(e.pointerId); } catch { /* not captured */ } }}>
+                      {frames.filter((_, i) => i % gridStep === 0).map((f, i) => (
+                        <div key={f} style={{ position: 'absolute', left: xPct(f), top: 0, bottom: 0, width: 1, marginLeft: -0.5, background: 'var(--line)', opacity: 0.5, pointerEvents: 'none', zIndex: 0 }}>
+                          {(i * gridStep) % labelStep === 0 && <span style={{ position: 'absolute', top: 1, left: 2, fontSize: 8.5, color: 'var(--muted)', pointerEvents: 'none' }}>{i * gridStep}</span>}
+                        </div>
+                      ))}
+                      <div ref={playheadRef} style={{ position: 'absolute', top: 0, bottom: 0, width: 2, marginLeft: -1, background: 'var(--accent)', pointerEvents: 'none', zIndex: 3 }} />
+                      <div style={{ height: 17, borderBottom: '1px solid var(--line)' }} />
+                      {tracks.map((t) => (
+                        <div key={t.bone} style={{ height: 15, position: 'relative' }}>
+                          {t.keys.map((tick) => {
+                            const dragging = keyDrag && keyDrag.bone === t.bone && keyDrag.from === tick;
+                            const left = dragging ? `${PAD + keyDrag!.frac * usable}px` : xPct(tick);
+                            return (
+                              <div key={tick} title={`tick ${tick} - drag to move, right-click to delete`}
+                                onPointerDown={(e) => { e.stopPropagation(); (e.currentTarget as Element).setPointerCapture(e.pointerId); setKeyDrag({ bone: t.bone, from: tick, frac: (tick - lo) / span }); }}
+                                onPointerMove={(e) => { if (dragging) setKeyDrag({ bone: t.bone, from: tick, frac: fracAt(e.clientX) }); }}
+                                onPointerUp={(e) => { e.stopPropagation(); if (!dragging) return; const to = tickAt(e.clientX); if (to === tick) eng.seekTick(tick); else eng.moveKey(t.bone, tick, to); setKeyDrag(null); setBoneTick((n) => n + 1); }}
+                                onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); eng.deleteKey(t.bone, tick); setBoneTick((n) => n + 1); }}
+                                style={{ position: 'absolute', left, top: 3, width: 9, height: 9, marginLeft: -5, transform: 'rotate(45deg)', background: dragging ? '#ffcc33' : '#33cc66', border: '1px solid #0e0e13', zIndex: 1, cursor: 'grab' }} />
+                            );
+                          })}
+                        </div>
+                      ))}
+                      {!tracks.length && <div style={{ fontSize: 10.5, color: 'var(--muted)', padding: '2px 0' }}>{selOnly ? 'Select a bone to see its keyframes.' : 'Pose a bone to drop a keyframe here, scrub, and pose again to animate.'}</div>}
+                      </div>
+                    </div>
+                    <div style={{ position: 'relative', height: 5, marginTop: 3 }}>
+                      <div ref={thumbRef} title="drag to scroll"
+                        onPointerDown={(e) => { e.stopPropagation(); (e.currentTarget as Element).setPointerCapture(e.pointerId); thumbDragRef.current = { startX: e.clientX, startLeft: scrollRef.current?.scrollLeft ?? 0 }; }}
+                        onPointerMove={(e) => { const d = thumbDragRef.current, sc = scrollRef.current; if (!d || !sc) return; sc.scrollLeft = d.startLeft + (e.clientX - d.startX) * (sc.scrollWidth / Math.max(1, sc.clientWidth)); }}
+                        onPointerUp={(e) => { thumbDragRef.current = null; try { (e.currentTarget as Element).releasePointerCapture(e.pointerId); } catch { /* not captured */ } }}
+                        style={{ position: 'absolute', top: 0, height: 5, width: 0, minWidth: 20, borderRadius: 3, background: 'var(--muted)', opacity: 0.55, cursor: 'grab', display: 'none' }} />
+                    </div>
+                  </div>
+                </div>
+              </div>
+            );
+          })()}
+          <div style={{ display: 'flex', gap: isMobile ? 6 : 8, alignItems: 'center', padding: isMobile ? '6px 8px' : '6px 10px' }}>
           <button className="secondary" onClick={togglePlay} style={{ padding: isMobile ? '4px 10px' : '4px 12px', flexShrink: 0 }}>{playing ? '❚❚' : '▶'}</button>
           <button className="secondary" title="Play from the start" aria-label="Replay from start" onClick={() => { engineRef.current?.replay(); setPlaying(true); }}
             style={{ padding: 0, width: isMobile ? 32 : 30, height: isMobile ? 30 : 28, display: 'grid', placeItems: 'center', flexShrink: 0 }}><RestartIcon size={isMobile ? 16 : 15} /></button>
-          <input ref={scrubRef} type="range" min={0} max={1000} defaultValue={0}
-            onMouseDown={() => { scrubbingRef.current = true; }} onMouseUp={() => { scrubbingRef.current = false; }}
-            onInput={(e) => engineRef.current?.seek(Number((e.target as HTMLInputElement).value) / 1000)}
-            style={{ flex: 1, minWidth: 0, accentColor: '#5b8cff' }} />
+          {editState.active && !isMobile
+            ? <span style={{ flex: 1 }} /> // in edit mode the dopesheet strip above is the scrubber
+            : <input ref={scrubRef} type="range" min={0} max={1000} defaultValue={0}
+                onMouseDown={() => { scrubbingRef.current = true; }} onMouseUp={() => { scrubbingRef.current = false; }}
+                onInput={(e) => engineRef.current?.seek(Number((e.target as HTMLInputElement).value) / 1000)}
+                style={{ flex: 1, minWidth: 0, accentColor: '#5b8cff' }} />}
           <button className="secondary" onClick={() => { const n = !loop; setLoop(n); engineRef.current?.setLoop(n); }}
             style={{ padding: isMobile ? '4px 9px' : '4px 10px', flexShrink: 0, background: loop ? 'var(--accent)' : 'var(--panel)', color: loop ? '#fff' : 'var(--text)' }}>loop</button>
           {editState.editable && (
@@ -1737,6 +1864,7 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
             style={{ background: 'var(--panel)', color: 'var(--text)', border: '1px solid var(--line)', borderRadius: 6, padding: '4px 6px', flexShrink: 0 }}>
             {[0.25, 0.5, 1, 2].map((s) => <option key={s} value={s}>{s}×</option>)}
           </select>
+          </div>
         </div>
       </div>
 
