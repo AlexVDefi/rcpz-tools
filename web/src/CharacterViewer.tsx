@@ -543,6 +543,7 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
   const [marqueeRect, setMarqueeRect] = useState<{ x: number; y: number; w: number; h: number } | null>(null); // shift-drag selection box, drawn over the canvas
   const [editState, setEditState] = useState<{ active: boolean; clip: string | null; editable: boolean; bones: string[] }>({ active: false, clip: null, editable: false, bones: [] }); // animation pose editor
   const [editOpen, setEditOpen] = useState(false); // editor panel popover visibility (toggled from the top-right button)
+  const [dressState, setDressState] = useState<{ worn: boolean; shown: boolean }>({ worn: false, shown: false }); // skirt/dress bones + mesh: worn = a garment forces it on
   const bottomBarRef = useRef<HTMLDivElement>(null); // dopesheet + transport bar, so the editor panel can sit above it
   const [bottomBarH, setBottomBarH] = useState(0);
   useEffect(() => { const el = bottomBarRef.current; if (!el) { setBottomBarH(0); return; } const ro = new ResizeObserver(() => setBottomBarH(el.offsetHeight)); ro.observe(el); setBottomBarH(el.offsetHeight); return () => ro.disconnect(); }, [editState.active, isMobile]);
@@ -707,6 +708,8 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
     eng.onMarquee = (r) => setMarqueeRect(r); // shift-drag box: draw it over the canvas
     eng.onEditState = (s) => { setEditState(s); setEditOpen(s.active); if (s.active) { setSaveAsName(s.clip ? s.clip + '_Edited' : ''); setSceneOpen(false); setEquipOpen(false); setInspectorOpen(false); } else { setSelectedBones([]); setBoneSearch(''); } };
     eng.onBoneSelect = setSelectedBones;
+    eng.onDressState = setDressState; // skirt/dress toggle reflects worn-garment auto-show
+    setDressState({ worn: eng.dressWornNow(), shown: eng.dressVisible() }); // seed from the already-loaded body
     eng.onBoneEdit = () => setBoneTick((t) => t + 1); // a gizmo drag changed a bone: refresh the panel readouts
     eng.onPlacementHint = setPlaceHint; // live "will drop on: character/prop/floor" hint while placing
     eng.onModalChange = setModalLabel; // Blender-style modal-transform status ("Move X")
@@ -1333,7 +1336,8 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
         </div>
       </div>
       <div style={{ display: tab === 'character' ? 'contents' : 'none' }}><CharacterTab hairData={hairData} gender={gender} setGender={setGender} skin={skin} tones={tones} zombieSkins={zombieSkins} skinThumbUrl={skinThumbUrl} bodyOptions={bodySources.map((b) => ({ id: b.id, label: b.label }))} bodySel={bodySourceId || bodySources[0]?.id || ''} onBody={changeBody} uvVerdict={uvVerdict} textureOptions={texSources.map((t) => ({ id: t.id, label: t.label }))} textureSel={texSourceId || texSources[0]?.id || ''} onTexture={changeTexture} onSkin={(t) => { setSkin(t); engineRef.current?.setSkin(t); }} thumbs={thumbs} hairSel={hairSel} beardSel={beardSel} hairColor={hairColor} beardColor={beardColor} matchBeard={matchBeard} onToggleMatchBeard={toggleMatchBeard} onPickPart={applyHairPart} onRecolour={recolourPart} favs={favs} onToggleFav={toggleFav} onImport={() => setImportOpen(true)} onNew={() => { void newCharacter(); }}
-        savedCount={Object.keys(presets).length} onOpenSaved={() => setPresetsOpen(true)} /></div>
+        savedCount={Object.keys(presets).length} onOpenSaved={() => setPresetsOpen(true)}
+        dressShown={dressState.shown} dressWorn={dressState.worn} onToggleDress={(on) => engineRef.current?.setDressVisible(on)} /></div>
       <div style={{ display: tab === 'export' ? 'contents' : 'none' }}>{(
         <div style={{ padding: 12, overflow: 'auto', height: '100%' }}>
           <ExportSection cloud={cloud}
@@ -2378,7 +2382,7 @@ const NONE_HAIR: HairItem = { name: 'None', key: 'None', label: 'None', facet: '
 // Character tab: identity (gender + skin texture) as a compact header, then a browsable
 // thumbnail grid for the active appearance kind (Hair or Beard) filling the rest. Selection
 // and colour are lifted to the parent so the Favorites tab stays in sync.
-function CharacterTab({ hairData, gender, setGender, skin, tones, zombieSkins, skinThumbUrl, bodyOptions, bodySel, onBody, uvVerdict, textureOptions, textureSel, onTexture, onSkin, thumbs, hairSel, beardSel, hairColor, beardColor, matchBeard, onToggleMatchBeard, onPickPart, onRecolour, favs, onToggleFav, onImport, onNew, savedCount, onOpenSaved }: {
+function CharacterTab({ hairData, gender, setGender, skin, tones, zombieSkins, skinThumbUrl, bodyOptions, bodySel, onBody, uvVerdict, textureOptions, textureSel, onTexture, onSkin, thumbs, hairSel, beardSel, hairColor, beardColor, matchBeard, onToggleMatchBeard, onPickPart, onRecolour, favs, onToggleFav, onImport, onNew, savedCount, onOpenSaved, dressShown, dressWorn, onToggleDress }: {
   hairData: HairData;
   gender: 'male' | 'female';
   setGender: (g: 'male' | 'female') => void;
@@ -2409,6 +2413,9 @@ function CharacterTab({ hairData, gender, setGender, skin, tones, zombieSkins, s
   onNew: () => void;
   savedCount: number;
   onOpenSaved: () => void;
+  dressShown: boolean;
+  dressWorn: boolean;
+  onToggleDress: (on: boolean) => void;
 }) {
   const [kind, setKind] = useState<'hair' | 'beard'>('hair');
   const isMobile = useIsMobile(); // phones can't reach local PZ saves, so hide the save-import action
@@ -2459,6 +2466,12 @@ function CharacterTab({ hairData, gender, setGender, skin, tones, zombieSkins, s
             ))}
           </div>
         </div>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 7, margin: '0 0 12px', fontSize: 12.5, color: dressShown ? 'var(--text)' : 'var(--muted)', cursor: dressWorn ? 'default' : 'pointer' }}
+          title={dressWorn ? 'A skirt or dress is worn, so its bones and mesh show automatically.' : 'Show the skirt/dress bones and their base mesh. Off by default - the hidden skirt mesh otherwise blocks placing props between the legs.'}>
+          <input type="checkbox" checked={dressShown} disabled={dressWorn} onChange={(e) => onToggleDress(e.target.checked)} style={{ accentColor: 'var(--accent)' }} />
+          Show dress / skirt bones + mesh
+          {dressWorn && <span style={{ fontSize: 10.5, color: 'var(--muted)' }}>(auto: dress worn)</span>}
+        </label>
         {bodyOptions.length > 1 && (
           <>
             <label style={{ color: 'var(--muted)', fontSize: 12 }}>Body</label>

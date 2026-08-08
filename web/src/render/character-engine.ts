@@ -154,6 +154,10 @@ export class CharacterEngine {
   private boneBase = new Map<string, { quat: THREE.Quaternion; pos: THREE.Vector3 }>();  // the clip pose of edited bones at the current frame
   private bodyBones = new Map<string, THREE.Bone>(); // bone name -> Bone on the body rig (selection / gizmo / base capture)
   private selectedBones: string[] = [];            // current bone selection (primary = last)
+  private dressMeshes: THREE.SkinnedMesh[] = [];   // base-body skirt/dress sub-meshes (skinned to the dress bones); the game hides these unless a dress is worn
+  private showDressUser = false;                    // user toggle: show the dress bones + mesh (default off, like the game with no skirt)
+  private dressWorn = false;                        // a worn garment skins to the dress bones -> auto-show (context aware)
+  onDressState?: (info: { worn: boolean; shown: boolean }) => void; // notify the UI toggle
   onEditState?: (info: { active: boolean; clip: string | null; editable: boolean; bones: string[] }) => void;
   onBoneSelect?: (names: string[]) => void;
   onBoneEdit?: () => void;                          // fired after a drag/gizmo changes a bone's delta
@@ -1836,6 +1840,7 @@ export class CharacterEngine {
     // vertex (see groundToClip/skinnedMinY). Collect the body's skinned meshes, then ground.
     this.bodyMeshes = [];
     root.traverse((o) => { const sm = o as THREE.SkinnedMesh; if (sm.isSkinnedMesh) this.bodyMeshes.push(sm); });
+    this.detectDressMeshes(); // find the skirt sub-mesh(es) so we can hide + un-raycast them until a dress is worn
     this.groundToClip(); // grounds the bind pose here, or an active clip on a gender swap
     root.updateMatrixWorld(true);
     const box = new THREE.Box3().setFromObject(root);
@@ -2342,7 +2347,7 @@ export class CharacterEngine {
    *  so 'selected only' shows the tracks a handle edits, not just the handle's own bone. */
   affectedForSelection(): string[] {
     const out = new Set<string>();
-    for (const name of this.selectedBones) { const h = CharacterEngine.HANDLES.find((x) => x.bone === name); if (h) for (const b of this.affectedForHandle(h)) out.add(b); else out.add(name); }
+    for (const name of this.selectedBones) { const h = this.activeHandles().find((x) => x.bone === name); if (h) for (const b of this.affectedForHandle(h)) out.add(b); else out.add(name); }
     return [...out];
   }
   // --- keyframe-level selection ops (the dopesheet passes {bone,tick} lists) ---
@@ -2559,7 +2564,75 @@ export class CharacterEngine {
     { bone: 'Bip01_Spine', label: 'spine', role: 'aim' },
     { bone: 'Bip01_Pelvis', label: 'hips', role: 'move' },
   ];
-  handleList(): { bone: string; label: string }[] { return CharacterEngine.HANDLES.filter((h) => this.bodyBones.has(h.bone)).map((h) => ({ bone: h.bone, label: h.label })); }
+  // Skirt/dress bones live on the skeleton but drive a mesh that is only relevant while a dress is worn.
+  private static readonly DRESS_BONES = ['Bip01_DressFront', 'Bip01_DressFront02', 'Bip01_DressBack', 'Bip01_DressBack02'];
+  private static readonly DRESS_HANDLES: { bone: string; label: string; role: 'ik' | 'pole' | 'aim' | 'move' }[] = [
+    { bone: 'Bip01_DressFront', label: 'skirt front', role: 'aim' },
+    { bone: 'Bip01_DressFront02', label: 'skirt front lo', role: 'aim' },
+    { bone: 'Bip01_DressBack', label: 'skirt back', role: 'aim' },
+    { bone: 'Bip01_DressBack02', label: 'skirt back lo', role: 'aim' },
+  ];
+  // The active handle set: the dress handles only join when the skirt is shown (worn a dress, or toggled on).
+  private activeHandles(): { bone: string; label: string; role: 'ik' | 'pole' | 'aim' | 'move'; chain?: string[] }[] {
+    return this.dressVisible() ? [...CharacterEngine.HANDLES, ...CharacterEngine.DRESS_HANDLES] : CharacterEngine.HANDLES;
+  }
+  handleList(): { bone: string; label: string }[] { return this.activeHandles().filter((h) => this.bodyBones.has(h.bone)).map((h) => ({ bone: h.bone, label: h.label })); }
+
+  // --- dress / skirt bones + mesh --------------------------------------------------------------
+  // The base body model carries a skirt-shaped sub-mesh weighted to the dress bones. The game hides it
+  // unless a skirt/dress is worn; the studio would otherwise render it always, leaving a phantom surface
+  // that intercepts prop-placement raycasts (props stick out in front of the thighs). We find such meshes
+  // by their skin weights (no hardcoded mesh names) and hide + un-raycast them until a dress is worn.
+  private dressBoneIndices(skel: THREE.Skeleton): Set<number> {
+    const s = new Set<number>();
+    skel.bones.forEach((b, i) => { if (CharacterEngine.DRESS_BONES.includes(b.name)) s.add(i); });
+    return s;
+  }
+  /** Fraction of a skinned mesh's vertices whose dominant bone is a dress bone (0 = none, 1 = all). */
+  private dressWeightFraction(sm: THREE.SkinnedMesh, dress: Set<number>): number {
+    const si = sm.geometry.getAttribute('skinIndex'), sw = sm.geometry.getAttribute('skinWeight');
+    if (!si || !sw || !si.count || !dress.size) return 0;
+    let hits = 0;
+    for (let v = 0; v < si.count; v++) {
+      let best = -1, bestW = 0;
+      for (let k = 0; k < 4; k++) { const w = sw.getComponent(v, k); if (w > bestW) { bestW = w; best = si.getComponent(v, k); } }
+      if (bestW > 0.01 && dress.has(best)) hits++;
+    }
+    return hits / si.count;
+  }
+  private detectDressMeshes() {
+    this.dressMeshes = [];
+    const skel = this.bodyMeshes[0]?.skeleton; if (!skel) return;
+    const di = this.dressBoneIndices(skel);
+    for (const sm of this.bodyMeshes) if (this.dressWeightFraction(sm, di) > 0.5) this.dressMeshes.push(sm);
+  }
+  private applyDressVisibility() {
+    const shown = this.dressVisible();
+    for (const dm of this.dressMeshes) dm.visible = shown; // an invisible mesh is also skipped by the placement raycaster
+    if (this.editMode && this.boneOverlay) { this.setupOverlay(false); this.setupOverlay(true); } // rebuild handles so the dress bones appear / disappear
+    this.onDressState?.({ worn: this.dressWorn, shown });
+  }
+  /** Recompute whether any worn garment skins to the dress bones, then apply visibility. Call after any
+   *  clothing change and after a body (re)load. */
+  refreshDressContext() {
+    const skel = this.bodyMeshes[0]?.skeleton;
+    let worn = false;
+    if (skel) {
+      const di = this.dressBoneIndices(skel);
+      for (const name of this.equipped.keys()) {
+        if (this.hidden.has(name)) continue;
+        const rig = this.rigs.get('cloth:' + name); if (!rig) continue;
+        rig.root.traverse((o) => { const sm = o as THREE.SkinnedMesh; if (sm.isSkinnedMesh && this.dressWeightFraction(sm, di) > 0.2) worn = true; });
+        if (worn) break;
+      }
+    }
+    this.dressWorn = worn;
+    this.applyDressVisibility();
+  }
+  setDressVisible(on: boolean) { this.showDressUser = on; this.applyDressVisibility(); }
+  /** Whether the skirt/dress bones + mesh are currently shown (user toggle OR a dress is worn). */
+  dressVisible(): boolean { return this.showDressUser || this.dressWorn; }
+  dressWornNow(): boolean { return this.dressWorn; }
   selectBones(names: string[]) { this.selectedBones = names; this.updateBoneHighlight(); this.onBoneSelect?.(names); }
   selectBone(name: string | null) { this.selectBones(name ? [name] : []); }
   toggleBone(name: string) { this.selectBones(this.selectedBones.includes(name) ? this.selectedBones.filter((n) => n !== name) : [...this.selectedBones, name]); }
@@ -2570,7 +2643,7 @@ export class CharacterEngine {
     if (this.boneOverlay) return;
     const g = new THREE.Group();
     const geo = new THREE.SphereGeometry(0.019, 14, 12);
-    for (const h of CharacterEngine.HANDLES) {
+    for (const h of this.activeHandles()) {
       if (!this.bodyBones.has(h.bone)) continue;
       const base = h.role === 'pole' ? 0xff3db1 : h.role === 'move' ? 0xcc66ff : h.role === 'aim' ? 0x33cc99 : 0x5b8cff; // elbow/knee pink, hips purple, torso teal, hands/feet blue
       const m = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color: base, depthTest: false, transparent: true, opacity: 0.8 }));
@@ -2833,6 +2906,7 @@ export class CharacterEngine {
     }
     const canvas = await composeBody(this.currentBody.skinTexture, layers, masks);
     this.setBodyTexture(sourceToTexture(canvas, false));
+    this.refreshDressContext(); // a garment may (un)cover the dress bones -> auto show/hide the skirt mesh
   }
 
   /** All currently-equipped clothing + held items, for the viewer's equipped panel. */
