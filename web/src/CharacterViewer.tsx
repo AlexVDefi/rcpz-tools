@@ -2,8 +2,9 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { listClips, listClothing, listHeldItems, listHair, clothingGroup, CLOTHING_GROUP_ORDER, HELD_GROUP_ORDER, SKIN_TONES, attachmentProviders, listZombieSkins, listBodySources, listBodyTextureSources, clothingBodyFit } from '@shared/character-core.js';
 import { SLOTS, bodyAttachOptions, slotsFromWorn } from '@shared/attachments.js';
 import { CharacterEngine, type Ctx, type AttachOption, type TileBrushPart, type PropSave, type TileSave } from './render/character-engine';
-import { makeZip } from './anim-edit/zip';
 import { Dopesheet, keyId, parseKeySel } from './Dopesheet';
+import { usePoseEditor, type PoseData } from './usePoseEditor';
+import { PoseEditorPanel } from './PoseEditorPanel';
 
 type AttachSlot = { slot: string; options: AttachOption[] };
 import { ThumbnailProvider } from './render/thumbnail-provider';
@@ -17,7 +18,6 @@ import { exportPng, exportGif, exportVideo, download, type BgConfig, type Conten
 import { discoverSaves, importCharacter, type SaveEntry, type ParsedChar } from './save/save-import';
 import { hasPermission, requestPermission } from './platform/idb';
 import { pickDirectory, saveDir, loadDir } from './platform/platform';
-import { nativeBridge } from './platform/native-fs';
 import { type AuthState } from './cloud/auth';
 import { type UploadRow, type CloudUploads } from './cloud/uploads';
 import { uploadRender, playerUrl } from './cloud/api';
@@ -160,7 +160,6 @@ const bgStyle = (b: BgConfig): React.CSSProperties =>
   : { background: `linear-gradient(${b.angle}deg, ${b.color1}, ${b.color2})` };
 
 type Tab = 'animate' | 'clothing' | 'held' | 'character' | 'build' | 'export';
-type PoseData = { clip: string; lengthScale: number; clipEnd: number | null; bones: Record<string, { tick: number; rot: number[]; pos: number[] }[]>; saved?: number; thumb?: string }; // a saved animation-edit
 type FavKind = 'clothing' | 'held' | 'hair' | 'beard';
 type Light = { ambient: number; keyBright: number; kx: number; ky: number; kz: number };
 type ScenePreset = { bg: BgConfig; turntable: boolean; camPreset: CamPreset; studioAspect: number | null; facing: number | null; floor: string | null; light: Light; grid: boolean; shadow: boolean };
@@ -357,10 +356,6 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
   const [presets, setPresets] = useState<Record<string, CharPreset>>(() => { try { return JSON.parse(localStorage.getItem('pz-char-presets') || '{}'); } catch { return {}; } });
   useEffect(() => { localStorage.setItem('pz-char-presets', JSON.stringify(presets)); }, [presets]);
   const [presetsOpen, setPresetsOpen] = useState(false);
-  const [posePresets, setPosePresets] = useState<Record<string, PoseData>>(() => { try { return JSON.parse(localStorage.getItem('pz-pose-presets') || '{}'); } catch { return {}; } }); // saved animation-edit "poses"
-  useEffect(() => { localStorage.setItem('pz-pose-presets', JSON.stringify(posePresets)); }, [posePresets]);
-  const [poseName, setPoseName] = useState('');
-  const [posesOpen, setPosesOpen] = useState(false); // saved-poses browser modal
   const quickSaveRef = useRef<() => void>(() => {}); // Ctrl+S target (kept fresh each render)
   const pendingPresetRef = useRef<CharPreset | null>(bootChar.current); // restore the autosaved look on first load
   const applyPresetLookRef = useRef<((p: CharPreset) => Promise<void>) | null>(null);
@@ -548,7 +543,6 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
   const [marqueeRect, setMarqueeRect] = useState<{ x: number; y: number; w: number; h: number } | null>(null); // shift-drag selection box, drawn over the canvas
   const [editState, setEditState] = useState<{ active: boolean; clip: string | null; editable: boolean; bones: string[] }>({ active: false, clip: null, editable: false, bones: [] }); // animation pose editor
   const [editOpen, setEditOpen] = useState(false); // editor panel popover visibility (toggled from the top-right button)
-  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({}); // collapsed pose-panel sections
   const bottomBarRef = useRef<HTMLDivElement>(null); // dopesheet + transport bar, so the editor panel can sit above it
   const [bottomBarH, setBottomBarH] = useState(0);
   useEffect(() => { const el = bottomBarRef.current; if (!el) { setBottomBarH(0); return; } const ro = new ResizeObserver(() => setBottomBarH(el.offsetHeight)); ro.observe(el); setBottomBarH(el.offsetHeight); return () => ro.disconnect(); }, [editState.active, isMobile]);
@@ -558,6 +552,9 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
   const [boneTick, setBoneTick] = useState(0); // bump after setBoneEdit so the panel re-reads engine values
   const [boneSearch, setBoneSearch] = useState('');
   const [saveAsName, setSaveAsName] = useState('');
+  const capturePreview = (): string | undefined => { try { return engineRef.current?.snapshotFront(260, 340, '#1b1d24'); } catch { return undefined; } };
+  const pose = usePoseEditor({ engineRef, editState, saveAsName, clips, capture: capturePreview, bump: () => setBoneTick((t) => t + 1), toast: setNowPlaying });
+  quickSaveRef.current = pose.quickSave;
   const [placeHint, setPlaceHint] = useState<'character' | 'prop' | 'floor' | null>(null); // live target while a prop rides the cursor
   const [gizmoMode, setGizmoModeState] = useState<'translate' | 'rotate' | 'scale'>('translate');
   const applyGizmoMode = (m: 'translate' | 'rotate' | 'scale') => { setGizmoModeState(m); engineRef.current?.setGizmoMode(m); };
@@ -796,53 +793,6 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
   const setHeldHand = (name: string, hand: 'right' | 'left') => guard(() => engineRef.current!.setHeldHand(name, hand));
   const setAttachment = (name: string, slot: string, option: AttachOption | null) => guard(() => engineRef.current!.setHeldAttachment(name, slot, option));
   const togglePlay = () => { const e = engineRef.current; if (e) setPlaying(e.togglePlay()); };
-  const downloadEditedX = () => {
-    const eng = engineRef.current; if (!eng) return;
-    const baked = eng.bakeEdits(saveAsName.trim() || undefined);
-    if (!baked) { setNowPlaying('nothing to save'); return; }
-    const a = document.createElement('a');
-    const url = URL.createObjectURL(new Blob([baked.text], { type: 'application/octet-stream' }));
-    a.href = url; a.download = baked.name + '.x'; document.body.appendChild(a); a.click(); a.remove();
-    URL.revokeObjectURL(url);
-    setNowPlaying(`saved ${baked.name}.x (${baked.bones} bone${baked.bones === 1 ? '' : 's'})`);
-  };
-  const downloadAllEdited = async () => {
-    const eng = engineRef.current; if (!eng) return;
-    setNowPlaying('baking all edited clips...');
-    const { files, errors } = await eng.bakeAll(clips, '_Edited');
-    const usable = files.filter((f) => f.bones > 0);
-    if (!usable.length) { setNowPlaying('nothing to bulk-export' + (errors.length ? ': ' + errors[0] : ' (no edited clips)')); return; }
-    const zip = makeZip(usable.map((f) => ({ name: f.name + '.x', bytes: new TextEncoder().encode(f.text) })));
-    const a = document.createElement('a');
-    const url = URL.createObjectURL(new Blob([zip as BlobPart], { type: 'application/zip' }));
-    a.href = url; a.download = 'edited-anims.zip'; document.body.appendChild(a); a.click(); a.remove();
-    URL.revokeObjectURL(url);
-    setNowPlaying(`exported ${usable.length} clip${usable.length === 1 ? '' : 's'} to edited-anims.zip${errors.length ? ` (${errors.length} skipped)` : ''}`);
-  };
-  const savePose = (name: string) => {
-    const n = name.trim(); if (!n) { setNowPlaying('name the pose first'); return; }
-    const d = engineRef.current?.exportClipEdit();
-    if (!d) { setNowPlaying('nothing to save (no edits yet)'); return; }
-    setPosePresets((p) => ({ ...p, [n]: { ...d, thumb: capturePreview(), saved: Date.now() } }));
-    setNowPlaying(`saved pose "${n}"`);
-  };
-  const loadPose = (name: string) => {
-    const d = posePresets[name], eng = engineRef.current; if (!d || !eng) return;
-    if (!editState.active && eng.canEditClip()) eng.enterEditMode();
-    eng.applyClipEdit(d); setBoneTick((t) => t + 1);
-    setNowPlaying(`loaded pose "${name}"${d.clip && d.clip !== editState.clip ? ` (made for ${d.clip})` : ''}`);
-  };
-  const deletePose = (name: string) => setPosePresets((p) => { const n = { ...p }; delete n[name]; return n; });
-  quickSaveRef.current = () => { if (!editState.active) return; savePose(poseName.trim() || saveAsName.trim() || editState.clip || 'pose'); };
-  const saveToFolder = async () => {
-    const eng = engineRef.current; const b = nativeBridge();
-    if (!eng || !b?.writeFile) { setNowPlaying('folder save is desktop-only'); return; }
-    const baked = eng.bakeEdits(saveAsName.trim() || undefined);
-    if (!baked) { setNowPlaying('nothing to save'); return; }
-    const dir = await b.pickDirectory('anim-save'); if (!dir) return;
-    try { const path = await b.writeFile(dir.replace(/[\\/]$/, '') + '/' + baked.name + '.x', new TextEncoder().encode(baked.text)); setNowPlaying(`saved to ${path}`); }
-    catch (e) { setNowPlaying('save failed: ' + (e instanceof Error ? e.message : String(e))); }
-  };
   // hair/beard apply + recolour (shared by the Character and Favorites tabs)
   const applyHairPart = (kind: 'hair' | 'beard', style: HairStyle) => {
     (kind === 'hair' ? setHairSel : setBeardSel)(style.name);
@@ -1088,9 +1038,6 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
     scene: { bg, turntable, camPreset, studioAspect, facing, floor: floorSel, light, grid, shadow },
   });
   // Front-35mm portrait snapshot of the current character (facing the camera), for the preset card.
-  const capturePreview = (): string | undefined => {
-    try { return engineRef.current?.snapshotFront(260, 340, '#1b1d24'); } catch { return undefined; }
-  };
   // Switch which body model to use (Vanilla vs a body mod's). Capture the current look first so the
   // body-reload effect re-applies clothing/held/attachments/skin onto the freshly-loaded body.
   const changeBody = (id: string) => {
@@ -1400,7 +1347,7 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
     <div ref={containerRef} style={{ display: 'flex', flexDirection: isMobile ? 'column' : 'row', gap: isMobile ? 8 : 0, height: isMobile ? (mobileViewH || '80vh') : 'calc(100vh - 128px)', minHeight: isMobile ? 0 : 460 }}>
       {importOpen && <ImportModal onClose={() => setImportOpen(false)} onImport={applyImport} />}
       {presetsOpen && <PresetsModal presets={presets} onClose={() => setPresetsOpen(false)} onSave={savePreset} onLoad={(p) => { void applyPreset(p); setPresetsOpen(false); }} onDelete={deletePreset} onDuplicate={duplicatePreset} />}
-      {posesOpen && <PosesModal poses={posePresets} currentClip={editState.clip} onClose={() => setPosesOpen(false)} onSave={(n) => savePose(n)} onLoad={(n) => loadPose(n)} onDelete={(n) => deletePose(n)} />}
+      {pose.posesOpen && <PosesModal poses={pose.posePresets} currentClip={editState.clip} onClose={() => pose.setPosesOpen(false)} onSave={(n) => pose.savePose(n)} onLoad={(n) => pose.loadPose(n)} onDelete={(n) => pose.deletePose(n)} />}
       {/* Held-browser location popout: a small menu anchored to the card's attach badge. Fixed-position
           so it never clips inside the grid; a backdrop catches outside clicks. */}
       {cardLoc && (() => {
@@ -1692,134 +1639,22 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
         {marqueeRect && marqueeRect.w > 1 && marqueeRect.h > 1 && (
           <div style={{ position: 'absolute', left: marqueeRect.x, top: marqueeRect.y, width: marqueeRect.w, height: marqueeRect.h, border: '1px solid var(--accent)', background: '#5b8cff22', pointerEvents: 'none', zIndex: 6 }} />
         )}
-        {editState.active && (isMobile || editOpen) && (() => {
-          void boneTick; // read fresh after each setBoneEdit
-          const eng = engineRef.current;
-          const primary = selectedBones.length ? selectedBones[selectedBones.length - 1] : null;
-          const cur = primary && eng ? eng.boneEditOf(primary) : null;
-          const edited = new Set(eng?.editedBoneNames() || []);
-          const retimed = (eng?.lengthScaleOf() ?? 1) !== 1 || (eng?.clipEndOf() ?? null) !== null; // clip retimed/trimmed even without bone edits
-          const savable = edited.size > 0 || retimed;
-          const clip = eng?.clipboardSize() ?? 0;
-          const editedClips = eng?.editedClips() ?? []; // all clips (this session) that carry edits
-          const bones = editState.bones.filter((b) => b.toLowerCase().includes(boneSearch.toLowerCase()));
-          const secLabel: React.CSSProperties = { fontSize: 10, textTransform: 'uppercase', letterSpacing: '.05em', color: 'var(--muted)', marginBottom: 4 };
-          const setRot = (i: number, v: number) => { if (!primary || !cur) return; const eu = [...cur.euler] as [number, number, number]; eu[i] = v; eng!.setBoneEdit(primary, eu, cur.pos); setBoneTick((t) => t + 1); };
-          const setPos = (i: number, v: number) => { if (!primary || !cur) return; const p = [...cur.pos] as [number, number, number]; p[i] = v; eng!.setBoneEdit(primary, cur.euler, p); setBoneTick((t) => t + 1); };
-          const axis = ['X', 'Y', 'Z'];
-          const secHead = (id: string, label: string) => (
-            <div onClick={() => setCollapsed((c) => ({ ...c, [id]: !c[id] }))} style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', userSelect: 'none' }} title={collapsed[id] ? 'Expand' : 'Collapse'}>
-              <span style={{ fontSize: 8, color: 'var(--muted)', display: 'inline-block', width: 9, transform: collapsed[id] ? 'rotate(-90deg)' : 'none', transition: 'transform .12s' }}>{'▼'}</span>
-              <span style={{ ...secLabel, marginBottom: 0 }}>{label}</span>
-            </div>
-          );
-          return (
-            <div style={{ position: 'absolute', right: isMobile ? 6 : 12, top: isMobile ? 48 : 54, bottom: isMobile ? undefined : bottomBarH + 20, width: isMobile ? 'min(320px, calc(100% - 12px))' : 300, maxHeight: isMobile ? '82%' : undefined, overflowY: 'auto', overflowX: 'hidden', background: '#0e0e13f2', border: '1px solid var(--line)', borderRadius: 8, padding: 10, boxShadow: '0 12px 34px -14px rgba(0,0,0,.7)' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-                <span style={{ fontSize: 12, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>Editing {editState.clip}</span>
-                <span style={{ display: 'flex', gap: 6, alignItems: 'center', flexShrink: 0 }}>
-                  <button className="secondary" onClick={() => setEditOpen(false)} title="Hide this panel (still editing - reopen with the Pose button)" style={{ padding: '2px 7px', fontSize: 11, borderRadius: 6, border: '1px solid var(--line)' }}>hide</button>
-                  <span role="button" onClick={() => eng?.exitEditMode()} title="Exit pose editing" style={{ cursor: 'pointer', color: 'var(--muted)', padding: '0 4px' }}>✕</span>
-                </span>
-              </div>
-              <div style={{ fontSize: 10, color: 'var(--muted)', marginBottom: 8, lineHeight: 1.4 }}>Drag a handle to pose. Blue hands/feet reach (IK); pink elbows/knees set the bend; teal spine/chest/head bend the torso; purple hips move the body. Scrub the timeline and pose again to keyframe (dopesheet below).</div>
-              <div style={{ borderTop: '1px solid var(--line)', marginTop: 8, paddingTop: 8 }}>
-                {secHead('bones', 'Bones')}
-                {!collapsed.bones && <div style={{ maxHeight: 168, overflow: 'auto', border: '1px solid var(--line)', borderRadius: 6, marginTop: 6 }}>
-                {bones.map((b) => {
-                  const sel = selectedBones.includes(b);
-                  return (
-                    <div key={b} onClick={(e) => (e.shiftKey ? eng?.toggleBone(b) : eng?.selectBone(b))}
-                      style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 8px', fontSize: 11.5, cursor: 'pointer', background: sel ? 'var(--accent)' : 'transparent', color: sel ? '#fff' : 'var(--text)' }}>
-                      <span style={{ width: 6, height: 6, borderRadius: 999, flexShrink: 0, background: edited.has(b) ? '#33cc66' : 'transparent', border: edited.has(b) ? 'none' : '1px solid var(--line)' }} />
-                      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{b.replace(/^Bip01_?/, '')}</span>
-                    </div>
-                  );
-                })}
-                {!bones.length && <div style={{ padding: 8, fontSize: 11, color: 'var(--muted)' }}>no bones match</div>}
-              </div>}
-              </div>
-              {primary && cur ? (
-                <div style={{ borderTop: '1px solid var(--line)', marginTop: 10, paddingTop: 9 }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-                    <span style={{ fontSize: 11.5, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{primary.replace(/^Bip01_?/, '')}{selectedBones.length > 1 ? ` (+${selectedBones.length - 1})` : ''}</span>
-                    <div style={{ display: 'flex', gap: 5, flexShrink: 0 }}>
-                      <button className="secondary" title="Copy the selected bone(s) keyframes" onClick={() => { eng?.copyBones(); setBoneTick((t) => t + 1); }} style={{ padding: '3px 8px', fontSize: 11, borderRadius: 6, border: '1px solid var(--line)' }}>copy</button>
-                      <button className="secondary" title={clip ? `Paste ${clip} copied bone(s) onto the selection` : 'Copy a bone first'} disabled={!clip} onClick={() => { eng?.pasteBones(); setBoneTick((t) => t + 1); }} style={{ padding: '3px 8px', fontSize: 11, borderRadius: 6, border: '1px solid var(--line)', opacity: clip ? 1 : 0.5, cursor: clip ? 'pointer' : 'default' }}>paste</button>
-                      <button className="secondary" title={clip ? 'Paste the copied bone(s) mirrored onto the opposite side' : 'Copy a bone first'} disabled={!clip} onClick={() => { eng?.pasteMirror(); setBoneTick((t) => t + 1); }} style={{ padding: '3px 8px', fontSize: 11, borderRadius: 6, border: '1px solid var(--line)', opacity: clip ? 1 : 0.5, cursor: clip ? 'pointer' : 'default' }}>paste L/R</button>
-                      <button className="secondary" onClick={() => { eng?.resetBones([primary]); setBoneTick((t) => t + 1); }} style={{ padding: '3px 8px', fontSize: 11, borderRadius: 6, border: '1px solid var(--line)' }}>reset</button>
-                    </div>
-                  </div>
-                  {secHead('transform', 'Transform')}
-                  {!collapsed.transform && (<>
-                  <div style={{ ...secLabel, marginTop: 6 }}>Rotation (deg)</div>
-                  {[0, 1, 2].map((i) => (
-                    <div key={`r${i}`} style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 4 }}>
-                      <span style={{ width: 12, fontSize: 11, color: 'var(--muted)' }}>{axis[i]}</span>
-                      <input type="range" min={-180} max={180} step={1} value={cur.euler[i]} onChange={(e) => setRot(i, Number(e.target.value))} style={{ flex: 1, minWidth: 0, accentColor: '#5b8cff' }} />
-                      <input type="number" value={Math.round(cur.euler[i])} onChange={(e) => setRot(i, Number(e.target.value))} style={{ width: 48, fontSize: 11, padding: '2px 4px', borderRadius: 5, border: '1px solid var(--line)', background: 'var(--panel)', color: 'var(--text)' }} />
-                    </div>
-                  ))}
-                  <div style={{ ...secLabel, marginTop: 8 }}>Offset</div>
-                  {[0, 1, 2].map((i) => (
-                    <div key={`p${i}`} style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 4 }}>
-                      <span style={{ width: 12, fontSize: 11, color: 'var(--muted)' }}>{axis[i]}</span>
-                      <input type="range" min={-0.5} max={0.5} step={0.005} value={cur.pos[i]} onChange={(e) => setPos(i, Number(e.target.value))} style={{ flex: 1, minWidth: 0, accentColor: '#5b8cff' }} />
-                      <input type="number" step={0.01} value={Number(cur.pos[i].toFixed(3))} onChange={(e) => setPos(i, Number(e.target.value))} style={{ width: 48, fontSize: 11, padding: '2px 4px', borderRadius: 5, border: '1px solid var(--line)', background: 'var(--panel)', color: 'var(--text)' }} />
-                    </div>
-                  ))}
-                  </>)}
-                </div>
-              ) : (
-                <div style={{ fontSize: 10.5, color: 'var(--muted)', marginTop: 8 }}>Click a joint on the character or a bone above to select it. Scrub to pose at a frame.</div>
-              )}
-              <div style={{ borderTop: '1px solid var(--line)', marginTop: 10, paddingTop: 9 }}>
-                {secHead('save', 'Save & export')}
-                {!collapsed.save && (<div style={{ marginTop: 6 }}>
-                <input value={saveAsName} onChange={(e) => setSaveAsName(e.target.value)} placeholder={editState.clip || 'AnimationSet name'}
-                  style={{ width: '100%', boxSizing: 'border-box', fontSize: 12, padding: '5px 7px', borderRadius: 6, border: '1px solid var(--line)', background: 'var(--panel)', color: 'var(--text)' }} />
-                <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
-                  <button className="secondary" onClick={downloadEditedX} disabled={!savable} title={savable ? 'Bake the edits into an .x and download it' : 'Edit a bone or retime the clip first'}
-                    style={{ flex: 1, padding: '6px 10px', fontSize: 12, borderRadius: 6, cursor: savable ? 'pointer' : 'default', border: `1px solid ${savable ? 'var(--accent)' : 'var(--line)'}`, background: savable ? 'var(--accent)' : 'var(--panel)', color: savable ? '#fff' : 'var(--muted)' }}>Download .x</button>
-                  {!!nativeBridge()?.writeFile && (
-                    <button className="secondary" onClick={saveToFolder} disabled={!savable} title="Write the edited .x into a mod folder you pick"
-                      style={{ flex: 1, padding: '6px 10px', fontSize: 12, borderRadius: 6, cursor: savable ? 'pointer' : 'default', border: '1px solid var(--line)', background: 'var(--panel)', color: savable ? 'var(--text)' : 'var(--muted)' }}>Save to folder...</button>
-                  )}
-                </div>
-                <div style={{ fontSize: 10, color: 'var(--muted)', marginTop: 5, lineHeight: 1.4 }}>Renames the AnimationSet so vanilla is never overwritten. Clear the name to overwrite {editState.clip} in place.</div>
-                {editedClips.length > 1 && (
-                  <div style={{ marginTop: 8 }}>
-                    <button className="secondary" onClick={downloadAllEdited} title="Bake all edited clips to renamed .x and download as a zip"
-                      style={{ width: '100%', padding: '6px 10px', fontSize: 12, borderRadius: 6, cursor: 'pointer', border: '1px solid var(--line)', background: 'var(--panel)', color: 'var(--text)' }}>Download all edited (.zip)</button>
-                    <div style={{ fontSize: 10, color: 'var(--muted)', marginTop: 5, lineHeight: 1.4 }}>Edits persist as you switch clips this session. Each is baked with an _Edited AnimationSet name.</div>
-                  </div>
-                )}
-                </div>)}
-              </div>
-              <div style={{ borderTop: '1px solid var(--line)', marginTop: 10, paddingTop: 9 }}>
-                {secHead('poses', `Saved poses${Object.keys(posePresets).length ? ` (${Object.keys(posePresets).length})` : ''}`)}
-                {!collapsed.poses && (<div style={{ marginTop: 6 }}>
-                  <div style={{ display: 'flex', gap: 6 }}>
-                    <input value={poseName} onChange={(e) => setPoseName(e.target.value)} placeholder="name this pose" onKeyDown={(e) => { if (e.key === 'Enter') { savePose(poseName); setPoseName(''); } }}
-                      style={{ flex: 1, minWidth: 0, boxSizing: 'border-box', fontSize: 11.5, padding: '4px 6px', borderRadius: 6, border: '1px solid var(--line)', background: 'var(--panel)', color: 'var(--text)' }} />
-                    <button className="secondary" disabled={!savable} title={savable ? 'Save the current edits as a reusable pose (Ctrl+S)' : 'Edit something first'} onClick={() => { savePose(poseName || saveAsName || editState.clip || 'pose'); setPoseName(''); }}
-                      style={{ flexShrink: 0, padding: '4px 10px', fontSize: 11, borderRadius: 6, border: `1px solid ${savable ? 'var(--accent)' : 'var(--line)'}`, background: savable ? 'var(--accent)' : 'var(--panel)', color: savable ? '#fff' : 'var(--muted)', cursor: savable ? 'pointer' : 'default' }}>save</button>
-                  </div>
-                  <button className="secondary" onClick={() => setPosesOpen(true)} title="Browse your saved poses as a gallery" style={{ width: '100%', marginTop: 6, padding: '6px 10px', fontSize: 12, borderRadius: 6, cursor: 'pointer', border: '1px solid var(--line)', background: 'var(--panel)', color: 'var(--text)' }}>Browse saved poses{Object.keys(posePresets).length ? ` (${Object.keys(posePresets).length})` : ''}...</button>
-                  <div style={{ fontSize: 10, color: 'var(--muted)', marginTop: 5, lineHeight: 1.4 }}>Saved locally. Ctrl+S quick-saves. Load applies a saved pose onto the current clip.</div>
-                </div>)}
-              </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 10, fontSize: 10.5, color: 'var(--muted)' }}>
-                <span>{edited.size} bone{edited.size === 1 ? '' : 's'} edited</span>
-                {edited.size > 0 && <div style={{ display: 'flex', gap: 6 }}>
-                  <button className="secondary" onClick={() => { eng?.mirrorAnimation(); setBoneTick((t) => t + 1); }} title="Mirror the whole animation left to right (every keyframe)" style={{ padding: '3px 8px', fontSize: 11, borderRadius: 6, border: '1px solid var(--line)' }}>mirror L/R</button>
-                  <button className="secondary" onClick={() => { eng?.clearBoneEdits(); setBoneTick((t) => t + 1); }} style={{ padding: '3px 8px', fontSize: 11, borderRadius: 6, border: '1px solid var(--line)' }}>clear all</button>
-                </div>}
-              </div>
-              <div style={{ fontSize: 10, color: 'var(--muted)', marginTop: 6, lineHeight: 1.4 }}>Right-click a handle to reset that limb. Ctrl+Z / Ctrl+Y to undo/redo.</div>
-            </div>
-          );
-        })()}
+        {editState.active && (isMobile || editOpen) && (
+          <PoseEditorPanel
+            pose={pose}
+            engine={engineRef.current}
+            editState={editState}
+            selectedBones={selectedBones}
+            saveAsName={saveAsName}
+            setSaveAsName={setSaveAsName}
+            boneSearch={boneSearch}
+            isMobile={isMobile}
+            bottomBarH={bottomBarH}
+            boneTick={boneTick}
+            bump={() => setBoneTick((t) => t + 1)}
+            onHide={() => setEditOpen(false)}
+          />
+        )}
         <div ref={bottomBarRef} style={{ position: 'absolute', left: 12, bottom: 12, right: 12, background: '#0e0e13f2', border: '1px solid rgba(255,255,255,.08)', borderRadius: 10, overflow: 'hidden', boxShadow: '0 12px 34px -14px rgba(0,0,0,.7)' }}>
           {editState.active && !isMobile && (() => {
             void boneTick; const eng = engineRef.current; if (!eng) return null;
