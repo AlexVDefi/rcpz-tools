@@ -7,7 +7,7 @@ import { THREE, makeSkinnedMaterial, makeMaterial, CHAR_LIGHTING, partMatrix, ma
 import { glbToGltf, isolateSubMesh, bytesToTexture, sourceToTexture } from './loaders';
 import { TransformControls } from 'three/addons/controls/TransformControls.js';
 import { normaliseClip, retargetAttachments, boneRestMap, normalizeClothingRig, captureSkeletonBind, type SkeletonBind } from './anim';
-import { applyDelta, applyTranslationDelta, applyRotTimeline, applyPosTimeline, renameSet, appDeltaToX, appPosToX, clipTickSpan, clipFrameTicks, ticksPerSecond } from '../anim-edit/xedit';
+import { applyDelta, applyTranslationDelta, applyRotTimeline, applyPosTimeline, renameSet, appDeltaToX, appPosToX, clipTickSpan, clipFrameTicks, scaleSetTicks, trimSetEnd, ticksPerSecond } from '../anim-edit/xedit';
 import { composeBody } from './canvas-image-ops';
 import { RigSet } from './rigset';
 
@@ -15,6 +15,8 @@ export interface Ctx { resolver: unknown; converter: unknown; }
 type Clip = { id: string; name: string; format: string; rel: string };
 type BoneKey = { tick: number; rot: THREE.Quaternion; pos: THREE.Vector3 }; // one app-space delta keyframe on a bone's edit timeline
 type EditSnap = { keys: BoneKey[] | null; pending: { rot: THREE.Quaternion; pos: THREE.Vector3 } | null }; // undo snapshot of a bone's edit state
+type SerKey = { tick: number; rot: [number, number, number, number]; pos: [number, number, number] }; // JSON-serialisable keyframe
+export type AnimProject = { version: 1; clips: { rel: string; name: string; format: string; id?: string; lengthScale?: number; clipEnd?: number | null; bones: Record<string, SerKey[]> }[]; setDeltas: { match: string; bones: Record<string, SerKey[]> }[] };
 
 interface Equip { kind: string; maskTextures: Uint8Array[]; baseTextures: Uint8Array[]; tint: number[] | null; hatCategory: string | null; layer: number; }
 type Socket = { offset: number[]; rotate: number[]; scale?: number };
@@ -138,8 +140,17 @@ export class CharacterEngine {
   private editClipName: string | null = null;      // the loaded clip's name / AnimationSet name
   private editMode = false;                         // pose editing active: playback paused, joints pickable, overrides applied
   private boneKeys = new Map<string, BoneKey[]>();  // author's app-space delta timeline per bone (sorted by tick; 1 key = constant pose)
+  private boneClipboard = new Map<string, BoneKey[]>(); // copied bone timelines for paste onto other bones
+  private project = new Map<string, { clip: Clip; keys: Map<string, BoneKey[]>; lengthScale: number; clipEnd: number | null }>(); // clip rel -> edits + retime + trim
+  private lengthScale = 1;                            // retime the current clip: >1 stretches (longer), <1 compresses
+  private clipEnd: number | null = null;             // trim the current clip to end at this scaled tick (null = no trim)
+  private looping = true;                             // loop state mirror (for the trim loop-point)
+  private setDeltas: { match: string; keys: Map<string, BoneKey[]> }[] = []; // set-wide layers applied to clips whose name starts with `match` (per-clip keys override)
+  private editClipKey: string | null = null;         // the current clip's project key (its rel path)
+  private currentClip: Clip | null = null;           // the Clip currently loaded in the editor
   private liveEdits = new Map<string, { rot: THREE.Quaternion; pos: THREE.Vector3 }>(); // live uncommitted delta (auto-key off) until Add Key
   private autoKey = true;                            // on: posing writes/updates a key at the current time; off: pose is live until Add Key
+  private autoEndpoints = true;                       // on: a bone's first edit also anchors rest keys at the clip's first + last frame
   private boneBase = new Map<string, { quat: THREE.Quaternion; pos: THREE.Vector3 }>();  // the clip pose of edited bones at the current frame
   private bodyBones = new Map<string, THREE.Bone>(); // bone name -> Bone on the body rig (selection / gizmo / base capture)
   private selectedBones: string[] = [];            // current bone selection (primary = last)
@@ -195,7 +206,8 @@ export class CharacterEngine {
       if (this.turntable) { this.spin = (this.spin + dt * 0.6) % (Math.PI * 2); this.rigs.setFacing(this.spin); }
       if (this.rigs.clip && this.playing) {
         if (this.editMode) this.restoreBase(); // undo the override so the mixer re-poses from a clean base
-        this.rigs.update(dt * this.speed);
+        this.rigs.update(dt * this.speed / this.lengthScale); // retime: a stretched clip plays proportionally slower
+        if (this.clipEnd != null) { const [lo] = this.origTickRange(), se = this.scaledEnd(), cutFrac = se > lo ? (this.clipEnd - lo) / (se - lo) : 1, dur = this.rigs.duration(); if (cutFrac < 1 && this.rigs.time() >= cutFrac * dur - 1e-6) { if (this.looping) this.rigs.setTime(0); else { this.playing = false; this.finished = true; this.onPlaying?.(false); } } } // trim: loop/stop at the cut
         if (this.editMode) { this.captureBoneBase(); this.applyBoneOverrides(); } // re-base off the fresh clip pose so the edit rides the motion (no compounding)
         if (this.rigs.finishedOnce()) { this.playing = false; this.finished = true; this.onPlaying?.(false); } // one-shot done: stop, arm replay
       }
@@ -1714,12 +1726,19 @@ export class CharacterEngine {
   }
 
   // ---- transport ----
-  seek(frac: number) { if (this.editMode) this.restoreBase(); this.rigs.setTime(frac * this.rigs.duration()); if (this.editMode) { this.liveEdits.clear(); this.captureBoneBase(); this.applyBoneOverrides(); } } // scrub reverts any uncommitted (auto-key off) pose and re-bases on the new frame
+  seek(frac: number) {
+    const [lo, hi] = this.clipTickRange(), se = this.scaledEnd(), dur = this.rigs.duration();
+    const tick = lo + Math.max(0, Math.min(1, frac)) * (hi - lo);
+    const af = se > lo ? Math.min(1, (tick - lo) / (se - lo)) : 0; // ticks past the vanilla end (extend) hold at the end
+    if (this.editMode) this.restoreBase();
+    this.rigs.setTime(Math.min(af * dur, dur * (1 - 1e-6))); // clamp under duration so a looping action never wraps to 0
+    if (this.editMode) { this.liveEdits.clear(); this.captureBoneBase(); this.applyBoneOverrides(); }
+  }
   /** Move the scrub bar to a specific edit-timeline tick (dopesheet click). */
   seekTick(tick: number) { const [lo, hi] = this.clipTickRange(); this.seek(hi > lo ? (tick - lo) / (hi - lo) : 0); this.onFrame?.(this.rigs.time(), this.rigs.duration()); }
   getTime() { return this.rigs.time(); }
   getDuration() { return this.rigs.duration(); }
-  setLoop(on: boolean) { this.rigs.setLoop(on); if (on && this.finished) this.replay(); } // turning loop back on revives a stopped clip
+  setLoop(on: boolean) { this.looping = on; this.rigs.setLoop(on); if (on && this.finished) this.replay(); } // turning loop back on revives a stopped clip
   /** Rewind to the first frame and play again (one-shot or looping). */
   replay() { this.finished = false; this.rigs.restart(); this.playing = true; this.onPlaying?.(true); }
   setSpeed(s: number) { this.speed = s; }
@@ -1897,12 +1916,17 @@ export class CharacterEngine {
   }
 
   async playClip(clip: Clip) {
+    this.syncCurrentToProject(); // stash the outgoing clip's edits so switching clips never loses them
     if (this.editMode) this.exitEditMode(); // picking a new clip drops any in-progress edit
     this.boneKeys.clear(); this.liveEdits.clear(); // edits are per-clip
     const r = await resolveClip(this.ctx, clip);
     if (r.error) throw new Error(r.error);
     this.editText = clip.format === 'x' && r.src ? new TextDecoder().decode(r.src) : null; // kept for the pose editor
     this.editClipName = clip.name;
+    this.editClipKey = clip.rel || clip.name; this.currentClip = clip;
+    const saved = this.project.get(this.editClipKey); // restore any prior edits for this clip
+    this.lengthScale = saved?.lengthScale ?? 1; this.clipEnd = saved?.clipEnd ?? null;
+    if (saved) for (const [n, k] of saved.keys) this.boneKeys.set(n, this.cloneKeys(k));
     const gltf = await glbToGltf(r.glb);
     if (!gltf.animations?.length) throw new Error('no animation in ' + clip.name);
     const norm = normaliseClip(gltf.animations[0], clip.format, { clipScene: gltf.scene, bodySkel: this.bodySkel ?? undefined, clipRest: boneRestMap(gltf.scene), bodyRest: this.bodyRest });
@@ -1968,13 +1992,17 @@ export class CharacterEngine {
     for (const [name, bone] of this.bodyBones) { const b = this.boneBase.get(name); if (b) { bone.quaternion.copy(b.quat); bone.position.copy(b.pos); } }
   }
   // --- keyframe timeline (per-bone app-space delta over the clip's tick range) ---
-  private clipTickRange(): [number, number] { if (!this.editText) return [0, 0]; try { return clipTickSpan(this.editText, this.editSetName()); } catch { return [0, 0]; } }
-  /** The tick on the edit timeline the scrub bar currently sits at. */
+  private origTickRange(): [number, number] { if (!this.editText) return [0, 0]; try { return clipTickSpan(this.editText, this.editSetName()); } catch { return [0, 0]; } }
+  private scaledEnd(): number { const [lo, hi] = this.origTickRange(); return Math.round(lo + (hi - lo) * this.lengthScale); } // the retimed vanilla end (before trim)
+  private clipTickRange(): [number, number] { const [lo] = this.origTickRange(); return [lo, this.clipEnd ?? this.scaledEnd()]; } // editing range = [lo, trim-end or retimed end]
+  /** The tick on the edit timeline the scrub bar currently sits at (action time -> scaled tick, capped at the trim). */
   currentTick(): number {
-    const [lo, hi] = this.clipTickRange(), dur = this.rigs.duration();
-    const frac = dur > 1e-6 ? Math.max(0, Math.min(1, this.rigs.time() / dur)) : 0;
-    return Math.round(lo + frac * (hi - lo));
+    const [lo, hi] = this.clipTickRange(), se = this.scaledEnd(), dur = this.rigs.duration();
+    const af = dur > 1e-6 ? Math.max(0, Math.min(1, this.rigs.time() / dur)) : 0;
+    return Math.round(Math.min(lo + af * (se - lo), hi));
   }
+  /** Playhead position as a fraction of the editing range (trim/retime-aware), for the dopesheet. */
+  playheadFrac(): number { const [lo, hi] = this.clipTickRange(); return hi > lo ? Math.max(0, Math.min(1, (this.currentTick() - lo) / (hi - lo))) : 0; }
   /** Sample a sorted key list at `tick` (slerp rot, lerp pos), held flat outside the range. */
   private sampleList(keys: BoneKey[], tick: number): { rot: THREE.Quaternion; pos: THREE.Vector3 } {
     if (keys.length === 1 || tick <= keys[0].tick) return keys[0];
@@ -1985,15 +2013,35 @@ export class CharacterEngine {
     }
     return last;
   }
-  /** The effective app-space delta a bone carries at `tick`: a pending live edit wins, else its keys. */
+  /** The effective app-space delta a bone carries at `tick`: live edit wins, else per-clip keys, else a
+   *  matching set-wide layer. */
   private sampleBoneDelta(name: string, tick: number): { rot: THREE.Quaternion; pos: THREE.Vector3 } | null {
     const pend = this.liveEdits.get(name); if (pend) return pend;
-    const keys = this.boneKeys.get(name); return keys && keys.length ? this.sampleList(keys, tick) : null;
+    const keys = this.boneKeys.get(name) ?? this.matchingSetKeys(this.editClipName ?? '', name);
+    return keys && keys.length ? this.sampleList(keys, tick) : null;
+  }
+  /** The newest matching set-wide layer's timeline for `bone` on a clip named `clipName`, or null. */
+  private matchingSetKeys(clipName: string, bone: string): BoneKey[] | null {
+    for (let i = this.setDeltas.length - 1; i >= 0; i--) { const s = this.setDeltas[i]; if ((s.match === '*' || clipName.startsWith(s.match)) && s.keys.has(bone)) return s.keys.get(bone)!; }
+    return null;
+  }
+  /** Per-clip keys with any matching set-wide layers merged UNDER them (per-clip overrides), for baking. */
+  private mergedKeysForClip(clipName: string, perClip: Map<string, BoneKey[]>): Map<string, BoneKey[]> {
+    const merged = new Map<string, BoneKey[]>();
+    for (const s of this.setDeltas) if (s.match === '*' || clipName.startsWith(s.match)) for (const [bone, keys] of s.keys) merged.set(bone, keys); // set-wide base (later layers win)
+    for (const [bone, keys] of perClip) merged.set(bone, keys); // per-clip overrides
+    return merged;
   }
   private keyIsIdentity(rot: THREE.Quaternion, pos: THREE.Vector3): boolean { return Math.abs(rot.w) > 0.9999995 && pos.lengthSq() < 1e-12; }
-  /** Insert or replace a bone's key at `tick`. Unless keepIdentity, drop the bone if that leaves only a
-   *  lone identity key (so a zeroed drag clears the edit); Add Key sets keepIdentity to hold a rest pose. */
+  /** Snap a tick to the nearest clip frame (or the clip end/start), so keyframes always land on a frame line. */
+  snapTick(tick: number): number {
+    const [lo, hi] = this.clipTickRange(), cands = this.clipFramesUnfiltered().concat([lo, hi]);
+    return cands.length ? cands.reduce((b, x) => Math.abs(x - tick) < Math.abs(b - tick) ? x : b, cands[0]) : Math.round(tick);
+  }
+  /** Insert or replace a bone's key at `tick` (snapped to a frame). Unless keepIdentity, drop the bone if
+   *  that leaves only a lone identity key (so a zeroed drag clears the edit); Add Key keeps a rest pose. */
   private setKey(name: string, tick: number, rot: THREE.Quaternion, pos: THREE.Vector3, keepIdentity = false) {
+    tick = this.snapTick(tick);
     const list = this.boneKeys.get(name) ?? [], k: BoneKey = { tick, rot: rot.clone(), pos: pos.clone() };
     const i = list.findIndex((x) => x.tick === tick);
     if (i >= 0) list[i] = k; else { list.push(k); list.sort((a, b) => a.tick - b.tick); }
@@ -2001,10 +2049,25 @@ export class CharacterEngine {
   }
   /** Commit the delta a pose produced for `name` at the current tick, honouring the auto-key toggle. */
   private writeEdit(name: string, rot: THREE.Quaternion, pos: THREE.Vector3) {
-    if (this.autoKey) { this.liveEdits.delete(name); this.setKey(name, this.currentTick(), rot, pos); }
+    if (this.autoKey) {
+      const first = !this.boneKeys.has(name);
+      this.liveEdits.delete(name); this.setKey(name, this.currentTick(), rot, pos);
+      if (first && this.boneKeys.has(name)) this.addEndpointAnchors(name); // first edit -> anchor rest at the clip ends
+    }
     else if (this.keyIsIdentity(rot, pos)) this.liveEdits.delete(name);
     else this.liveEdits.set(name, { rot: rot.clone(), pos: pos.clone() });
   }
+  /** On a bone's first edit, drop rest-pose (identity) keys at the clip's first + last frame (unless the
+   *  edit already occupies that frame), so the edit reads as a localized bump between held ends. */
+  private addEndpointAnchors(name: string) {
+    if (!this.autoEndpoints) return;
+    const [lo, hi] = this.clipTickRange(); if (hi <= lo) return;
+    const has = (t: number) => (this.boneKeys.get(name) ?? []).some((k) => k.tick === t);
+    if (!has(lo)) this.setKey(name, lo, new THREE.Quaternion(), new THREE.Vector3(), true);
+    if (!has(hi)) this.setKey(name, hi, new THREE.Quaternion(), new THREE.Vector3(), true);
+  }
+  autoEndpointsOn(): boolean { return this.autoEndpoints; }
+  setAutoEndpoints(on: boolean) { this.autoEndpoints = on; }
   /** A bone's key list with any pending live edit folded in as a key at the current tick (for baking). */
   private effectiveKeyList(name: string, tick: number): BoneKey[] {
     const base = this.boneKeys.get(name) ?? [], pend = this.liveEdits.get(name);
@@ -2101,6 +2164,17 @@ export class CharacterEngine {
     this.pushBoneHistory(before, this.snapshotEdits(names));
   }
   editedBoneNames(): string[] { return [...new Set([...this.boneKeys.keys(), ...this.liveEdits.keys()])]; }
+  /** Fold the current clip's live edits into the project store (so switching clips + bulk bake see them). */
+  private syncCurrentToProject() {
+    if (!this.editClipKey || !this.currentClip) return;
+    if (this.boneKeys.size || this.lengthScale !== 1 || this.clipEnd != null) { const keys = new Map<string, BoneKey[]>(); for (const [n, k] of this.boneKeys) keys.set(n, this.cloneKeys(k)); this.project.set(this.editClipKey, { clip: this.currentClip, keys, lengthScale: this.lengthScale, clipEnd: this.clipEnd }); }
+    else this.project.delete(this.editClipKey);
+  }
+  /** Every clip that currently carries edits (across the session), for the bulk-export picker. */
+  editedClips(): { rel: string; name: string; bones: number }[] {
+    this.syncCurrentToProject();
+    return [...this.project.entries()].filter(([, v]) => v.keys.size > 0 || v.lengthScale !== 1 || v.clipEnd != null).map(([rel, v]) => ({ rel, name: v.clip.name, bones: v.keys.size })).sort((a, b) => a.name.localeCompare(b.name));
+  }
   // --- dopesheet API ---
   autoKeyOn(): boolean { return this.autoKey; }
   setAutoKey(on: boolean) { this.autoKey = on; }
@@ -2138,12 +2212,37 @@ export class CharacterEngine {
     this.pushBoneHistory(before, this.snapshotEdits([bone]));
   }
   /** The clip's own frame ticks (for a dopesheet grid + snapping). */
-  clipFrames(): number[] { if (!this.editText) return []; try { return clipFrameTicks(this.editText, this.editSetName()); } catch { return []; } }
+  clipFrames(): number[] { if (!this.editText) return []; const [lo, hi] = this.clipTickRange(); try { return clipFrameTicks(this.editText, this.editSetName()).map((f) => Math.round(lo + (f - lo) * this.lengthScale)).filter((t) => t <= hi); } catch { return []; } }
+  lengthScaleOf(): number { return this.lengthScale; }
+  /** Trim the current clip to end at `tick` (null = no trim). Clamped just past the first frame. */
+  clipEndOf(): number | null { return this.clipEnd; }
+  setClipEnd(tick: number | null) {
+    if (tick == null) this.clipEnd = null;
+    else { const [lo] = this.origTickRange(), frames = this.clipFramesUnfiltered(); const minEnd = frames.length > 1 ? frames[1] : lo + 1; this.clipEnd = Math.max(minEnd, Math.round(tick)); }
+    if (this.editMode) this.applyBoneOverrides();
+    this.onBoneEdit?.();
+  }
+  private clipFramesUnfiltered(): number[] { if (!this.editText) return []; const [lo] = this.origTickRange(); try { return clipFrameTicks(this.editText, this.editSetName()).map((f) => Math.round(lo + (f - lo) * this.lengthScale)); } catch { return []; } }
+  /** Retime the current clip. Rescales existing keyframe ticks so they stay proportionally placed. */
+  setLengthScale(s: number) {
+    const ns = Math.max(0.1, Math.min(8, +s.toFixed(3))), ratio = ns / this.lengthScale, [lo] = this.origTickRange();
+    this.lengthScale = ns; // set first so snapTick uses the new frame grid
+    if (ratio !== 1) { for (const list of this.boneKeys.values()) { for (const k of list) k.tick = this.snapTick(Math.round(lo + (k.tick - lo) * ratio)); const seen = new Set<number>(); const dedup = list.filter((k) => !seen.has(k.tick) && seen.add(k.tick)); list.length = 0; list.push(...dedup.sort((a, b) => a.tick - b.tick)); } }
+    if (this.editMode) this.applyBoneOverrides();
+    this.onBoneEdit?.();
+  }
   /** Dopesheet state: clip tick range, frames, current tick, ticks-per-second, auto-key, and a keyframe track per edited bone. */
-  keyframeTimeline(): { range: [number, number]; frames: number[]; tick: number; tps: number; autoKey: boolean; tracks: { bone: string; keys: number[] }[] } {
+  keyframeTimeline(): { range: [number, number]; frames: number[]; frameCount: number; tick: number; tps: number; autoKey: boolean; lengthScale: number; clipEnd: number | null; scaledEnd: number; tracks: { bone: string; keys: number[] }[] } {
     const tps = this.editText ? ticksPerSecond(this.editText) : 0;
     const tracks = [...this.boneKeys.entries()].map(([bone, keys]) => ({ bone, keys: keys.map((k) => k.tick) })).sort((a, b) => a.bone.localeCompare(b.bone));
-    return { range: this.clipTickRange(), frames: this.clipFrames(), tick: this.currentTick(), tps, autoKey: this.autoKey, tracks };
+    return { range: this.clipTickRange(), frames: this.clipFrames(), frameCount: this.clipFramesUnfiltered().length, tick: this.currentTick(), tps, autoKey: this.autoKey, lengthScale: this.lengthScale, clipEnd: this.clipEnd, scaledEnd: this.scaledEnd(), tracks };
+  }
+  /** Trim (dir<0) or extend (dir>0) the clip end by one frame. */
+  nudgeClipEnd(dir: number) {
+    const frames = this.clipFramesUnfiltered(); if (frames.length < 2) return;
+    const cur = this.clipEnd ?? frames[frames.length - 1], step = Math.round((frames[frames.length - 1] - frames[0]) / (frames.length - 1));
+    if (dir < 0) { const below = frames.filter((f) => f < cur - 1); this.setClipEnd(below.length ? below[below.length - 1] : frames[1]); }
+    else { const above = frames.filter((f) => f > cur + 1); this.setClipEnd(above.length ? above[0] : cur + step); } // extend past the vanilla end by a frame
   }
 
   // --- mirror the pose left <-> right across the body's sagittal plane (world-space, so it is
@@ -2151,47 +2250,179 @@ export class CharacterEngine {
   private mirrorName(name: string): string { return name.includes('_L_') ? name.replace('_L_', '_R_') : name.includes('_R_') ? name.replace('_R_', '_L_') : name; }
   private mirrorQuat(q: THREE.Quaternion, n: THREE.Vector3): THREE.Quaternion { const d = 2 * (q.x * n.x + q.y * n.y + q.z * n.z); return new THREE.Quaternion(d * n.x - q.x, d * n.y - q.y, d * n.z - q.z, q.w); }
   private mirrorPoint(p: THREE.Vector3, n: THREE.Vector3, plane: THREE.Vector3): THREE.Vector3 { return p.clone().addScaledVector(n, -2 * p.clone().sub(plane).dot(n)); }
-  mirrorPose() {
-    const lb = this.bodyBones.get('Bip01_L_Thigh'), rb = this.bodyBones.get('Bip01_R_Thigh'); if (!lb || !rb) return;
+  /** With the body currently posed (world matrices up to date) and boneBase = the clip pose at this
+   *  frame, reflect the edited bones + their mirrors across the sagittal plane and return each one's new
+   *  app-space delta. Mutates the live bones (parent-first) as a side effect. Null if the rig isn't ready. */
+  private mirrorDeltasAtFrame(sources?: string[]): Map<string, { rot: THREE.Quaternion; pos: THREE.Vector3 }> | null {
+    const lb = this.bodyBones.get('Bip01_L_Thigh'), rb = this.bodyBones.get('Bip01_R_Thigh'); if (!lb || !rb) return null;
     this.rigs.bodyRig()?.root.updateMatrixWorld(true);
     const lp = lb.getWorldPosition(new THREE.Vector3()), rp = rb.getWorldPosition(new THREE.Vector3());
-    const n = rp.clone().sub(lp); if (n.lengthSq() < 1e-9) return; n.normalize(); // body left-right axis (thigh joints are symmetric, set by the pelvis)
+    const n = rp.clone().sub(lp); if (n.lengthSq() < 1e-9) return null; n.normalize(); // body left-right axis (thigh joints are symmetric, set by the pelvis)
     const plane = lp.add(rp).multiplyScalar(0.5);
-    const set = new Set<string>();
-    for (const name of this.editedBoneNames()) { set.add(name); set.add(this.mirrorName(name)); }
-    const bones = [...set].filter((x) => this.bodyBones.has(x)); if (!bones.length) return;
+    // pairs of [target, source]. sources given -> one-directional (reflect src onto its mirror, leave src); else swap the edited bones + their mirrors.
+    let pairs: [string, string][];
+    if (sources) pairs = sources.filter((s) => this.bodyBones.has(s) && this.bodyBones.has(this.mirrorName(s))).map((s) => [this.mirrorName(s), s]);
+    else { const set = new Set<string>(); for (const name of this.editedBoneNames()) { set.add(name); set.add(this.mirrorName(name)); } pairs = [...set].filter((x) => this.bodyBones.has(x)).map((name) => [name, this.mirrorName(name)]); }
+    if (!pairs.length) return null;
+    const srcOf = new Map(pairs.map(([t, s]) => [t, s])), targets = new Set(pairs.map(([t]) => t));
     const world = new Map<string, { quat: THREE.Quaternion; pos: THREE.Vector3 }>();
-    for (const name of bones) { const b = this.bodyBones.get(name)!; world.set(name, { quat: b.getWorldQuaternion(new THREE.Quaternion()), pos: b.getWorldPosition(new THREE.Vector3()) }); }
-    const before = this.snapshotEdits(bones);
-    for (const name of this.bodySkel?.order ?? bones) { // parent-first so each parent's new world is ready
-      if (!set.has(name)) continue;
-      const b = this.bodyBones.get(name)!, src = world.get(this.mirrorName(name)) ?? world.get(name)!;
+    for (const [, s] of pairs) if (!world.has(s)) { const b = this.bodyBones.get(s)!; world.set(s, { quat: b.getWorldQuaternion(new THREE.Quaternion()), pos: b.getWorldPosition(new THREE.Vector3()) }); }
+    for (const name of this.bodySkel?.order ?? [...targets]) { // parent-first so each parent's new world is ready
+      if (!targets.has(name)) continue;
+      const b = this.bodyBones.get(name)!, src = world.get(srcOf.get(name)!) ?? world.get(name)!;
       const parentQ = b.parent ? b.parent.getWorldQuaternion(new THREE.Quaternion()) : new THREE.Quaternion();
       b.quaternion.copy(parentQ.invert().multiply(this.mirrorQuat(src.quat, n)));
       if (name === 'Bip01_Pelvis' && b.parent) b.position.copy(b.parent.worldToLocal(this.mirrorPoint(src.pos, n, plane))); // mirror the hip shift; other bones keep their base position
       b.updateMatrixWorld(true);
     }
-    const tick = this.currentTick();
-    for (const name of bones) {
-      const b = this.bodyBones.get(name)!, base = this.boneBase.get(name); if (!base) continue;
-      const rot = base.quat.clone().invert().multiply(b.quaternion), pos = b.position.clone().sub(base.pos);
-      this.liveEdits.delete(name); this.setKey(name, tick, rot, pos); // mirror commits a key at the current frame
+    const out = new Map<string, { rot: THREE.Quaternion; pos: THREE.Vector3 }>();
+    for (const name of targets) { const b = this.bodyBones.get(name)!, base = this.boneBase.get(name); if (!base) continue; out.set(name, { rot: base.quat.clone().invert().multiply(b.quaternion), pos: b.position.clone().sub(base.pos) }); }
+    return out;
+  }
+  /** Paste the clipboard reflected onto the opposite side: each copied bone's timeline mirrors onto its
+   *  mirror-named bone (source kept). Poses the source from the clipboard at each key, so it is faithful
+   *  to what was copied regardless of the current edits. */
+  pasteMirror(): number {
+    if (!this.boneClipboard.size) return 0;
+    const order = this.bodySkel?.order ?? [...this.boneClipboard.keys()];
+    const sources = order.filter((s) => this.boneClipboard.has(s) && this.bodyBones.has(this.mirrorName(s)));
+    if (!sources.length) return 0;
+    const targets = sources.map((s) => this.mirrorName(s));
+    const tickSet = new Set<number>(); for (const s of sources) for (const k of this.boneClipboard.get(s)!) tickSet.add(k.tick);
+    const ticks = [...tickSet].sort((a, b) => a - b); if (!ticks.length) return 0;
+    const before = this.snapshotEdits(targets), saveSec = this.rigs.time();
+    const [lo, hi] = this.clipTickRange(), span = Math.max(1, hi - lo), dur = this.rigs.duration();
+    const acc = new Map<string, BoneKey[]>();
+    for (const t of ticks) {
+      this.restoreBase(); this.rigs.setTime(dur * (t - lo) / span); this.captureBoneBase(); this.applyBoneOverrides();
+      for (const s of sources) { const b = this.bodyBones.get(s)!, base = this.boneBase.get(s); if (!base) continue; const d = this.sampleList(this.boneClipboard.get(s)!, t); b.quaternion.copy(base.quat).multiply(d.rot); b.position.copy(base.pos).add(d.pos); b.updateMatrixWorld(true); } // pose the copied source
+      const deltas = this.mirrorDeltasAtFrame(sources); if (!deltas) continue;
+      for (const [name, d] of deltas) { let arr = acc.get(name); if (!arr) { arr = []; acc.set(name, arr); } arr.push({ tick: t, rot: d.rot.clone(), pos: d.pos.clone() }); }
     }
+    this.restoreBase(); this.rigs.setTime(saveSec); this.captureBoneBase();
+    for (const [name, keys] of acc) { keys.sort((a, b) => a.tick - b.tick); this.liveEdits.delete(name); this.boneKeys.set(name, keys); }
+    this.applyBoneOverrides();
+    this.onBoneEdit?.();
+    this.pushBoneHistory(before, this.snapshotEdits(targets));
+    return targets.length;
+  }
+  /** Mirror the pose at the CURRENT frame (one keyframe per involved bone at the current tick). */
+  mirrorPose() {
+    const deltas = this.mirrorDeltasAtFrame(); if (!deltas) return;
+    const bones = [...deltas.keys()], before = this.snapshotEdits(bones), tick = this.currentTick();
+    for (const [name, d] of deltas) { this.liveEdits.delete(name); this.setKey(name, tick, d.rot, d.pos); }
     this.applyBoneOverrides();
     this.onBoneEdit?.();
     this.pushBoneHistory(before, this.snapshotEdits(bones));
+  }
+  /** Mirror the WHOLE animation L<->R: reflect every keyframe of the edited bones onto the opposite side. */
+  mirrorAnimation() {
+    const involvedSet = new Set<string>();
+    for (const name of this.editedBoneNames()) { involvedSet.add(name); involvedSet.add(this.mirrorName(name)); }
+    const involved = [...involvedSet].filter((x) => this.bodyBones.has(x)); if (!involved.length) return;
+    const tickSet = new Set<number>();
+    for (const b of involved) for (const k of this.boneKeys.get(b) ?? []) tickSet.add(k.tick);
+    const ticks = [...tickSet].sort((a, b) => a - b);
+    if (!ticks.length) { this.mirrorPose(); return; } // nothing keyed on a timeline: just mirror this frame
+    const before = this.snapshotEdits(involved), saveSec = this.rigs.time();
+    const [lo, hi] = this.clipTickRange(), span = Math.max(1, hi - lo), dur = this.rigs.duration();
+    const acc = new Map<string, BoneKey[]>();
+    for (const t of ticks) {
+      this.restoreBase(); this.rigs.setTime(dur * (t - lo) / span); this.captureBoneBase(); this.applyBoneOverrides(); // pose the edited animation at tick t
+      const deltas = this.mirrorDeltasAtFrame(); if (!deltas) continue;
+      for (const [name, d] of deltas) { let arr = acc.get(name); if (!arr) { arr = []; acc.set(name, arr); } arr.push({ tick: t, rot: d.rot.clone(), pos: d.pos.clone() }); }
+    }
+    this.restoreBase(); this.rigs.setTime(saveSec); this.captureBoneBase(); // back to the frame the user was on
+    for (const [name, keys] of acc) { keys.sort((a, b) => a.tick - b.tick); this.liveEdits.delete(name); this.boneKeys.set(name, keys); }
+    this.applyBoneOverrides();
+    this.onBoneEdit?.();
+    this.pushBoneHistory(before, this.snapshotEdits(involved));
+  }
+  /** The bones the current selection actually drives (a hand handle drives the whole arm chain, etc.) -
+   *  so 'selected only' shows the tracks a handle edits, not just the handle's own bone. */
+  affectedForSelection(): string[] {
+    const out = new Set<string>();
+    for (const name of this.selectedBones) { const h = CharacterEngine.HANDLES.find((x) => x.bone === name); if (h) for (const b of this.affectedForHandle(h)) out.add(b); else out.add(name); }
+    return [...out];
+  }
+  // --- keyframe-level selection ops (the dopesheet passes {bone,tick} lists) ---
+  private keyClipboard: { bone: string; tick: number; rot: THREE.Quaternion; pos: THREE.Vector3 }[] = [];
+  copyKeys(sel: { bone: string; tick: number }[]): number {
+    this.keyClipboard = [];
+    for (const { bone, tick } of sel) { const k = this.boneKeys.get(bone)?.find((x) => x.tick === tick); if (k) this.keyClipboard.push({ bone, tick: k.tick, rot: k.rot.clone(), pos: k.pos.clone() }); }
+    return this.keyClipboard.length;
+  }
+  keyClipboardSize(): number { return this.keyClipboard.length; }
+  /** Paste copied keys with the earliest landing on `atTick`, back onto their own bones. Returns the pasted positions. */
+  pasteKeysAt(atTick: number): { bone: string; tick: number }[] {
+    if (!this.keyClipboard.length) return [];
+    const minTick = Math.min(...this.keyClipboard.map((k) => k.tick)), [lo, hi] = this.clipTickRange();
+    const bones = [...new Set(this.keyClipboard.map((k) => k.bone))], before = this.snapshotEdits(bones);
+    const out: { bone: string; tick: number }[] = [];
+    for (const k of this.keyClipboard) { const t = Math.round(Math.max(lo, Math.min(hi, atTick + (k.tick - minTick)))); this.setKey(k.bone, t, k.rot, k.pos, true); out.push({ bone: k.bone, tick: t }); }
+    if (this.editMode) this.applyBoneOverrides();
+    this.onBoneEdit?.();
+    this.pushBoneHistory(before, this.snapshotEdits(bones));
+    return out;
+  }
+  deleteKeys(sel: { bone: string; tick: number }[]): number {
+    const bones = [...new Set(sel.map((s) => s.bone))], before = this.snapshotEdits(bones); let n = 0;
+    const byBone = new Map<string, Set<number>>(); for (const s of sel) { let set = byBone.get(s.bone); if (!set) { set = new Set(); byBone.set(s.bone, set); } set.add(s.tick); }
+    for (const [bone, ticks] of byBone) { const list = this.boneKeys.get(bone); if (!list) continue; const nl = list.filter((k) => !ticks.has(k.tick)); n += list.length - nl.length; if (nl.length) this.boneKeys.set(bone, nl); else this.boneKeys.delete(bone); }
+    if (this.editMode) this.applyBoneOverrides();
+    this.onBoneEdit?.();
+    this.pushBoneHistory(before, this.snapshotEdits(bones));
+    return n;
+  }
+  /** Shift the given keys by deltaTick (clamped to the clip range). Returns the moved keys' new positions. */
+  moveKeys(sel: { bone: string; tick: number }[], deltaTick: number): { bone: string; tick: number }[] {
+    const [lo, hi] = this.clipTickRange(), bones = [...new Set(sel.map((s) => s.bone))], before = this.snapshotEdits(bones);
+    const byBone = new Map<string, Set<number>>(); for (const s of sel) { let set = byBone.get(s.bone); if (!set) { set = new Set(); byBone.set(s.bone, set); } set.add(s.tick); }
+    const out: { bone: string; tick: number }[] = [];
+    for (const [bone, ticks] of byBone) {
+      const list = this.boneKeys.get(bone); if (!list) continue;
+      const picked = list.filter((k) => ticks.has(k.tick));
+      let rest = list.filter((k) => !ticks.has(k.tick));
+      for (const k of picked) { const to = this.snapTick(Math.max(lo, Math.min(hi, k.tick + deltaTick))); rest = rest.filter((x) => x.tick !== to); rest.push({ tick: to, rot: k.rot.clone(), pos: k.pos.clone() }); out.push({ bone, tick: to }); }
+      rest.sort((a, b) => a.tick - b.tick); this.boneKeys.set(bone, rest);
+    }
+    if (this.editMode) this.applyBoneOverrides();
+    this.onBoneEdit?.();
+    this.pushBoneHistory(before, this.snapshotEdits(bones));
+    return out;
+  }
+  /** Copy the given (or selected) bones' keyframe timelines to the clipboard. Returns how many were copied. */
+  copyBones(names?: string[]): number {
+    const src = (names?.length ? names : this.selectedBones).filter((n) => this.boneKeys.has(n));
+    this.boneClipboard.clear();
+    for (const n of src) this.boneClipboard.set(n, this.cloneKeys(this.boneKeys.get(n)!));
+    return this.boneClipboard.size;
+  }
+  clipboardSize(): number { return this.boneClipboard.size; }
+  /** Paste the clipboard: a single copied bone goes onto every target; several go onto their own names. */
+  pasteBones(targets?: string[]): number {
+    if (!this.boneClipboard.size) return 0;
+    const tgts = (targets?.length ? targets : this.selectedBones);
+    const pairs: [string, BoneKey[]][] = this.boneClipboard.size === 1
+      ? (tgts.length ? tgts : [...this.boneClipboard.keys()]).filter((n) => this.bodyBones.has(n)).map((d) => [d, this.cloneKeys([...this.boneClipboard.values()][0])])
+      : [...this.boneClipboard.entries()].filter(([n]) => this.bodyBones.has(n)).map(([n, k]) => [n, this.cloneKeys(k)]);
+    if (!pairs.length) return 0;
+    const names = pairs.map(([n]) => n), before = this.snapshotEdits(names);
+    for (const [n, k] of pairs) { this.liveEdits.delete(n); this.boneKeys.set(n, k); }
+    if (this.editMode) this.applyBoneOverrides();
+    this.onBoneEdit?.();
+    this.pushBoneHistory(before, this.snapshotEdits(names));
+    return pairs.length;
   }
   /** The AnimationSet name declared in the loaded .x (usually the clip name). */
   private editSetName(): string | null { const m = this.editText ? /AnimationSet\s+(\S+)\s*\{/.exec(this.editText) : null; return m ? m[1] : null; }
   /** Bake the current bone edits into an edited .x (app-space deltas -> .x via the verified calibration).
    *  saveAs renames the AnimationSet so vanilla is never clobbered. Returns null if nothing to bake. */
-  bakeEdits(saveAs?: string): { name: string; text: string; bones: number } | null {
-    const names = this.editedBoneNames();
-    if (!this.editText || !names.length) return null;
-    const setName = this.editSetName(), tick = this.currentTick();
-    let text = this.editText, bones = 0;
-    for (const bone of names) {
-      const keys = this.effectiveKeyList(bone, tick); if (!keys.length) continue;
+  /** Splice a bone->timeline edit map into a .x's AnimationSet (app-space deltas -> .x via the calibration). */
+  private applyEditsToText(text: string, keysByBone: Map<string, BoneKey[]>, setName: string | null): { text: string; bones: number } {
+    let bones = 0;
+    for (const [bone, keys] of keysByBone) {
+      if (!keys.length) continue;
       const ticks = keys.map((k) => k.tick);
       let touched = false;
       if (keys.some((k) => Math.abs(k.rot.w) <= 0.9999995)) { // any non-identity rotation over the timeline
@@ -2210,11 +2441,102 @@ export class CharacterEngine {
       }
       if (touched) bones++;
     }
+    return { text, bones };
+  }
+  bakeEdits(saveAs?: string): { name: string; text: string; bones: number } | null {
+    if (!this.editText) return null;
+    const setName = this.editSetName(), tick = this.currentTick();
+    const perClip = new Map<string, BoneKey[]>();
+    for (const bone of this.editedBoneNames()) { const kl = this.effectiveKeyList(bone, tick); if (kl.length) perClip.set(bone, kl); }
+    const merged = this.mergedKeysForClip(this.editClipName ?? '', perClip);
+    if (!merged.size && this.lengthScale === 1 && this.clipEnd == null) return null; // nothing to bake
+    const baseText = this.lengthScale !== 1 ? scaleSetTicks(this.editText, this.lengthScale, setName).text : this.editText; // retime the vanilla first
+    const r = this.applyEditsToText(baseText, merged, setName);
+    let text = this.clipEnd != null ? trimSetEnd(r.text, this.clipEnd, setName).text : r.text; // then trim/extend to the chosen end
     let name = this.editClipName || setName || 'edited';
     const target = saveAs?.trim().replace(/[^A-Za-z0-9_]/g, '_'); // AnimationSet names + filenames must be identifier-safe
     if (target && setName && target !== setName) { text = renameSet(text, setName, target).text; name = target; }
     else if (target) name = target;
-    return { name, text, bones };
+    return { name, text, bones: r.bones };
+  }
+  /** Bake every edited clip (and, if `available` is passed, any clip a set-wide layer touches) to renamed
+   *  .x, sourcing each clip's own file. suffix is appended to the AnimationSet name so vanilla is safe. */
+  async bakeAll(available?: Clip[], suffix = '_Edited'): Promise<{ files: { rel: string; name: string; text: string; bones: number }[]; errors: string[] }> {
+    this.syncCurrentToProject();
+    const toBake = new Map<string, { clip: Clip; keys: Map<string, BoneKey[]>; lengthScale: number; clipEnd: number | null }>();
+    for (const [rel, entry] of this.project) if (entry.keys.size || entry.lengthScale !== 1 || entry.clipEnd != null) toBake.set(rel, entry);
+    if (available && this.setDeltas.length) for (const c of available) { const rel = c.rel || c.name; if (!toBake.has(rel) && this.mergedKeysForClip(c.name, new Map()).size) toBake.set(rel, { clip: c, keys: new Map(), lengthScale: 1, clipEnd: null }); } // set-wide-only clips
+    const files: { rel: string; name: string; text: string; bones: number }[] = [], errors: string[] = [];
+    for (const [rel, entry] of toBake) {
+      if (entry.clip.format !== 'x') { errors.push(`${entry.clip.name}: not an .x clip`); continue; }
+      try {
+        const rc = await resolveClip(this.ctx, entry.clip);
+        if (rc.error || !rc.src) { errors.push(`${entry.clip.name}: ${rc.error || 'no source'}`); continue; }
+        let text0 = new TextDecoder().decode(rc.src);
+        const m = /AnimationSet\s+(\S+)\s*\{/.exec(text0), setName = m ? m[1] : null;
+        if (entry.lengthScale !== 1) text0 = scaleSetTicks(text0, entry.lengthScale, setName).text; // retime this clip
+        const merged = this.mergedKeysForClip(entry.clip.name, entry.keys);
+        const r = this.applyEditsToText(text0, merged, setName);
+        let text = entry.clipEnd != null ? trimSetEnd(r.text, entry.clipEnd, setName).text : r.text;
+        let name = setName || entry.clip.name;
+        const target = setName ? (setName + suffix).replace(/[^A-Za-z0-9_]/g, '_') : null;
+        if (target && setName && target !== setName) { text = renameSet(text, setName, target).text; name = target; }
+        files.push({ rel, name, text, bones: r.bones });
+      } catch (e) { errors.push(`${entry.clip.name}: ${String((e as Error)?.message ?? e)}`); }
+    }
+    return { files, errors };
+  }
+  // --- set-wide deltas + project JSON ---
+  /** Promote the current clip's edits into a set-wide layer for clips whose name starts with `match` ('' / '*' = all). */
+  promoteToSetWide(match: string): number {
+    const tick = this.currentTick(), keys = new Map<string, BoneKey[]>();
+    for (const n of this.editedBoneNames()) { const kl = this.effectiveKeyList(n, tick); if (kl.length) keys.set(n, this.cloneKeys(kl)); }
+    if (!keys.size) return 0;
+    this.setDeltas.push({ match: match.trim() || '*', keys });
+    this.boneKeys.clear(); this.liveEdits.clear(); this.syncCurrentToProject(); // moved out of the per-clip layer (still shown via the fallback)
+    if (this.editMode) this.applyBoneOverrides();
+    this.onBoneEdit?.();
+    return keys.size;
+  }
+  setWideLayers(): { match: string; bones: number }[] { return this.setDeltas.map((s) => ({ match: s.match, bones: s.keys.size })); }
+  removeSetWide(index: number) { if (index < 0 || index >= this.setDeltas.length) return; this.setDeltas.splice(index, 1); if (this.editMode) this.applyBoneOverrides(); this.onBoneEdit?.(); }
+  private serBones(keys: Map<string, BoneKey[]>): Record<string, SerKey[]> { const o: Record<string, SerKey[]> = {}; for (const [b, ks] of keys) o[b] = ks.map((k) => ({ tick: k.tick, rot: [k.rot.w, k.rot.x, k.rot.y, k.rot.z], pos: [k.pos.x, k.pos.y, k.pos.z] })); return o; }
+  private desBones(o: Record<string, SerKey[]>): Map<string, BoneKey[]> { const m = new Map<string, BoneKey[]>(); for (const b of Object.keys(o)) m.set(b, o[b].map((k) => ({ tick: k.tick, rot: new THREE.Quaternion(k.rot[1], k.rot[2], k.rot[3], k.rot[0]), pos: new THREE.Vector3(k.pos[0], k.pos[1], k.pos[2]) }))); return m; }
+  /** Serialise the whole project (per-clip edits + set-wide layers) to JSON. */
+  exportProject(): AnimProject {
+    this.syncCurrentToProject();
+    return {
+      version: 1,
+      clips: [...this.project.entries()].map(([rel, v]) => ({ rel, name: v.clip.name, format: v.clip.format, id: v.clip.id, lengthScale: v.lengthScale, clipEnd: v.clipEnd, bones: this.serBones(v.keys) })),
+      setDeltas: this.setDeltas.map((s) => ({ match: s.match, bones: this.serBones(s.keys) })),
+    };
+  }
+  /** The current clip's edit as a saveable "pose" (bone keyframes + retime + trim), or null if empty. */
+  exportClipEdit(): { clip: string; lengthScale: number; clipEnd: number | null; bones: Record<string, SerKey[]> } | null {
+    const names = this.editedBoneNames();
+    if (!names.length && this.lengthScale === 1 && this.clipEnd == null) return null;
+    const tick = this.currentTick(), keys = new Map<string, BoneKey[]>();
+    for (const n of names) { const kl = this.effectiveKeyList(n, tick); if (kl.length) keys.set(n, kl); }
+    return { clip: this.editClipName ?? '', lengthScale: this.lengthScale, clipEnd: this.clipEnd, bones: this.serBones(keys) };
+  }
+  /** Apply a saved pose onto the current clip, replacing its edits. */
+  applyClipEdit(data: { lengthScale?: number; clipEnd?: number | null; bones: Record<string, { tick: number; rot: number[]; pos: number[] }[]> }) {
+    this.boneKeys.clear(); this.liveEdits.clear();
+    for (const [n, k] of this.desBones(data.bones as Record<string, SerKey[]>)) this.boneKeys.set(n, k);
+    this.lengthScale = data.lengthScale ?? 1; this.clipEnd = data.clipEnd ?? null;
+    if (this.editMode) this.applyBoneOverrides();
+    this.onBoneEdit?.();
+  }
+  /** Load a serialised project, replacing the current one. Re-applies the current clip's edits if present. */
+  importProject(data: AnimProject): { clips: number } {
+    this.project.clear();
+    for (const c of data.clips ?? []) this.project.set(c.rel, { clip: { id: c.id ?? c.rel, name: c.name, format: c.format, rel: c.rel }, keys: this.desBones(c.bones), lengthScale: c.lengthScale ?? 1, clipEnd: c.clipEnd ?? null });
+    this.setDeltas = (data.setDeltas ?? []).map((s) => ({ match: s.match || '*', keys: this.desBones(s.bones) }));
+    this.boneKeys.clear(); this.liveEdits.clear();
+    if (this.editClipKey) { const saved = this.project.get(this.editClipKey); this.lengthScale = saved?.lengthScale ?? 1; this.clipEnd = saved?.clipEnd ?? null; if (saved) for (const [n, k] of saved.keys) this.boneKeys.set(n, this.cloneKeys(k)); }
+    if (this.editMode) this.applyBoneOverrides();
+    this.onBoneEdit?.();
+    return { clips: this.project.size };
   }
 
   // --- IK / pose handles: a small curated set of draggable control points (no full-body pick) ---
