@@ -197,6 +197,48 @@ export function ticksPerSecond(text: string): number {
   return m ? parseInt(m[1], 10) : DEFAULT_TICKS_PER_SECOND;
 }
 
+/** Retime a set: scale every key tick (R/S/T, all bones) about the set's first tick by `factor`.
+ *  factor > 1 stretches (longer), < 1 compresses (shorter). Keeps AnimTicksPerSecond, so duration scales. */
+export function scaleSetTicks(text: string, factor: number, animSet: string | null = null): { text: string; count: number } {
+  const [lo, hi] = findSetSpan(text, animSet);
+  let seg = text.slice(lo, hi);
+  const srcs = [R_KEY_FULL_SRC, T_KEY_FULL_SRC]; // full R (;4;) and T/S (;3;) keys, tick = group 1 - never the keyType/nKeys header lines
+  let min = Infinity;
+  for (const src of srcs) for (const m of seg.matchAll(new RegExp(src, 'g'))) min = Math.min(min, parseInt(m[1], 10));
+  if (!isFinite(min)) return { text, count: 0 };
+  let count = 0;
+  for (const src of srcs) seg = seg.replace(new RegExp(src, 'g'), (m) => { count++; const t = Math.round(min + (parseInt(m, 10) - min) * factor); return m.replace(/^\d+/, String(t)); });
+  return { text: text.slice(0, lo) + seg + text.slice(hi), count };
+}
+/** Every AnimationKey block (R/S/T, any bone) in a span, as [bodyStart, bodyEnd, ncomp]. */
+function* iterKeyBlocks(text: string, span: Span): Generator<[number, number, number]> {
+  const [lo, hi] = span;
+  const re = /AnimationKey\s+([RST])\s*\{/g; re.lastIndex = lo;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) && m.index < hi) {
+    const bodyStart = m.index + m[0].length, close = text.indexOf('}', bodyStart);
+    if (close < 0 || close > hi) return;
+    yield [bodyStart, close, m[1] === 'R' ? 4 : 3];
+    re.lastIndex = close + 1;
+  }
+}
+/** Trim (or hold-extend) a set to end at `endTick`: drop keys past it, and hold the last pose to endTick. */
+export function trimSetEnd(text: string, endTick: number, animSet: string | null = null): { text: string; count: number } {
+  const span = findSetSpan(text, animSet);
+  const blocks = [...iterKeyBlocks(text, span)];
+  let count = 0;
+  for (let i = blocks.length - 1; i >= 0; i--) { // splice last-to-first so earlier offsets stay valid
+    const [bs, be, ncomp] = blocks[i], src = ncomp === 4 ? R_KEY_FULL_SRC : T_KEY_FULL_SRC;
+    const body = text.slice(bs, be), keys = parseBodyKeys(body, src);
+    if (!keys.length) continue;
+    let kept = keys.filter((k) => k[0] <= endTick); if (!kept.length) kept = [keys[0]];
+    const last = kept[kept.length - 1];
+    if (last[0] < endTick) kept = [...kept, [endTick, last[1]]]; // hold the last pose out to the new end
+    text = text.slice(0, bs) + rebuildKeyBody(body, src, kept, ncomp) + text.slice(be);
+    count++;
+  }
+  return { text, count };
+}
 /** Every distinct key tick present in the set = the clip's own frames (for a dopesheet grid / snapping). */
 export function clipFrameTicks(text: string, animSet: string | null = null): number[] {
   const [lo, hi] = findSetSpan(text, animSet);
