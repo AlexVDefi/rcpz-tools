@@ -75,7 +75,7 @@ export type SavedPropInput = { glb: Uint8Array; texture: Uint8Array | null; subM
 // Full reversible state of a prop's placement (transform + attachment), for one undo entry per move/attach.
 type PropState = { xform: Xform; attach: PropAttach | null };
 // What the cursor is over while placing/dragging a prop: the character body, another prop, or the ground.
-type SurfacePick = { point: THREE.Vector3; onBody: boolean; propRoot: THREE.Object3D | null; normal: THREE.Vector3 | null };
+type SurfacePick = { point: THREE.Vector3; onBody: boolean; propRoot: THREE.Object3D | null; normal: THREE.Vector3 | null; mesh?: THREE.SkinnedMesh | null; face?: { a: number; b: number; c: number } | null };
 // A live Blender-style modal transform (grab/rotate/scale following the mouse until click/Esc). Everything is
 // captured relative to the state when the key was pressed, so an axis constraint or cancel re-derives cleanly.
 // One prop in a modal transform: its start transform + reversible state. Rotate/scale pivot on the shared centre.
@@ -1005,10 +1005,29 @@ export class CharacterEngine {
     }
   }
   private isDescendantOf(o: THREE.Object3D | null, anc: THREE.Object3D): boolean { let c = o; while (c) { if (c === anc) return true; c = c.parent; } return false; }
+  /** The bone the hit surface is actually skinned to (dominant weight across the triangle). This maps a
+   *  thigh-surface point to Bip01_*_Thigh, not the nearest joint pivot (which can be the knee/Calf). */
+  private boneFromFace(mesh: THREE.SkinnedMesh, face: { a: number; b: number; c: number }): THREE.Object3D | null {
+    const geo = mesh?.geometry, skel = mesh?.skeleton;
+    const si = geo?.getAttribute('skinIndex'), sw = geo?.getAttribute('skinWeight');
+    if (!si || !sw || !skel) return null;
+    const acc = new Map<number, number>();
+    for (const v of [face.a, face.b, face.c]) for (let k = 0; k < 4; k++) {
+      const idx = si.getComponent(v, k), w = sw.getComponent(v, k);
+      if (w > 0) acc.set(idx, (acc.get(idx) ?? 0) + w);
+    }
+    let best = -1, bestW = 0;
+    for (const [idx, w] of acc) if (w > bestW) { bestW = w; best = idx; }
+    return best >= 0 ? (skel.bones[best] ?? null) : null;
+  }
   private nearestBone(point: THREE.Vector3): THREE.Object3D | null {
     const skel = this.bodyMeshes[0]?.skeleton; if (!skel) return null;
+    const skipDress = !this.dressVisible(); // with the skirt off, never attach to a dress bone - snap to the nearest real bone instead
     let best: THREE.Object3D | null = null, bd = Infinity; const wp = new THREE.Vector3();
-    for (const b of skel.bones) { b.getWorldPosition(wp); const d = wp.distanceToSquared(point); if (d < bd) { bd = d; best = b; } }
+    for (const b of skel.bones) {
+      if (skipDress && CharacterEngine.DRESS_BONES.includes(b.name)) continue;
+      b.getWorldPosition(wp); const d = wp.distanceToSquared(point); if (d < bd) { bd = d; best = b; }
+    }
     return best;
   }
   /** Offset that reproduces the prop's current world pose relative to a target (target-local -> prop world). */
@@ -1023,13 +1042,15 @@ export class CharacterEngine {
     this.raycaster.setFromCamera(ndc, this.camera);
     const targets: THREE.Object3D[] = [...this.bodyMeshes];
     for (const q of this.props) if (q.obj !== exclude) targets.push(q.obj);
-    const hit = this.raycaster.intersectObjects(targets, true).find((h) => !this.isDescendantOf(h.object, exclude));
+    const dressHidden = !this.dressVisible(); // when the skirt is off, let the ray pass THROUGH its faces (fused into the body mesh) to the leg behind
+    const hit = this.raycaster.intersectObjects(targets, true).find((h) =>
+      !this.isDescendantOf(h.object, exclude) && !(dressHidden && h.face && this.isDressFace(h.object as THREE.SkinnedMesh, h.face)));
     if (hit) {
       const onBody = this.bodyMeshes.some((m) => this.isDescendantOf(hit.object, m));
       let propRoot: THREE.Object3D | null = null;
       if (!onBody) { let root: THREE.Object3D | null = hit.object; while (root && root.parent !== this.propGroup) root = root.parent; propRoot = root; }
       const normal = hit.face ? hit.face.normal.clone().transformDirection(hit.object.matrixWorld).normalize() : null;
-      return { point: hit.point.clone(), onBody, propRoot, normal };
+      return { point: hit.point.clone(), onBody, propRoot, normal, mesh: onBody ? (hit.object as THREE.SkinnedMesh) : null, face: hit.face ?? null };
     }
     const g = this.worldFromClient(e); // nothing solid under the cursor: fall back to the floor
     return g ? { point: g, onBody: false, propRoot: null, normal: new THREE.Vector3(0, 1, 0) } : null;
@@ -1040,7 +1061,7 @@ export class CharacterEngine {
     obj.position.copy(pick.point);
     if (align && pick.normal) obj.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), pick.normal); // orient +Y to the surface
     if (!pick.onBody && !pick.propRoot) this.groundProp(obj); else obj.updateMatrixWorld(true);
-    if (pick.onBody) { const bone = this.nearestBone(pick.point); if (bone) return { kind: 'bone', boneName: bone.name, offset: this.offsetFrom(bone, obj) }; }
+    if (pick.onBody) { const bone = (pick.mesh && pick.face ? this.boneFromFace(pick.mesh, pick.face) : null) ?? this.nearestBone(pick.point); if (bone) return { kind: 'bone', boneName: bone.name, offset: this.offsetFrom(bone, obj) }; }
     if (pick.propRoot) return { kind: 'prop', targetObj: pick.propRoot, offset: this.offsetFrom(pick.propRoot, obj) };
     return null;
   }
@@ -2599,6 +2620,21 @@ export class CharacterEngine {
       if (bestW > 0.01 && dress.has(best)) hits++;
     }
     return hits / si.count;
+  }
+  /** Whether a hit triangle rides the dress bones (i.e. it is skirt geometry, whether a separate mesh or
+   *  fused into the body mesh). Lets the placement raycast skip the skirt and land on the leg behind it. */
+  private isDressFace(mesh: THREE.SkinnedMesh, face: { a: number; b: number; c: number }): boolean {
+    const geo = mesh?.geometry, skel = mesh?.skeleton;
+    const si = geo?.getAttribute('skinIndex'), sw = geo?.getAttribute('skinWeight');
+    if (!si || !sw || !skel) return false;
+    const di = this.dressBoneIndices(skel); if (!di.size) return false;
+    let dress = 0;
+    for (const v of [face.a, face.b, face.c]) {
+      let best = -1, bestW = 0;
+      for (let k = 0; k < 4; k++) { const w = sw.getComponent(v, k); if (w > bestW) { bestW = w; best = si.getComponent(v, k); } }
+      if (bestW > 0.01 && di.has(best)) dress++;
+    }
+    return dress >= 1; // ANY corner riding the dress bones -> skirt (skip its edge/seam faces too)
   }
   private detectDressMeshes() {
     this.dressMeshes = [];

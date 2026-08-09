@@ -1609,9 +1609,12 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
                   {multi
                     ? <button className="secondary" onClick={detachProp} title="Release any attachments in the selection (props stay put)" style={btn()}>detach all</button>
                     : sp.attached
-                    ? <><span style={{ color: 'var(--accent)', flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>on {sp.attached}</span><button className="secondary" onClick={detachProp} title="Release the attachment (prop stays put)" style={btn()}>detach</button></>
+                    ? <button className="secondary" onClick={detachProp} title="Release the attachment (prop stays put)" style={btn()}>detach</button>
                     : <span style={{ opacity: 0.6 }}>{sp.sticky ? 'drag onto a target' : 'grounded'}</span>}
                 </div>
+                {!multi && sp.attached && (
+                  <div style={{ marginTop: 6, fontSize: 11, color: 'var(--accent)', wordBreak: 'break-all', lineHeight: 1.35 }}>on {sp.attached}</div>
+                )}
               </div>
               {!multi && (
               <div style={{ borderTop: '1px solid var(--line)', marginTop: 10, paddingTop: 9 }}>
