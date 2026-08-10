@@ -125,7 +125,11 @@ export function makeOrbit(getCamera: () => THREE.Camera, dom: HTMLElement, targe
   // places tiles instead) - but right-drag pan and wheel zoom stay live.
   // suspendTouch: the engine claims a touch (e.g. a two-finger prop rotate/scale) so the camera ignores it.
   // Queried by finger count at gesture start so one-finger orbit on empty space still works.
-  const api = { state, apply, setTarget, dispose, lockRotate: false, enabled: true, onInteract: undefined as (() => void) | undefined, onAdjust: undefined as (() => void) | undefined, suspendTouch: undefined as ((touchCount: number) => boolean) | undefined };
+  // Configurable camera controls (settings): which mouse button orbits vs pans, plus speeds + zoom direction.
+  const controls: { orbit: 'left' | 'right' | 'middle'; pan: 'left' | 'right' | 'middle'; rotateSpeed: number; zoomSpeed: number; invertZoom: boolean } = { orbit: 'left', pan: 'right', rotateSpeed: 1, zoomSpeed: 1, invertZoom: false };
+  const setControls = (c: Partial<typeof controls>) => Object.assign(controls, c);
+  const btnName = (b: number): 'left' | 'right' | 'middle' | null => (b === 0 ? 'left' : b === 1 ? 'middle' : b === 2 ? 'right' : null);
+  const api = { state, apply, setTarget, dispose, setControls, lockRotate: false, enabled: true, onInteract: undefined as (() => void) | undefined, onAdjust: undefined as (() => void) | undefined, suspendTouch: undefined as ((touchCount: number) => boolean) | undefined };
 
   function apply() {
     const camera = getCamera() as THREE.PerspectiveCamera & THREE.OrthographicCamera & { __aspect?: number };
@@ -159,9 +163,13 @@ export function makeOrbit(getCamera: () => THREE.Camera, dom: HTMLElement, targe
 
   const onDown = (e: MouseEvent) => {
     if (!api.enabled) return; // suspended while dragging a 3D prop / its gizmo
-    if (e.button === 2) { mode = 'pan'; e.preventDefault(); } // pan keeps the current (e.g. iso) camera
-    else if (e.button === 0 && !api.lockRotate) { mode = 'rotate'; api.onInteract?.(); } // only rotating leaves a locked camera
-    else return; // left-button while lockRotate: leave it to the tile placer (no orbit action)
+    const btn = btnName(e.button); if (!btn) return;
+    let action: 'rotate' | 'pan' | null = btn === controls.orbit ? 'rotate' : btn === controls.pan ? 'pan' : null;
+    if (action === 'rotate' && api.lockRotate) return; // build mode owns the orbit button for tile placing
+    if (!action) return;
+    mode = action;
+    if (action === 'pan') e.preventDefault(); // pan keeps the current (e.g. iso) camera; also stops a right-drag context menu
+    else api.onInteract?.(); // only rotating leaves a locked camera
     api.onAdjust?.();
     lastX = e.clientX; lastY = e.clientY;
   };
@@ -170,14 +178,15 @@ export function makeOrbit(getCamera: () => THREE.Camera, dom: HTMLElement, targe
     if (mode === 'none') return;
     const dx = e.clientX - lastX, dy = e.clientY - lastY;
     lastX = e.clientX; lastY = e.clientY;
-    if (mode === 'rotate') { state.theta -= dx * 0.01; state.phi -= dy * 0.01; apply(); }
+    if (mode === 'rotate') { state.theta -= dx * 0.01 * controls.rotateSpeed; state.phi -= dy * 0.01 * controls.rotateSpeed; apply(); }
     else pan(dx, dy);
   };
   const onWheel = (e: WheelEvent) => {
     if (!api.enabled) return;
     e.preventDefault();
     api.onAdjust?.();
-    state.radius = Math.max(0.6, Math.min(8, state.radius * (1 + Math.sign(e.deltaY) * 0.1)));
+    const dir = (controls.invertZoom ? -1 : 1) * Math.sign(e.deltaY);
+    state.radius = Math.max(0.6, Math.min(8, state.radius * (1 + dir * 0.1 * controls.zoomSpeed)));
     apply();
   };
   const onContext = (e: Event) => e.preventDefault();
@@ -205,7 +214,7 @@ export function makeOrbit(getCamera: () => THREE.Camera, dom: HTMLElement, targe
     if (e.touches.length === 1 && mode === 'rotate') {
       const dx = e.touches[0].clientX - lastX, dy = e.touches[0].clientY - lastY;
       lastX = e.touches[0].clientX; lastY = e.touches[0].clientY;
-      state.theta -= dx * 0.01; state.phi -= dy * 0.01; apply();
+      state.theta -= dx * 0.01 * controls.rotateSpeed; state.phi -= dy * 0.01 * controls.rotateSpeed; apply();
     } else if (e.touches.length >= 2) {
       const a = e.touches[0], b = e.touches[1];
       const cx = (a.clientX + b.clientX) / 2, cy = (a.clientY + b.clientY) / 2;

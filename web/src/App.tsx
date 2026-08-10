@@ -24,6 +24,7 @@ import { PasswordModal } from './cloud/PasswordModal';
 import { cloudConfigured } from './cloud/config';
 import { listLanguages, loadItemNames, languageLabel, type DisplayNames } from './item-names';
 import { CHANGELOG } from './changelog';
+import { SettingsModal } from './SettingsModal';
 import logoUrl from './assets/logo.png';
 import kofiUrl from './assets/kofi_symbol.svg';
 
@@ -100,6 +101,7 @@ export function App() {
   // Land on the Mods view right after returning from Steam sign-in.
   useEffect(() => { if (steam.justArrived) setView('mods'); }, [steam.justArrived]);
   const [authOpen, setAuthOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [changePwOpen, setChangePwOpen] = useState(false);
   const [adminOpen, setAdminOpen] = useState(false);
@@ -497,6 +499,7 @@ export function App() {
                   <MobileMenu auth={auth} steam={steam} view={view} setView={setView} onSignIn={() => setAuthOpen(true)} onChangePassword={() => setChangePwOpen(true)} onDeleteAccount={() => setDeleteOpen(true)} />
                 </>
               )}
+              {view === 'character' && <SettingsGear onClick={() => setSettingsOpen(true)} />}
               <HelpButton extra={creditLinks} />
             </div>
           )}
@@ -519,11 +522,13 @@ export function App() {
             )}
             {!isMobile && auth.configured && <AccountChip auth={auth} onSignIn={() => setAuthOpen(true)} onChangePassword={() => setChangePwOpen(true)} onDeleteAccount={() => setDeleteOpen(true)} />}
             {!isMobile && index != null && langs.length > 1 && <LanguageSelect langs={langs} value={itemLang} onChange={setItemLang} loading={langLoading} />}
+            {!isMobile && view === 'character' && <SettingsGear onClick={() => setSettingsOpen(true)} />}
             {!isMobile && <HelpButton />}
           </div>
         )}
       </header>
 
+      {settingsOpen && <SettingsModal onClose={() => setSettingsOpen(false)} />}
       {authOpen && <AuthModal auth={auth} onClose={() => setAuthOpen(false)} />}
       {deleteOpen && auth.user && (
         <DeleteAccountModal auth={auth} uploads={uploads} onClose={() => setDeleteOpen(false)}
@@ -906,6 +911,18 @@ function ChangelogModal({ onClose }: { onClose: () => void }) {
         ))}
       </div>
     </div>
+  );
+}
+
+function SettingsGear({ onClick }: { onClick: () => void }) {
+  return (
+    <button className="secondary" title="Settings" aria-label="Settings" onClick={onClick}
+      style={{ display: 'grid', placeItems: 'center', width: NAV_H, height: NAV_H, padding: 0 }}>
+      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.9} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <circle cx="12" cy="12" r="3.1" />
+        <path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-2.87 1.2V21a2 2 0 0 1-4 0v-.09a1.7 1.7 0 0 0-2.87-1.2l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-1.5-.94H3a2 2 0 0 1 0-4h.09A1.7 1.7 0 0 0 4.6 9a1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 .94-1.5V3a2 2 0 0 1 4 0v.09A1.7 1.7 0 0 0 15 4.6a1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.7 1.7 0 0 0 19.4 9v.01a1.7 1.7 0 0 0 1.5.94H21a2 2 0 0 1 0 4h-.09a1.7 1.7 0 0 0-1.51.99z" />
+      </svg>
+    </button>
   );
 }
 
