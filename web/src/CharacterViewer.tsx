@@ -8,7 +8,7 @@ import { PoseEditorPanel } from './PoseEditorPanel';
 
 type AttachSlot = { slot: string; options: AttachOption[] };
 import { ThumbnailProvider } from './render/thumbnail-provider';
-import { ClipPreview } from './render/clip-preview';
+import { ClipPreview, type PreviewEdit } from './render/clip-preview';
 import { FloorLibrary } from './render/floor';
 import { TileLibrary, type TileCategory, type TileSet, type TilePiece } from './render/tiles-lib';
 import { parseMod, resolveIconAssets } from '@shared/icon-core.js';
@@ -541,6 +541,7 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
   type PropTexXf = { flipU: boolean; flipV: boolean; rot: number };
   const [selectedProp, setSelectedProp] = useState<{ name: string; count: number; texXf: PropTexXf; sticky: boolean; align: boolean; attached: string | null; attachments: { slot: string; partName: string }[] } | null>(null);
   const [marqueeRect, setMarqueeRect] = useState<{ x: number; y: number; w: number; h: number } | null>(null); // shift-drag selection box, drawn over the canvas
+  const [twistInfo, setTwistInfo] = useState<{ x: number; y: number; axis: 'view' | 'x' | 'y' | 'z'; dir: { x: number; y: number }; tilt: number } | null>(null); // scroll-rotate axis gizmo over the dragged bone
   const [editState, setEditState] = useState<{ active: boolean; clip: string | null; editable: boolean; bones: string[] }>({ active: false, clip: null, editable: false, bones: [] }); // animation pose editor
   const [editOpen, setEditOpen] = useState(false); // editor panel popover visibility (toggled from the top-right button)
   const [dressState, setDressState] = useState<{ worn: boolean; shown: boolean }>({ worn: false, shown: false }); // skirt/dress bones + mesh: worn = a garment forces it on
@@ -656,6 +657,7 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
       if (editing && (e.key === 'Delete' || e.key === 'Backspace') && keySelRef.current.size) { e.preventDefault(); eng.deleteKeys(parseKeySel(keySelRef.current)); setKeySel(new Set()); setBoneTick((t) => t + 1); return; } // delete selected keyframes
       if (editing && e.key === 'Escape' && keySelRef.current.size) { setKeySel(new Set()); return; } // clear keyframe selection
       if (e.key === 'Escape') { eng.modalCancel(); eng.cancelPropPlacement(); return; } // cancel a modal transform, else bail out of placement
+      if (editing && e.key.toLowerCase() === 'r' && eng.isDraggingBone()) { e.preventDefault(); eng.cycleTwistAxis(); return; } // R while scroll-rotating a bone: cycle the twist axis
       if (hasProp) { // a selected prop (any tab): Blender-style G move, R rotate, S scale, X/Y/Z lock axis, Enter confirm, Del delete
         if (e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); eng.deleteSelectedProp(); return; }
         if (e.key === 'Enter') { e.preventDefault(); eng.modalConfirm(); return; }
@@ -706,6 +708,7 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
     eng.onHistory = (u, r) => { setCanUndo(u); setCanRedo(r); }; // enable/disable undo+redo affordances
     eng.onPropSelect = (info) => { setSelectedProp(info); if (info) { if (isMobileRef.current) setDrawerOpen(false); else setInspectorOpen(true); setSceneOpen(false); setEquipOpen(false); } }; // desktop: open the detail popover. mobile: the bottom bar owns it, so just free the canvas
     eng.onMarquee = (r) => setMarqueeRect(r); // shift-drag box: draw it over the canvas
+    eng.onTwist = (info) => setTwistInfo(info); // scroll-rotate: show the live angle + active axis over the bone
     eng.onEditState = (s) => { setEditState(s); setEditOpen(s.active); if (s.active) { setSaveAsName(s.clip ? s.clip + '_Edited' : ''); setSceneOpen(false); setEquipOpen(false); setInspectorOpen(false); } else { setSelectedBones([]); setBoneSearch(''); } };
     eng.onBoneSelect = setSelectedBones;
     eng.onDressState = setDressState; // skirt/dress toggle reflects worn-garment auto-show
@@ -1169,6 +1172,14 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
           facetLabel="categories"
           active={(it) => it.id === currentClipId}
           onPick={(it) => playClip(it)}
+          extraControls={(
+            <button className="secondary" onClick={() => pose.setPosesOpen(true)}
+              title="Browse and apply your custom saved poses"
+              style={{ display: 'inline-flex', alignItems: 'center', gap: 5, padding: '0 10px', height: 30, borderRadius: 6, border: '1px solid var(--line)', whiteSpace: 'nowrap' }}>
+              <svg width={13} height={13} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><path d="M12 2 3 7v10l9 5 9-5V7z" /><circle cx={12} cy={12} r={3} /></svg>
+              Saved poses{Object.keys(pose.posePresets).length ? ` (${Object.keys(pose.posePresets).length})` : ''}
+            </button>
+          )}
           renderThumb={(it) => <ClipThumb clip={it} thumbs={thumbs} preview={preview} />} />
       )}</div>
       <div style={{ display: tab === 'clothing' ? 'contents' : 'none' }}>{(
@@ -1351,7 +1362,7 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
     <div ref={containerRef} style={{ display: 'flex', flexDirection: isMobile ? 'column' : 'row', gap: isMobile ? 8 : 0, height: isMobile ? (mobileViewH || '80vh') : 'calc(100vh - 128px)', minHeight: isMobile ? 0 : 460 }}>
       {importOpen && <ImportModal onClose={() => setImportOpen(false)} onImport={applyImport} />}
       {presetsOpen && <PresetsModal presets={presets} onClose={() => setPresetsOpen(false)} onSave={savePreset} onLoad={(p) => { void applyPreset(p); setPresetsOpen(false); }} onDelete={deletePreset} onDuplicate={duplicatePreset} />}
-      {pose.posesOpen && <PosesModal poses={pose.posePresets} currentClip={editState.clip} onClose={() => pose.setPosesOpen(false)} onSave={(n) => pose.savePose(n)} onLoad={(n) => pose.loadPose(n)} onDelete={(n) => pose.deletePose(n)} />}
+      {pose.posesOpen && <PosesModal poses={pose.posePresets} currentClip={editState.clip} clips={clipItems} preview={preview} onClose={() => pose.setPosesOpen(false)} onSave={(n) => pose.savePose(n)} onLoad={(n) => pose.loadPose(n)} onDelete={(n) => pose.deletePose(n)} />}
       {/* Held-browser location popout: a small menu anchored to the card's attach badge. Fixed-position
           so it never clips inside the grid; a backdrop catches outside clicks. */}
       {cardLoc && (() => {
@@ -1646,6 +1657,23 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
         {marqueeRect && marqueeRect.w > 1 && marqueeRect.h > 1 && (
           <div style={{ position: 'absolute', left: marqueeRect.x, top: marqueeRect.y, width: marqueeRect.w, height: marqueeRect.h, border: '1px solid var(--accent)', background: '#5b8cff22', pointerEvents: 'none', zIndex: 6 }} />
         )}
+        {twistInfo && (() => {
+          const col: Record<string, string> = { view: 'var(--accent)', x: '#ff5b5b', y: '#5bff8c', z: '#5b8cff' };
+          const c = col[twistInfo.axis];
+          const R = 26, min = 0.16;
+          const ang = Math.atan2(twistInfo.dir.y, twistInfo.dir.x) * 180 / Math.PI; // orient the ring's edge-on axis along the projected axle
+          const rx = R * Math.max(twistInfo.tilt, min); // squash toward an edge-on ellipse as the axle lies in the screen plane
+          const axleLen = R * 1.5 * (1 - twistInfo.tilt); // the axle only sticks out when it is not pointing at the camera
+          return (
+            <svg width={80} height={80} viewBox="-40 -40 80 80" style={{ position: 'absolute', left: twistInfo.x - 40, top: twistInfo.y - 40, pointerEvents: 'none', zIndex: 7, overflow: 'visible' }}>
+              <g transform={`rotate(${ang})`}>
+                {axleLen > 3 && <line x1={-axleLen} y1={0} x2={axleLen} y2={0} stroke={c} strokeWidth={2} strokeLinecap="round" opacity={0.85} />}
+                <ellipse cx={0} cy={0} rx={rx} ry={R} fill="none" stroke={c} strokeWidth={2.5} opacity={0.95} />
+              </g>
+              <circle cx={0} cy={0} r={2.5} fill={c} />
+            </svg>
+          );
+        })()}
         {editState.active && (isMobile || editOpen) && (
           <PoseEditorPanel
             pose={pose}
@@ -1659,7 +1687,6 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
             bottomBarH={bottomBarH}
             boneTick={boneTick}
             bump={() => setBoneTick((t) => t + 1)}
-            onHide={() => setEditOpen(false)}
           />
         )}
         <div ref={bottomBarRef} style={{ position: 'absolute', left: 12, bottom: 12, right: 12, background: '#0e0e13f2', border: '1px solid rgba(255,255,255,.08)', borderRadius: 10, overflow: 'hidden', boxShadow: '0 12px 34px -14px rgba(0,0,0,.7)' }}>
@@ -1676,9 +1703,13 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
                 playheadRef={playheadRef}
                 trackGeomRef={trackGeomRef}
                 onToast={setNowPlaying}
+                playing={playing} onTogglePlay={togglePlay} onReplay={() => { engineRef.current?.replay(); setPlaying(true); }}
+                loop={loop} onToggleLoop={() => { const n = !loop; setLoop(n); engineRef.current?.setLoop(n); }}
+                speed={speed} onSpeed={(s) => { setSpeed(s); engineRef.current?.setSpeed(s); }}
               />
             );
           })()}
+          {!(editState.active && !isMobile) && ( // in desktop edit mode the transport lives in the dopesheet toolbar (one row)
           <div style={{ display: 'flex', gap: isMobile ? 6 : 8, alignItems: 'center', padding: isMobile ? '6px 8px' : '6px 10px' }}>
           <button className="secondary" onClick={togglePlay} style={{ padding: isMobile ? '4px 10px' : '4px 12px', flexShrink: 0 }}>{playing ? '❚❚' : '▶'}</button>
           <button className="secondary" title="Play from the start" aria-label="Replay from start" onClick={() => { engineRef.current?.replay(); setPlaying(true); }}
@@ -1700,6 +1731,7 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
             {[0.25, 0.5, 1, 2].map((s) => <option key={s} value={s}>{s}×</option>)}
           </select>
           </div>
+          )}
         </div>
       </div>
 
@@ -2633,12 +2665,25 @@ function PresetsModal({ presets, onClose, onSave, onLoad, onDelete, onDuplicate 
 }
 
 // Modal: browse saved animation poses as a thumbnail gallery; save the current, load or delete.
-function PosesModal({ poses, currentClip, onClose, onSave, onLoad, onDelete }: {
-  poses: Record<string, PoseData>; currentClip: string | null; onClose: () => void;
+function PosesModal({ poses, currentClip, clips, preview, onClose, onSave, onLoad, onDelete }: {
+  poses: Record<string, PoseData>; currentClip: string | null;
+  clips: { id: string; rel: string; format: string; name: string }[]; preview: ClipPreview;
+  onClose: () => void;
   onSave: (name: string) => void; onLoad: (name: string) => void; onDelete: (name: string) => void;
 }) {
   const [name, setName] = useState('');
   const [q, setQ] = useState('');
+  // Resolve a saved pose to a playable clip (+ its bone-delta edit) so its thumbnail can auto-play the edited motion on hover.
+  const resolvePreview = (d: PoseData): { clip: { id: string; rel: string; format: string }; edit: PreviewEdit | null } | null => {
+    let clip: { id: string; rel: string; format: string } | null = d.rel && d.format ? { id: d.id ?? d.rel, rel: d.rel, format: d.format } : null;
+    if (!clip) { const m = clips.find((c) => c.name === d.clip || c.rel === d.clip); if (m) clip = { id: m.id, rel: m.rel, format: m.format }; }
+    if (!clip) return null;
+    const bones = d.bones || {};
+    const ticks = Object.values(bones).flat().map((k) => k.tick);
+    const lo = d.lo ?? (ticks.length ? Math.min(...ticks) : 0), hi = d.hi ?? (ticks.length ? Math.max(...ticks) : 1);
+    const edit = Object.keys(bones).length ? { bones, lo, hi: hi > lo ? hi : lo + 1 } : null;
+    return { clip, edit };
+  };
   const list = Object.entries(poses).sort((a, b) => (b[1].saved || 0) - (a[1].saved || 0))
     .filter(([n, d]) => { const s = q.trim().toLowerCase(); return !s || n.toLowerCase().includes(s) || (d.clip || '').toLowerCase().includes(s); });
   const input = { background: '#14141a', color: 'var(--text)', border: '1px solid var(--line)', borderRadius: 6, padding: '8px 10px', fontSize: 13 } as const;
@@ -2661,7 +2706,10 @@ function PosesModal({ poses, currentClip, onClose, onSave, onLoad, onDelete }: {
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(128px, 1fr))', gap: 12 }}>
                 {list.map(([n, d]) => (
                   <div key={n} style={{ display: 'flex', flexDirection: 'column', border: `1px solid ${d.clip && d.clip === currentClip ? 'var(--accent)' : 'var(--line)'}`, borderRadius: 8, overflow: 'hidden', background: '#0e0e12' }}>
-                    <button onClick={() => { onLoad(n); onClose(); }} title={`Load ${n}`} style={{ position: 'relative', padding: 0, border: 'none', cursor: 'pointer', aspectRatio: '0.76', background: '#1b1d24', display: 'grid', placeItems: 'center', overflow: 'hidden' }}>
+                    <button onClick={() => { onLoad(n); onClose(); }} title={`Load ${n}`}
+                      onMouseEnter={(e) => { const p = resolvePreview(d); if (!p) return; const r = (e.currentTarget as HTMLElement).getBoundingClientRect(); preview.play(p.clip, { left: r.left, top: r.top, width: r.width, height: r.height }, p.edit); }}
+                      onMouseLeave={() => preview.stop()}
+                      style={{ position: 'relative', padding: 0, border: 'none', cursor: 'pointer', aspectRatio: '0.76', background: '#1b1d24', display: 'grid', placeItems: 'center', overflow: 'hidden' }}>
                       {d.thumb ? <img src={d.thumb} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : <span style={{ color: 'var(--muted)', fontSize: 24 }}>&#9672;</span>}
                     </button>
                     <div style={{ padding: '5px 7px', display: 'flex', alignItems: 'center', gap: 6 }}>

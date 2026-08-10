@@ -10,7 +10,21 @@ import { RigSet } from './rigset';
 
 export interface Ctx { resolver: unknown; converter: unknown; }
 type Clip = { id: string; rel: string; format: string };
+type EditKey = { tick: number; rot: number[]; pos: number[] };
+export type PreviewEdit = { bones: Record<string, EditKey[]>; lo: number; hi: number }; // per-bone app-space deltas over the clip tick span [lo, hi]
 const SIZE = 224;
+
+function sampleKeys(keys: EditKey[], tick: number): { rot: THREE.Quaternion; pos: THREE.Vector3 } {
+  const q = (k: EditKey) => new THREE.Quaternion(k.rot[0], k.rot[1], k.rot[2], k.rot[3]);
+  const v = (k: EditKey) => new THREE.Vector3(k.pos[0], k.pos[1], k.pos[2]);
+  if (keys.length === 1 || tick <= keys[0].tick) return { rot: q(keys[0]), pos: v(keys[0]) };
+  const last = keys[keys.length - 1]; if (tick >= last.tick) return { rot: q(last), pos: v(last) };
+  for (let i = 0; i < keys.length - 1; i++) {
+    const a = keys[i], b = keys[i + 1];
+    if (a.tick <= tick && tick <= b.tick) { const f = b.tick > a.tick ? (tick - a.tick) / (b.tick - a.tick) : 0; return { rot: q(a).slerp(q(b), f), pos: v(a).lerp(v(b), f) }; }
+  }
+  return { rot: q(last), pos: v(last) };
+}
 
 export class ClipPreview {
   readonly canvas = document.createElement('canvas');
@@ -26,6 +40,8 @@ export class ClipPreview {
   private playing = false;
   private raf = 0;
   private token = 0;
+  private bonesByName = new Map<string, THREE.Bone>();
+  private edit: PreviewEdit | null = null;
 
   constructor(ctx: Ctx) {
     this.ctx = ctx;
@@ -45,6 +61,7 @@ export class ClipPreview {
     root.traverse((o) => { const m = o as THREE.Mesh; if (m.isMesh) { if (!m.geometry.getAttribute('normal')) m.geometry.computeVertexNormals(); m.material = mat; m.frustumCulled = false; } });
     this.bodyRest = boneRestMap(root);
     this.bodySkel = captureSkeletonBind(root);
+    root.traverse((o) => { const b = o as THREE.Bone; if (b.isBone && b.name) this.bonesByName.set(b.name, b); }); // for applying pose-edit deltas
     this.rigs.add('body', root);
     root.updateMatrixWorld(true);
     const box = new THREE.Box3();
@@ -59,12 +76,27 @@ export class ClipPreview {
     if (!this.playing) return;
     this.raf = requestAnimationFrame(this.loop);
     this.rigs.update(this.clock.getDelta());
+    this.applyEdit();
     this.renderer.render(this.scene, this.camera);
   };
 
-  /** Position the preview over a cell and start playing the clip. */
-  async play(clip: Clip, rect: { left: number; top: number; width: number; height: number }) {
+  /** After the mixer poses the clean clip, ride each edited bone's delta on top (base . delta), mapping playback time onto the edit's tick span. */
+  private applyEdit() {
+    const e = this.edit; if (!e) return;
+    const dur = this.rigs.duration(), frac = dur > 1e-6 ? Math.max(0, Math.min(1, this.rigs.time() / dur)) : 0;
+    const tick = e.lo + frac * (e.hi - e.lo);
+    for (const [name, keys] of Object.entries(e.bones)) {
+      const bone = this.bonesByName.get(name); if (!bone || !keys.length) continue;
+      const d = sampleKeys(keys, tick);
+      bone.quaternion.multiply(d.rot); // clean clip pose is the base; compose the app-space delta
+      bone.position.add(d.pos);
+    }
+  }
+
+  /** Position the preview over a cell and start playing the clip. Pass `edit` to play the saved pose on top. */
+  async play(clip: Clip, rect: { left: number; top: number; width: number; height: number }, edit?: PreviewEdit | null) {
     const tok = ++this.token;
+    this.edit = edit ?? null;
     const s = this.canvas.style;
     s.left = `${rect.left}px`; s.top = `${rect.top}px`; s.width = `${rect.width}px`; s.height = `${rect.height}px`; s.display = 'block';
     try {
@@ -86,6 +118,7 @@ export class ClipPreview {
   stop() {
     this.token++;
     this.playing = false;
+    this.edit = null;
     cancelAnimationFrame(this.raf);
     this.canvas.style.display = 'none';
   }

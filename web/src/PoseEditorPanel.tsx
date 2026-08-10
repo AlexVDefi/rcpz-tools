@@ -1,4 +1,4 @@
-import type { CSSProperties } from 'react';
+import { useState, type CSSProperties } from 'react';
 import { nativeBridge } from './platform/native-fs';
 import type { CharacterEngine } from './render/character-engine';
 import type { PoseEditor } from './usePoseEditor';
@@ -15,12 +15,12 @@ type PoseEditorPanelProps = {
   bottomBarH: number;
   boneTick: number;         // re-read engine values after each edit
   bump: () => void;
-  onHide: () => void;
 };
 
-export function PoseEditorPanel({ pose, engine, editState, selectedBones, saveAsName, setSaveAsName, boneSearch, isMobile, bottomBarH, boneTick, bump, onHide }: PoseEditorPanelProps) {
+export function PoseEditorPanel({ pose, engine, editState, selectedBones, saveAsName, setSaveAsName, boneSearch, isMobile, bottomBarH, boneTick, bump }: PoseEditorPanelProps) {
   void boneTick; // read fresh after each setBoneEdit
   const eng = engine;
+  const [panelCollapsed, setPanelCollapsed] = useState(false); // chevron collapses the panel to just its header
   const { collapsed, setCollapsed, poseName, setPoseName, posePresets, setPosesOpen, savePose, downloadEditedX, saveToFolder, downloadAllEdited } = pose;
   const primary = selectedBones.length ? selectedBones[selectedBones.length - 1] : null;
   const cur = primary && eng ? eng.boneEditOf(primary) : null;
@@ -41,15 +41,30 @@ export function PoseEditorPanel({ pose, engine, editState, selectedBones, saveAs
     </div>
   );
   return (
-    <div style={{ position: 'absolute', right: isMobile ? 6 : 12, top: isMobile ? 48 : 54, bottom: isMobile ? undefined : bottomBarH + 20, width: isMobile ? 'min(320px, calc(100% - 12px))' : 300, maxHeight: isMobile ? '82%' : undefined, overflowY: 'auto', overflowX: 'hidden', background: '#0e0e13f2', border: '1px solid var(--line)', borderRadius: 8, padding: 10, boxShadow: '0 12px 34px -14px rgba(0,0,0,.7)' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+    <div style={{ position: 'absolute', right: isMobile ? 6 : 12, top: isMobile ? 48 : 54, bottom: (panelCollapsed || isMobile) ? undefined : bottomBarH + 20, width: isMobile ? 'min(320px, calc(100% - 12px))' : 300, maxHeight: isMobile ? '82%' : undefined, overflowY: 'auto', overflowX: 'hidden', background: '#0e0e13f2', border: '1px solid var(--line)', borderRadius: 8, padding: 10, boxShadow: '0 12px 34px -14px rgba(0,0,0,.7)' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: panelCollapsed ? 0 : 8 }}>
         <span style={{ fontSize: 12, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>Editing {editState.clip}</span>
         <span style={{ display: 'flex', gap: 6, alignItems: 'center', flexShrink: 0 }}>
-          <button className="secondary" onClick={onHide} title="Hide this panel (still editing - reopen with the Pose button)" style={{ padding: '2px 7px', fontSize: 11, borderRadius: 6, border: '1px solid var(--line)' }}>hide</button>
+          <button className="secondary" onClick={() => setPanelCollapsed((v) => !v)} title={panelCollapsed ? 'Expand panel' : 'Collapse panel'} aria-label={panelCollapsed ? 'Expand panel' : 'Collapse panel'} style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', padding: 0, width: 22, height: 22, borderRadius: 6, border: '1px solid var(--line)' }}>
+            <svg width={12} height={12} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.4} strokeLinecap="round" strokeLinejoin="round" style={{ transform: panelCollapsed ? 'none' : 'rotate(180deg)', transition: 'transform .15s' }}><path d="M6 9l6 6 6-6" /></svg>
+          </button>
           <span role="button" onClick={() => eng?.exitEditMode()} title="Exit pose editing" style={{ cursor: 'pointer', color: 'var(--muted)', padding: '0 4px' }}>✕</span>
         </span>
       </div>
-      <div style={{ fontSize: 10, color: 'var(--muted)', marginBottom: 8, lineHeight: 1.4 }}>Drag a handle to pose. Blue hands/feet reach (IK); pink elbows/knees set the bend; teal spine/chest/head bend the torso; purple hips move the body. Scrub the timeline and pose again to keyframe (dopesheet below).</div>
+      {!panelCollapsed && (<>
+      <div style={{ fontSize: 10, color: 'var(--muted)', marginBottom: 8, lineHeight: 1.4 }}>Drag a handle to pose. Blue hands/feet reach (IK); pink elbows/knees set the bend; teal spine/chest/head bend the torso; purple hips move the body; orange prop nodes sit in the hands. Scrub the timeline and pose again to keyframe (dopesheet below).</div>
+      {eng && (
+        <label style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8, fontSize: 11.5, color: 'var(--text)', cursor: 'pointer' }} title="Show the orange prop (hand-attachment) nodes in the viewport so you can drag them">
+          <input type="checkbox" checked={eng.propNodesOn()} onChange={(e) => { eng.setPropNodes(e.target.checked); bump(); }} style={{ accentColor: 'var(--accent)' }} />
+          Show prop nodes
+        </label>
+      )}
+      {eng && (
+        <label style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8, fontSize: 11.5, color: 'var(--text)', cursor: 'pointer' }} title="Show the finger and thumb nodes in the viewport so you can pose the hands">
+          <input type="checkbox" checked={eng.fingerNodesOn()} onChange={(e) => { eng.setFingerNodes(e.target.checked); bump(); }} style={{ accentColor: 'var(--accent)' }} />
+          Show finger nodes
+        </label>
+      )}
       <div style={{ borderTop: '1px solid var(--line)', marginTop: 8, paddingTop: 8 }}>
         {secHead('bones', 'Bones')}
         {!collapsed.bones && <div style={{ maxHeight: 168, overflow: 'auto', border: '1px solid var(--line)', borderRadius: 6, marginTop: 6 }}>
@@ -77,6 +92,13 @@ export function PoseEditorPanel({ pose, engine, editState, selectedBones, saveAs
               <button className="secondary" onClick={() => { eng?.resetBones([primary]); bump(); }} style={{ padding: '3px 8px', fontSize: 11, borderRadius: 6, border: '1px solid var(--line)' }}>reset</button>
             </div>
           </div>
+          {eng && eng.isPropBone(primary) && (
+            <label style={{ display: 'flex', alignItems: 'center', gap: 6, margin: '2px 0 8px', fontSize: 11.5, color: 'var(--text)', cursor: 'pointer' }}
+              title="On: the prop follows the hand and your edits are offsets from it. Off: animate the prop freely, independent of the hand (based on its rest pose).">
+              <input type="checkbox" checked={eng.propFollowOf(primary)} onChange={(e) => { eng.setPropFollow(primary, e.target.checked); bump(); }} style={{ accentColor: 'var(--accent)' }} />
+              Follow hand <span style={{ fontSize: 10, color: 'var(--muted)' }}>{eng.propFollowOf(primary) ? '(offset)' : '(independent)'}</span>
+            </label>
+          )}
           {secHead('transform', 'Transform')}
           {!collapsed.transform && (<>
           <div style={{ ...secLabel, marginTop: 6 }}>Rotation (deg)</div>
@@ -144,6 +166,7 @@ export function PoseEditorPanel({ pose, engine, editState, selectedBones, saveAs
         </div>}
       </div>
       <div style={{ fontSize: 10, color: 'var(--muted)', marginTop: 6, lineHeight: 1.4 }}>Right-click a handle to reset that limb. Ctrl+Z / Ctrl+Y to undo/redo.</div>
+      </>)}
     </div>
   );
 }

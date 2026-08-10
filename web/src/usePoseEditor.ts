@@ -3,7 +3,7 @@ import { nativeBridge } from './platform/native-fs';
 import { makeZip } from './anim-edit/zip';
 import type { CharacterEngine } from './render/character-engine';
 
-export type PoseData = { clip: string; lengthScale: number; clipEnd: number | null; bones: Record<string, { tick: number; rot: number[]; pos: number[] }[]>; saved?: number; thumb?: string }; // a saved animation-edit
+export type PoseData = { clip: string; rel?: string; format?: string; id?: string; lo?: number; hi?: number; lengthScale: number; clipEnd: number | null; bones: Record<string, { tick: number; rot: number[]; pos: number[] }[]>; saved?: number; thumb?: string }; // a saved animation-edit (rel/format/id + lo/hi let the poses browser auto-play the edited clip)
 
 type UsePoseEditorArgs = {
   engineRef: React.RefObject<CharacterEngine | null>;
