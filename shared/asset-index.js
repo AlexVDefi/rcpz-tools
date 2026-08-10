@@ -42,72 +42,82 @@ async function realSubdir(source, relLower) {
  * @param {Array<{id, isMod?, listDir, readBytes, readText, stat}>} sources ordered, highest priority first
  * @param {{ onProgress?: (msg:string)=>void }} [opts]
  */
+// Read one source's raw contribution (no cross-source dedup, no sourceIndex baked in) so it can be cached
+// by source id and reused when the mod set changes - only a newly-enabled source has to be read from disk.
+async function scanSource(src, reportStep = () => {}) {
+  const scripts = [], cloth = [], anims = []; // { rel, text } / { rel, text } / { key, rel, format, actor, clip }
+  let hair = null, beard = null;              // hairstyles.xml / beardstyles.xml text (or null)
+
+  const scriptsDir = await realSubdir(src, 'media/scripts');
+  if (scriptsDir) await walkTree(src, scriptsDir, async (rel, name) => {
+    if (ext(name) !== '.txt') return;
+    try { scripts.push({ rel, text: await src.readText(rel) }); } catch {}
+  });
+  reportStep('scripts', scripts.length);
+
+  const clothDir = await realSubdir(src, 'media/clothing/clothingItems');
+  if (clothDir) await walkTree(src, clothDir, async (rel, name) => {
+    if (ext(name) !== '.xml') return;
+    try { cloth.push({ rel, text: await src.readText(rel) }); } catch {}
+  });
+  reportStep('clothing', cloth.length);
+
+  const hd = await realSubdir(src, 'media/hairstyles');
+  if (hd) {
+    const entries = await src.listDir(hd);
+    const h = entries.find((e) => e.name.toLowerCase() === 'hairstyles.xml');
+    const b = entries.find((e) => e.name.toLowerCase() === 'beardstyles.xml');
+    if (h) try { hair = await src.readText(`${hd}/${h.name}`); } catch {}
+    if (b) try { beard = await src.readText(`${hd}/${b.name}`); } catch {}
+  }
+
+  const animsDir = await realSubdir(src, 'media/anims_x');
+  if (animsDir) await walkTree(src, animsDir, async (rel, name) => {
+    if (!ANIM_EXTS.has(ext(name))) return;
+    const parts = rel.split('/');
+    anims.push({ key: rel.toLowerCase(), rel, format: ext(name).slice(1), actor: parts[parts.length - 2] || '', clip: baseNoExt(name) });
+  });
+  reportStep('anims', anims.length);
+  return { scripts, cloth, hair, beard, anims };
+}
+
+// opts.cache (optional): a Map<src.id, contribution> reused across rebuilds so toggling a mod only reads the
+// newly-enabled source from disk. Sources are immutable within a session (same FSA handles / hosted bundles);
+// pass a fresh cache (or clear it) to force a full re-read after files change on disk.
 export async function buildAssetIndex(sources, opts = {}) {
   const onProgress = opts.onProgress || (() => {});
+  const cache = opts.cache || null;
   const resolver = createResolver(sources);
-  // structured progress so the UI can draw a real bar: which source, which step, running count
-  const report = (si, src, step, count) => onProgress({ source: si + 1, total: sources.length, step, count, name: src.modName || (src.isMod ? src.id : 'Game install') });
 
+  // Phase 1: read every source's raw contribution. Cache hits are instant; misses scan in bounded-concurrency
+  // batches so hundreds of mods don't crawl one directory at a time. Progress reports on each completion.
+  const contribs = new Array(sources.length);
+  let done = 0;
+  const scanAt = async (si) => {
+    const src = sources[si];
+    let c = cache && src.id != null ? cache.get(src.id) : null;
+    if (!c) { c = await scanSource(src); if (cache && src.id != null) cache.set(src.id, c); }
+    contribs[si] = c;
+    done++;
+    onProgress({ source: done, total: sources.length, step: 'scanning', count: done, name: src.modName || (src.isMod ? src.id : 'Game install') });
+  };
+  const LIMIT = 8;
+  for (let s = 0; s < sources.length; s += LIMIT) await Promise.all(sources.slice(s, s + LIMIT).map((_, j) => scanAt(s + j)));
+
+  // Phase 2: combine in source order (mods first): the earliest source to define a rel wins (mod overrides vanilla).
   const scriptFiles = [];   // { rel, text, isMod, sourceIndex }
-  const clothingFiles = []; // { rel, text, isMod }
+  const clothingFiles = []; // { rel, text, isMod, sourceIndex }
   const animClips = [];     // { key, actor, clip, format, rel, isMod, sourceIndex }
   const seenScript = new Set(), seenCloth = new Set(), seenAnim = new Set();
   const hairXml = [], beardXml = []; // [{ text, isMod, modName }] per source (mods first); merged + tagged in listHair
-
   for (let si = 0; si < sources.length; si++) {
-    const src = sources[si];
-    const isMod = !!src.isMod;
-
-    // scripts (read text)
-    const scriptsDir = await realSubdir(src, 'media/scripts');
-    if (scriptsDir) await walkTree(src, scriptsDir, async (rel, name) => {
-      if (ext(name) !== '.txt') return;
-      const key = rel.toLowerCase();
-      if (seenScript.has(key)) return; seenScript.add(key);
-      try { scriptFiles.push({ rel, text: await src.readText(rel), isMod, sourceIndex: si }); } catch {}
-    });
-    report(si, src, 'scripts', scriptFiles.length);
-
-    // clothingItems (read xml)
-    const clothDir = await realSubdir(src, 'media/clothing/clothingItems');
-    if (clothDir) await walkTree(src, clothDir, async (rel, name) => {
-      if (ext(name) !== '.xml') return;
-      const key = rel.toLowerCase();
-      if (seenCloth.has(key)) return; seenCloth.add(key);
-      try { clothingFiles.push({ rel, text: await src.readText(rel), isMod, sourceIndex: si }); } catch {}
-    });
-    report(si, src, 'clothing', clothingFiles.length);
-
-    // hairstyle manifests: collect from EVERY source (mods first) so vanilla AND modded hairstyles are
-    // all available at once (no toggling the mod on/off). listHair parses each, tags styles with isMod/
-    // modName (so modded hair shows a MOD badge + a source filter), and dedups same-named styles mod-over-vanilla.
-    {
-      const hd = await realSubdir(src, 'media/hairstyles');
-      if (hd) {
-        const entries = await src.listDir(hd);
-        const h = entries.find((e) => e.name.toLowerCase() === 'hairstyles.xml');
-        const b = entries.find((e) => e.name.toLowerCase() === 'beardstyles.xml');
-        const tag = { isMod, modName: src.modName || (isMod ? src.id : null) };
-        if (h) try { hairXml.push({ text: await src.readText(`${hd}/${h.name}`), ...tag }); } catch {}
-        if (b) try { beardXml.push({ text: await src.readText(`${hd}/${b.name}`), ...tag }); } catch {}
-      }
-    }
-
-    // anims_x (names only)
-    const animsDir = await realSubdir(src, 'media/anims_x');
-    if (animsDir) await walkTree(src, animsDir, async (rel, name) => {
-      if (!ANIM_EXTS.has(ext(name))) return;
-      const key = rel.toLowerCase();
-      if (seenAnim.has(key)) return; seenAnim.add(key);
-      const parts = rel.split('/');
-      animClips.push({
-        key, rel, isMod, sourceIndex: si,
-        format: ext(name).slice(1),
-        actor: parts[parts.length - 2] || '',
-        clip: baseNoExt(name),
-      });
-    });
-    report(si, src, 'anims', animClips.length);
+    const src = sources[si], isMod = !!src.isMod, c = contribs[si];
+    for (const s of c.scripts) { const key = s.rel.toLowerCase(); if (seenScript.has(key)) continue; seenScript.add(key); scriptFiles.push({ rel: s.rel, text: s.text, isMod, sourceIndex: si }); }
+    for (const cl of c.cloth) { const key = cl.rel.toLowerCase(); if (seenCloth.has(key)) continue; seenCloth.add(key); clothingFiles.push({ rel: cl.rel, text: cl.text, isMod, sourceIndex: si }); }
+    const tag = { isMod, modName: src.modName || (isMod ? src.id : null) }; // hair/beard collected from every source (mods first), never deduped here
+    if (c.hair != null) hairXml.push({ text: c.hair, ...tag });
+    if (c.beard != null) beardXml.push({ text: c.beard, ...tag });
+    for (const a of c.anims) { if (seenAnim.has(a.key)) continue; seenAnim.add(a.key); animClips.push({ key: a.key, rel: a.rel, format: a.format, actor: a.actor, clip: a.clip, isMod, sourceIndex: si }); }
   }
 
   return { sources, resolver, scriptFiles, clothingFiles, hairXml, beardXml, animClips };

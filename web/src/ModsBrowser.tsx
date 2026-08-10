@@ -34,6 +34,9 @@ export type ModTab = {
   title?: string;     // section heading shown when this is the only tab (no tab-bar to label it)
   note?: ReactNode;
   controls?: ReactNode;
+  status?: ReactNode;                 // shown in the panel header (e.g. an "updating" spinner + progress)
+  onRescan?: () => void;              // present => a refresh icon by Select all / Deselect all
+  rescanTitle?: string;
   empty?: ReactNode;
 };
 
@@ -107,7 +110,7 @@ export function ModsPanel({ tabs, busy, onTab, divided = true }: { tabs: ModTab[
         </div>
       )}
       {tabs.length === 1 && tab.title && <div style={{ fontSize: 14, fontWeight: 600, margin: '2px 0 0' }}>{tab.title}</div>}
-      {tab.note && <div style={{ color: 'var(--muted)', fontSize: 12, margin: '9px 0 0', display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>{tab.note}</div>}
+      {(tab.note || tab.status) && <div style={{ color: 'var(--muted)', fontSize: 12, margin: '9px 0 0', display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>{tab.note}{tab.status && <span style={{ marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: 6 }}>{tab.status}</span>}</div>}
 
       {items.length === 0 ? (
         <div style={{ marginTop: 11 }}>{tab.empty}</div>
@@ -120,10 +123,16 @@ export function ModsPanel({ tabs, busy, onTab, divided = true }: { tabs: ModTab[
               <option value="on">{onLabel} ({enabledCount})</option>
               <option value="off">{offLabel} ({items.length - enabledCount})</option>
             </select>
-            {tab.onSetMany && (
-              <div style={{ display: 'inline-flex', gap: 6, flexShrink: 0 }}>
-                <button className="secondary" onClick={() => tab.onSetMany!(filtered.map((m) => m.id), true)} disabled={busy} style={{ padding: '6px 10px', fontSize: 12 }}>Select all</button>
-                <button className="secondary" onClick={() => tab.onSetMany!(filtered.map((m) => m.id), false)} disabled={busy} style={{ padding: '6px 10px', fontSize: 12 }}>Deselect all</button>
+            {(tab.onSetMany || tab.onRescan) && (
+              <div style={{ display: 'inline-flex', gap: 6, flexShrink: 0, alignItems: 'center' }}>
+                {tab.onSetMany && <button className="secondary" onClick={() => tab.onSetMany!(filtered.map((m) => m.id), true)} disabled={busy} style={{ padding: '6px 10px', fontSize: 12 }}>Select all</button>}
+                {tab.onSetMany && <button className="secondary" onClick={() => tab.onSetMany!(filtered.map((m) => m.id), false)} disabled={busy} style={{ padding: '6px 10px', fontSize: 12 }}>Deselect all</button>}
+                {tab.onRescan && (
+                  <button className="secondary" onClick={tab.onRescan} disabled={busy} title={tab.rescanTitle ?? 'Rescan'} aria-label="Rescan"
+                    style={{ padding: 0, width: 30, height: 30, display: 'grid', placeItems: 'center', flexShrink: 0 }}>
+                    <svg width={15} height={15} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round"><path d="M13.4 8 a5.4 5.4 0 1 1 -1.6 -3.8" /><path d="M13.8 2.4 V5 H11.2" /></svg>
+                  </button>
+                )}
               </div>
             )}
             <div style={{ display: 'inline-flex', border: '1px solid var(--line)', borderRadius: 7, overflow: 'hidden', flexShrink: 0 }}>

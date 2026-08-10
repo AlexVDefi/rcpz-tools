@@ -155,15 +155,24 @@ export function App() {
   const relayerTimer = useRef<number | null>(null); // debounce timer for mod-toggle re-layers
   const pendingLayer = useRef<{ community: HostedMod[]; local: DiscoveredMod[] } | null>(null); // latest desired layer, applied when the debounce fires
   const hostedSourceCache = useRef(new Map<string, Awaited<ReturnType<typeof loadHostedSource>>>()); // immutable hosted bundles (vanilla + community) reused across re-layers, so toggling never re-fetches them
-  const rebuild = useCallback(async (installH: FileSystemDirectoryHandle, active: DiscoveredMod[]) => {
-    // show the scan overlay in the SAME render as phase='scanning' (batched), so it's the first
-    // thing on screen - no flash of the empty Sources card before the modal appears.
-    if (fadeTimer.current) { clearTimeout(fadeTimer.current); fadeTimer.current = null; }
-    setPhase('scanning'); setOverlay('in'); setError(''); setScanHosted(false); setPendingLocal(false);
+  const scanCache = useRef(new Map<string, unknown>()); // per-source scan results reused across rebuilds (hosted AND local), so toggling a mod only reads the newly-enabled source from disk
+  const pendingLocalActive = useRef<DiscoveredMod[] | null>(null); // latest desired local mod set, applied when the debounce fires
+  // `quiet` re-scans with just a small spinner (used when auto-syncing a mod toggle); a full rebuild shows
+  // the scan modal. Unchanged sources are reused from scanCache, so a toggle only reads the new mod's files.
+  const rebuild = useCallback(async (installH: FileSystemDirectoryHandle, active: DiscoveredMod[], quiet = false) => {
+    if (quiet) setRelayering(true);
+    else {
+      if (relayerTimer.current) { clearTimeout(relayerTimer.current); relayerTimer.current = null; } pendingLocalActive.current = null; setRelayering(false);
+      scanCache.current.clear(); // a full rebuild reads fresh from disk (install change / reconnect / manual rescan); quiet toggles reuse the cache
+      // show the scan overlay in the SAME render as phase='scanning' (batched), so it's the first thing on screen.
+      if (fadeTimer.current) { clearTimeout(fadeTimer.current); fadeTimer.current = null; }
+      setPhase('scanning'); setOverlay('in');
+    }
+    setError(''); setScanHosted(false); setPendingLocal(false);
     const t0 = performance.now();
     try {
       const sources = [...modSources(active), createFsaAssetSource(installH, { id: 'install', isMod: false })];
-      const idx = await buildAssetIndex(sources, { onProgress: (p: Scan) => setScan(p) });
+      const idx = await buildAssetIndex(sources, { cache: scanCache.current, onProgress: (p: Scan) => setScan(p) });
       const clothing = listClothing(idx);
       const { hair, beards } = listHair(idx);
       setCounts({
@@ -174,14 +183,25 @@ export function App() {
       setIndex(idx);
       setAssetSource('local'); localStorage.setItem(SOURCE_KEY, 'local');
       setProgress(`scanned ${sources.length} root${sources.length === 1 ? '' : 's'} in ${((performance.now() - t0) / 1000).toFixed(1)}s`);
-      setPhase('ready');
-    } catch (e) { setError(e instanceof Error ? e.message : String(e)); setPhase('error'); }
+      if (!quiet) setPhase('ready');
+    } catch (e) { setError(e instanceof Error ? e.message : String(e)); if (!quiet) setPhase('error'); }
     finally {
-      // fade the modal out (revealing the cards behind it) once the scan settles
-      setOverlay('out');
-      fadeTimer.current = window.setTimeout(() => { setOverlay(null); setScan(null); fadeTimer.current = null; }, 480);
+      if (quiet) { setRelayering(false); setScan(null); }
+      else { setOverlay('out'); fadeTimer.current = window.setTimeout(() => { setOverlay(null); setScan(null); fadeTimer.current = null; }, 480); }
     }
   }, []);
+  // Debounce local mod-toggle rebuilds: rapid toggles collapse into one quiet re-scan ~350ms after the last.
+  const scheduleLocalRebuild = useCallback((active: DiscoveredMod[]) => {
+    if (assetSource !== 'local' || !installHandle) return;
+    pendingLocalActive.current = active;
+    setRelayering(true);
+    if (relayerTimer.current) clearTimeout(relayerTimer.current);
+    relayerTimer.current = window.setTimeout(() => {
+      relayerTimer.current = null;
+      const a = pendingLocalActive.current; pendingLocalActive.current = null;
+      if (a) rebuild(installHandle, a, true);
+    }, 350);
+  }, [assetSource, installHandle, rebuild]);
 
   // Load a hosted asset bundle (tools/bake-assets.mjs) instead of a local install. Produces
   // the same index the FSA path does, so the rest of the app is unchanged. Reached via
@@ -213,7 +233,7 @@ export function App() {
         catch { /* a mod bundle that fails to load is skipped, not fatal */ }
       }
       const localSources = modSources(localModList); // FSA sources over the user's installed mods
-      const idx = await buildAssetIndex([...localSources, ...communitySources, vanilla], quiet ? {} : { onProgress: (p: Scan) => setScan(p) });
+      const idx = await buildAssetIndex([...localSources, ...communitySources, vanilla], { cache: scanCache.current, ...(quiet ? {} : { onProgress: (p: Scan) => setScan(p) }) });
       const clothing = listClothing(idx);
       const { hair, beards } = listHair(idx);
       setCounts({
@@ -229,7 +249,7 @@ export function App() {
       if (!quiet) setPhase('ready');
     } catch (e) { setError(e instanceof Error ? e.message : String(e)); if (!quiet) setPhase('error'); }
     finally {
-      if (quiet) setRelayering(false);
+      if (quiet) { setRelayering(false); setScan(null); }
       else { setOverlay('out'); fadeTimer.current = window.setTimeout(() => { setOverlay(null); setScan(null); fadeTimer.current = null; }, 480); }
     }
   }, []);
@@ -407,17 +427,23 @@ export function App() {
       // then picks which mods to load and hits Apply, so they never wait on mods they don't want.
       const found = await discoverWorkshopMods(h, (n) => setProgress(`found ${n} mods…`));
       setMods(found);
-      setProgress(`found ${found.length} mods; pick the ones you want, then Apply & rescan`);
+      setProgress(`found ${found.length} mods; enable the ones you want and scan`);
     } catch (e) { if ((e as Error).name !== 'AbortError') setError((e as Error).message); }
   }, []);
 
-  const toggleMod = (key: string) => setActiveKeys((ks) => ks.includes(key) ? ks.filter((k) => k !== key) : [...ks, key]);
+  const activeFrom = (keys: string[]) => keys.map((k) => mods.find((m) => m.key === k)).filter(Boolean) as DiscoveredMod[];
+  // Toggling a mod auto-syncs: the checkbox flips instantly, then a debounced quiet re-scan applies it.
+  const toggleMod = (key: string) => {
+    const next = activeKeys.includes(key) ? activeKeys.filter((k) => k !== key) : [...activeKeys, key];
+    setActiveKeys(next); scheduleLocalRebuild(activeFrom(next));
+  };
   // enable/disable a batch (Select all / Deselect all in the mods panel); enabling appends in the given order
-  const setManyModsLocal = (keys: string[], enabled: boolean) => setActiveKeys((ks) => {
-    if (enabled) { const have = new Set(ks); return [...ks, ...keys.filter((k) => !have.has(k))]; }
-    const rm = new Set(keys); return ks.filter((k) => !rm.has(k));
-  });
-  const applyMods = () => { if (installHandle) rebuild(installHandle, activeMods); };
+  const setManyModsLocal = (keys: string[], enabled: boolean) => {
+    const have = new Set(activeKeys), rm = new Set(keys);
+    const next = enabled ? [...activeKeys, ...keys.filter((k) => !have.has(k))] : activeKeys.filter((k) => !rm.has(k));
+    setActiveKeys(next); scheduleLocalRebuild(activeFrom(next));
+  };
+  const applyMods = () => { if (installHandle) rebuild(installHandle, activeMods); }; // full re-scan (rebuild drops the cache when not quiet)
   const wide = view === 'character' && index != null;
 
   const firstRun = !installHandle && !counts;
@@ -597,7 +623,7 @@ export function App() {
               <b style={{ fontSize: 13 }}>Sources</b>
               {phase === 'scanning' && <span style={{ color: 'var(--muted)', fontSize: 12.5 }}><span className="spinner" /> scanning…</span>}
               {/* top-right: a transient "updating…" while re-layering; on the local path, a way back to built-in */}
-              {assetSource === 'hosted' && relayering && (
+              {relayering && assetSource === 'hosted' && (
                 <span style={{ marginLeft: 'auto', color: 'var(--muted)', fontSize: 12.5, display: 'inline-flex', alignItems: 'center', gap: 6 }}><span className="spinner" /> updating…</span>
               )}
               {phase !== 'scanning' && assetSource !== 'hosted' && hostedAvailable && (
@@ -675,8 +701,10 @@ export function App() {
                   key: 'local', label: 'Mods', title: 'Mods',
                   onToggle: toggleMod, onSetMany: setManyModsLocal, onLabel: 'Active', offLabel: 'Inactive',
                   items: mods.map((m) => ({ id: m.key, title: m.name, author: m.author, enabled: activeKeys.includes(m.key), poster: m.poster })),
-                  note: <>{activeMods.length} of {mods.length} active. Enable the mods whose content you want layered over vanilla, then rescan. Earlier-enabled mods override later ones.</>,
-                  controls: <button onClick={applyMods} disabled={!installHandle || busy} style={{ padding: '6px 12px', fontSize: 12.5 }}>Apply &amp; rescan</button>,
+                  note: <>{activeMods.length} of {mods.length} active. {assetSource === 'local' ? 'Toggling a mod applies automatically.' : 'Enable the ones you want, then scan.'} Earlier-enabled mods override later ones.</>,
+                  status: relayering ? <><span className="spinner" /> {scan ? `updating ${scan.source}/${scan.total}${scan.name ? ` - ${scan.name}` : ''}` : 'updating…'}</> : undefined,
+                  onRescan: installHandle ? applyMods : undefined,
+                  rescanTitle: assetSource === 'local' ? 'Force a full re-scan from disk (after editing mod files)' : 'Scan the game install + enabled mods',
                 };
                 return <ModsPanel tabs={[tab]} busy={busy} divided={false} />;
               })()}
