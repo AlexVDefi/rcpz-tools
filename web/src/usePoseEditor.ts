@@ -23,7 +23,7 @@ export function usePoseEditor({ engineRef, editState, saveAsName, clips, capture
   useEffect(() => { localStorage.setItem('pz-pose-presets', JSON.stringify(posePresets)); }, [posePresets]);
   const [poseName, setPoseName] = useState('');
   const [posesOpen, setPosesOpen] = useState(false); // saved-poses browser modal
-  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({}); // collapsed pose-panel sections
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({ bones: true }); // collapsed pose-panel sections (Bones list starts collapsed)
 
   const savePose = (name: string) => {
     const n = name.trim(); if (!n) { toast('name the pose first'); return; }

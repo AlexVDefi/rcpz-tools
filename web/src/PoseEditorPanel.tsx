@@ -150,9 +150,9 @@ export function PoseEditorPanel({ pose, engine, editState, selectedBones, saveAs
         {!collapsed.poses && (<div style={{ marginTop: 6 }}>
           <div style={{ display: 'flex', gap: 6 }}>
             <input value={poseName} onChange={(e) => setPoseName(e.target.value)} placeholder="name this pose" onKeyDown={(e) => { if (e.key === 'Enter') { savePose(poseName); setPoseName(''); } }}
-              style={{ flex: 1, minWidth: 0, boxSizing: 'border-box', fontSize: 11.5, padding: '4px 6px', borderRadius: 6, border: '1px solid var(--line)', background: 'var(--panel)', color: 'var(--text)' }} />
+              style={{ flex: 1, minWidth: 0, boxSizing: 'border-box', fontSize: 12, padding: '5px 7px', borderRadius: 6, border: '1px solid var(--line)', background: 'var(--panel)', color: 'var(--text)' }} />
             <button className="secondary" disabled={!savable} title={savable ? 'Save the current edits as a reusable pose (Ctrl+S)' : 'Edit something first'} onClick={() => { savePose(poseName || saveAsName || editState.clip || 'pose'); setPoseName(''); }}
-              style={{ flexShrink: 0, padding: '4px 10px', fontSize: 11, borderRadius: 6, border: `1px solid ${savable ? 'var(--accent)' : 'var(--line)'}`, background: savable ? 'var(--accent)' : 'var(--panel)', color: savable ? '#fff' : 'var(--muted)', cursor: savable ? 'pointer' : 'default' }}>save</button>
+              style={{ flexShrink: 0, padding: '6px 14px', fontSize: 12, borderRadius: 6, border: `1px solid ${savable ? 'var(--accent)' : 'var(--line)'}`, background: savable ? 'var(--accent)' : 'var(--panel)', color: savable ? '#fff' : 'var(--muted)', cursor: savable ? 'pointer' : 'default' }}>save</button>
           </div>
           <button className="secondary" onClick={() => setPosesOpen(true)} title="Browse your saved poses as a gallery" style={{ width: '100%', marginTop: 6, padding: '6px 10px', fontSize: 12, borderRadius: 6, cursor: 'pointer', border: '1px solid var(--line)', background: 'var(--panel)', color: 'var(--text)' }}>Browse saved poses{Object.keys(posePresets).length ? ` (${Object.keys(posePresets).length})` : ''}...</button>
           <div style={{ fontSize: 10, color: 'var(--muted)', marginTop: 5, lineHeight: 1.4 }}>Saved locally. Ctrl+S quick-saves. Load applies a saved pose onto the current clip.</div>
