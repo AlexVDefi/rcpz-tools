@@ -139,6 +139,7 @@ export class CharacterEngine {
   private editText: string | null = null;          // raw .x source of the current clip (null unless format is .x)
   private editClipName: string | null = null;      // the loaded clip's name / AnimationSet name
   private editMode = false;                         // pose editing active: playback paused, joints pickable, overrides applied
+  private editDownEmpty: { x: number; y: number } | null = null; // a left-press on empty space in edit mode: clears the bone selection on release if it stays a click (not an orbit drag)
   private boneKeys = new Map<string, BoneKey[]>();  // author's app-space delta timeline per bone (sorted by tick; 1 key = constant pose)
   private boneClipboard = new Map<string, BoneKey[]>(); // copied bone timelines for paste onto other bones
   private project = new Map<string, { clip: Clip; keys: Map<string, BoneKey[]>; lengthScale: number; clipEnd: number | null }>(); // clip rel -> edits + retime + trim
@@ -169,7 +170,8 @@ export class CharacterEngine {
   onBoneEdit?: () => void;                          // fired after a drag/gizmo changes a bone's delta
   private hoverBone: string | null = null;         // handle under the cursor (highlighted)
   private boneOverlay: THREE.Group | null = null;  // the curated IK/pose handle markers
-  private drag: { mode: 'ik' | 'pole' | 'aim' | 'move' | 'free'; grab: string; affected: string[]; chain?: string[]; l1: number; l2: number; twistDir?: number; handTarget?: THREE.Vector3; endQuat?: THREE.Quaternion; planePt?: THREE.Vector3; offset?: THREE.Vector3; pins?: { chain: string[]; target: THREE.Vector3; pole: THREE.Vector3; l1: number; l2: number; footQuat: THREE.Quaternion }[]; headHold?: THREE.Quaternion; lastX?: number; lastY?: number } | null = null;
+  private nodeStyle: { scale: number; opacity: number; colors: Record<string, number> } = { scale: 1, opacity: 0.5, colors: { ik: 0x5b8cff, pole: 0xff3db1, aim: 0x33cc99, move: 0xcc66ff, free: 0xffb034 } }; // user-tunable pose-node size/opacity/colour
+  private drag: { mode: 'ik' | 'pole' | 'aim' | 'move' | 'free'; grab: string; affected: string[]; chain?: string[]; l1: number; l2: number; twistDir?: number; handTarget?: THREE.Vector3; endQuat?: THREE.Quaternion; planePt?: THREE.Vector3; offset?: THREE.Vector3; pins?: { chain: string[]; target: THREE.Vector3; pole: THREE.Vector3; l1: number; l2: number; footQuat: THREE.Quaternion }[]; headHold?: THREE.Quaternion; lastX?: number; lastY?: number; multi?: { pquat: THREE.Quaternion; ppos: THREE.Vector3; secs: { bone: string; quat: THREE.Quaternion; pos: THREE.Vector3 }[] } } | null = null; // multi: other selected nodes riding the grabbed node's local delta
   private twistAxis: 'view' | 'x' | 'y' | 'z' = 'view'; // scroll-to-rotate axis while a bone is grabbed (R cycles it)
   onTwist?: (info: { x: number; y: number; axis: 'view' | 'x' | 'y' | 'z'; dir: { x: number; y: number }; tilt: number } | null) => void; // grabbed-bone rotate gizmo: screen center + projected axle dir + how edge-on the ring is
   private poleTargets = new Map<string, THREE.Vector3>(); // per-limb elbow/knee pole point (keyed by the IK end bone)
@@ -531,6 +533,8 @@ export class CharacterEngine {
   private propMult = 0.6; // calibrated: model.scale * 0.6 reads life-sized next to the character
   private pending: { obj: THREE.Object3D; uvMeshes: { geo: THREE.BufferGeometry; orig: Float32Array }[]; baseScale: number; dup?: { sticky: boolean; align: boolean; uvXf: PropXf; attachSel?: Map<string, AttachOption> } } | null = null; // prop riding the cursor (dup = a duplicate carrying the source's sticky/align/UV/parts)
   private pendingDown: { x: number; y: number } | null = null;
+  private pendingSpin = 0;                            // scroll-to-rotate angle for the prop being placed (about the surface normal when stuck+aligned, else the camera axis)
+  private pendingBaseQuat = new THREE.Quaternion();   // the placing prop's spin-free base orientation, re-applied each move so the scroll spin never compounds
   private pendingPick: SurfacePick | null = null;    // what the riding prop is currently hovering over (for auto-attach on drop)
   private propMode = false;                    // 3D Props sub-tab active: clicks select props / drag moves them
   private selectedProp: THREE.Object3D | null = null;   // the PRIMARY selection (last picked) - drives the per-prop inspector
@@ -559,6 +563,7 @@ export class CharacterEngine {
   onPropSelect?: (info: { name: string; count: number; texXf: PropXf; sticky: boolean; align: boolean; attached: string | null; attachments: { slot: string; partName: string }[] } | null) => void;
   onMarquee?: (rect: { x: number; y: number; w: number; h: number } | null) => void; // shift-drag selection box in client px, for React to draw
   onPlacementHint?: (target: 'character' | 'prop' | 'floor' | null) => void; // live hint while a prop rides the cursor
+  onPlacing?: (name: string | null) => void; // the prop item being placed (for the grid thumbnail highlight), null when placed/cancelled
   onModalChange?: (label: string | null) => void; // active modal-transform label for the status readout (e.g. "Move X")
   private cells = new Map<string, Cell>();
   private billboards: THREE.Mesh[] = []; // standing sprites that face the camera each frame
@@ -682,10 +687,12 @@ export class CharacterEngine {
       if (this.pending) { this.pendingDown = { x: e.clientX, y: e.clientY }; return; } // placing a 3D prop
       if (this.editMode) { // pose editing owns input: grab a handle to drag, right-click to reset it; empty space orbits
         const h = this.handleFromHit(e);
+        this.editDownEmpty = null;
         if (h) {
           if (e.button === 2) { this.resetHandle(h); return; } // right-click resets this limb/bone
-          this.selectBone(h.bone); this.startDrag(h, e); this.renderer.domElement.style.cursor = 'grabbing';
-        }
+          if (!this.selectedBones.includes(h.bone)) this.selectBone(h.bone); // grabbing a member of a multi-selection keeps it, so the drag edits them all
+          this.startDrag(h, e); this.renderer.domElement.style.cursor = 'grabbing';
+        } else if (e.button === 0) { this.editDownEmpty = { x: e.clientX, y: e.clientY }; } // left-click on empty space: candidate to clear the selection on release
         return;
       }
       if (this.propMode && !this.brush) { // select a prop (click) or grab it to free-drag on the ground (yields to a tile brush)
@@ -796,6 +803,8 @@ export class CharacterEngine {
       if (this.editMode) { // finish a pose drag (or a plain click that just selected)
         this.orbit.enabled = true;
         if (this.drag) { this.commitDrag(); this.drag = null; this.onTwist?.(null); }
+        else if (this.editDownEmpty && Math.hypot(e.clientX - this.editDownEmpty.x, e.clientY - this.editDownEmpty.y) < 5 && this.selectedBones.length) { this.selectedBones = []; this.onBoneSelect?.([]); this.updateBoneHighlight(); } // a click (not an orbit drag) on empty space clears the bone selection
+        this.editDownEmpty = null;
         this.renderer.domElement.style.cursor = this.hoverBone ? 'grab' : '';
         return;
       }
@@ -855,6 +864,12 @@ export class CharacterEngine {
     });
     canvas.addEventListener('contextmenu', (e) => { if (this.brush || this.pending || this.modal || this.editMode) e.preventDefault(); }); // right-click erases / cancels / resets a handle
     canvas.addEventListener('wheel', (e) => { // scroll while dragging a bone rotates it (orbit zoom is suspended mid-drag)
+      if (this.pending && this.lastPointer) { // placing a prop: scroll rotates the prop about the surface normal (stuck+aligned) or the camera axis
+        e.preventDefault();
+        this.pendingSpin += (e.deltaY < 0 ? 1 : -1) * (e.ctrlKey ? 3 : 15) * Math.PI / 180; // Ctrl = fine-tune
+        this.movePending({ clientX: this.lastPointer.x, clientY: this.lastPointer.y });
+        return;
+      }
       if (!this.editMode || !this.drag || !this.lastPointer) return;
       e.preventDefault();
       const step = (e.ctrlKey ? 3 : 12) * Math.PI / 180; // Ctrl = fine-tune
@@ -1080,9 +1095,9 @@ export class CharacterEngine {
   }
   private pickHint(pick: SurfacePick | null): 'character' | 'prop' | 'floor' | null { return !pick ? null : pick.onBody ? 'character' : pick.propRoot ? 'prop' : 'floor'; }
   /** Position a prop at a surface pick (optionally surface-aligned) and return the attachment it implies (or null = grounded). */
-  private attachFromPick(obj: THREE.Object3D, pick: SurfacePick, align: boolean): PropAttach | null {
+  private attachFromPick(obj: THREE.Object3D, pick: SurfacePick, align: boolean, preserveOrient = false): PropAttach | null {
     obj.position.copy(pick.point);
-    if (align && pick.normal) obj.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), pick.normal); // orient +Y to the surface
+    if (!preserveOrient && align && pick.normal) obj.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), pick.normal); // orient +Y to the surface (skipped when the caller already set the final orientation, e.g. a scroll-rotated placement)
     if (!pick.onBody && !pick.propRoot) this.groundProp(obj); else obj.updateMatrixWorld(true);
     if (pick.onBody) { const bone = (pick.mesh && pick.face ? this.boneFromFace(pick.mesh, pick.face) : null) ?? this.nearestBone(pick.point); if (bone) return { kind: 'bone', boneName: bone.name, offset: this.offsetFrom(bone, obj) }; }
     if (pick.propRoot) return { kind: 'prop', targetObj: pick.propRoot, offset: this.offsetFrom(pick.propRoot, obj) };
@@ -1298,18 +1313,27 @@ export class CharacterEngine {
     obj.userData.propName = name;
     this.propGroup.add(obj); this.groundProp(obj);
     this.pending = { obj, uvMeshes, baseScale };
+    this.pendingSpin = 0; this.pendingBaseQuat.copy(obj.quaternion); this.orbit.enabled = false; // suspend orbit zoom so the wheel rotates the prop instead
+    this.onPlacing?.(name); // highlight this item's thumbnail until it's placed
   }
-  cancelPropPlacement() { if (this.pending) { this.propGroup.remove(this.pending.obj); this.pending.obj.traverse((o) => { const m = o as THREE.Mesh; if (m.isMesh) m.geometry.dispose(); }); this.pending = null; } this.pendingDown = null; this.pendingPick = null; this.onPlacementHint?.(null); }
+  cancelPropPlacement() { if (this.pending) { this.propGroup.remove(this.pending.obj); this.pending.obj.traverse((o) => { const m = o as THREE.Mesh; if (m.isMesh) m.geometry.dispose(); }); this.pending = null; } this.pendingDown = null; this.pendingPick = null; this.pendingSpin = 0; this.orbit.enabled = true; this.onPlacementHint?.(null); this.onPlacing?.(null); }
   /** The riding prop tracks whatever is under the cursor (character surface -> prop -> floor), with a live hint. */
   private movePending(e: { clientX: number; clientY: number }) {
     if (!this.pending) return;
     const pick = this.pickSurface(e, this.pending.obj); if (!pick) return;
     const o = this.pending.obj; o.position.copy(pick.point);
     const onSurface = pick.onBody || pick.propRoot;
+    const sticky = this.pending.dup ? this.pending.dup.sticky : this.stickyDefault;
     const align = this.pending.dup ? this.pending.dup.align : this.alignDefault;
     if (align && onSurface && pick.normal) o.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), pick.normal); // live align preview
-    else if (align && !this.pending.dup) o.quaternion.identity(); // a fresh prop resets off-surface; a duplicate keeps its source rotation
-    if (!onSurface) this.groundProp(o); else o.updateMatrixWorld(true);
+    else o.quaternion.copy(this.pendingBaseQuat); // spin-free base (identity for a fresh prop, the source rotation for a duplicate) so the scroll spin below never compounds as the cursor moves
+    if (!onSurface) this.groundProp(o);
+    if (this.pendingSpin) { // scroll-to-rotate on top of the base: about the mesh's surface normal when stuck+aligned to it, else about the camera view axis
+      const axis = (sticky && align && onSurface && pick.normal) ? pick.normal.clone() : this.camera.getWorldDirection(new THREE.Vector3());
+      const parentQ = o.parent ? o.parent.getWorldQuaternion(new THREE.Quaternion()) : new THREE.Quaternion();
+      o.quaternion.premultiply(new THREE.Quaternion().setFromAxisAngle(axis.applyQuaternion(parentQ.invert()).normalize(), this.pendingSpin));
+    }
+    o.updateMatrixWorld(true);
     this.pendingPick = pick;
     this.onPlacementHint?.(this.pickHint(pick));
   }
@@ -1320,11 +1344,11 @@ export class CharacterEngine {
     const rec: PlacedProp = { id: this.nextPropId(), obj: this.pending.obj, baseScale: this.pending.baseScale, uvMeshes: this.pending.uvMeshes, uvXf: dup ? dup.uvXf : { flipU: false, flipV: false, rot: 0 }, sticky: dup ? dup.sticky : this.stickyDefault, align, attach: null };
     // dropped onto the character or another prop: auto-stick + follow, so it lands exactly where you aimed
     const pick = this.pendingPick;
-    if (pick && (pick.onBody || pick.propRoot)) { rec.attach = this.attachFromPick(rec.obj, pick, align); rec.sticky = true; }
+    if (pick && (pick.onBody || pick.propRoot)) { rec.attach = this.attachFromPick(rec.obj, pick, align, true); rec.sticky = true; } // preserve the placement orientation (align + any scroll rotation) instead of re-aligning
     this.props.push(rec);
     this.pushPropAdd(rec);
     if (dup?.attachSel?.size) { rec.attachSel = dup.attachSel; const sel = [...dup.attachSel.entries()]; void (async () => { for (const [slot, opt] of sel) await this.mountPropPart(rec, slot, opt); if (this.selectedProp === rec.obj) { this.rebuildOutline(); this.refreshSel(rec); } })(); } // re-mount weapon parts on the duplicate
-    this.pending = null; this.pendingDown = null; this.pendingPick = null; this.onPlacementHint?.(null);
+    this.pending = null; this.pendingDown = null; this.pendingPick = null; this.pendingSpin = 0; this.orbit.enabled = true; this.onPlacementHint?.(null); this.onPlacing?.(null);
     this.selectProp(rec.obj); // the just-placed prop is selected + ready to nudge
   }
 
@@ -1495,6 +1519,8 @@ export class CharacterEngine {
     this.propGroup.add(obj);
     if (src.uvXf.flipU || src.uvXf.flipV || src.uvXf.rot) this.applyUvXf(uvMeshes, src.uvXf);
     this.pending = { obj, uvMeshes, baseScale: src.baseScale, dup: { sticky: src.sticky, align: src.align, uvXf: { ...src.uvXf }, attachSel: src.attachSel ? new Map(src.attachSel) : undefined } };
+    this.pendingSpin = 0; this.pendingBaseQuat.copy(obj.quaternion); this.orbit.enabled = false; // suspend orbit zoom so the wheel rotates the duplicate instead
+    this.onPlacing?.((obj.userData.propName as string) ?? null); // highlight the source item's thumbnail while the duplicate rides the cursor
     if (this.lastPointer) this.movePending({ clientX: this.lastPointer.x, clientY: this.lastPointer.y }); // snap to the cursor right away (Ctrl+D), don't sit at the origin until the mouse moves
     else { this.groundProp(obj); this.onPlacementHint?.('floor'); }
   }
@@ -2037,6 +2063,7 @@ export class CharacterEngine {
     this.playing = false; this.finished = false; this.onPlaying?.(false); // pause: the mixer holds this frame
     this.gizmo?.detach();
     this.buildBoneMap();
+    if (this.boneBase.size) this.restoreBase(); // a preview may have left overrides on the bones (esp. clip-unanimated ones); clear them so the base captured below is clean, not doubled
     this.rigs.setTime(this.rigs.time()); // clean clip pose at the current frame (drop any stale override)
     this.captureBoneBase();
     this.applyBoneOverrides();
@@ -2323,6 +2350,14 @@ export class CharacterEngine {
     this.pushBoneHistory(before, this.snapshotEdits(names));
   }
   editedBoneNames(): string[] { return [...new Set([...this.boneKeys.keys(), ...this.liveEdits.keys()])]; }
+  /** The clip currently loaded/playing carries unsaved edits (bone keys, retime or trim). */
+  hasCurrentEdits(): boolean { return this.boneKeys.size > 0 || this.liveEdits.size > 0 || this.lengthScale !== 1 || this.clipEnd != null; }
+  /** Drop every edit for a clip so it plays vanilla again: its stored project entry, plus the live edits if it's the current clip. */
+  forgetClipEdits(clip: { rel?: string; name: string }) {
+    const key = clip.rel || clip.name;
+    if (this.currentClip && (this.currentClip.rel || this.currentClip.name) === key) { this.boneKeys.clear(); this.liveEdits.clear(); this.lengthScale = 1; this.clipEnd = null; if (this.editMode) this.applyBoneOverrides(); this.onBoneEdit?.(); }
+    this.project.delete(key);
+  }
   /** Fold the current clip's live edits into the project store (so switching clips + bulk bake see them). */
   private syncCurrentToProject() {
     if (!this.editClipKey || !this.currentClip) return;
@@ -2841,6 +2876,15 @@ export class CharacterEngine {
   toggleBone(name: string) { this.selectBones(this.selectedBones.includes(name) ? this.selectedBones.filter((n) => n !== name) : [...this.selectedBones, name]); }
   private firstBoneChild(bone: THREE.Object3D): THREE.Bone | null { return (bone.children.find((c) => (c as THREE.Bone).isBone) as THREE.Bone) ?? null; }
 
+  /** Apply user camera-control settings (orbit/pan button, speeds, zoom direction). */
+  setCameraControls(c: { orbit?: 'left' | 'right' | 'middle'; pan?: 'left' | 'right' | 'middle'; rotateSpeed?: number; zoomSpeed?: number; invertZoom?: boolean }) { this.orbit.setControls(c); }
+  /** Apply user pose-node style (size multiplier, rest opacity, per-role colours). Rebuilds the overlay live. */
+  setNodeStyle(s: { scale?: number; opacity?: number; colors?: Record<string, number> }) {
+    if (s.scale != null) this.nodeStyle.scale = s.scale;
+    if (s.opacity != null) this.nodeStyle.opacity = s.opacity;
+    if (s.colors) Object.assign(this.nodeStyle.colors, s.colors);
+    if (this.editMode && this.boneOverlay) { this.setupOverlay(false); this.setupOverlay(true); } // rebuild so new colours take effect immediately
+  }
   private setupOverlay(on: boolean) {
     if (!on) { if (this.boneOverlay) { this.scene.remove(this.boneOverlay); this.boneOverlay.traverse((o) => { const m = o as THREE.Mesh; if (m.isMesh) { m.geometry.dispose(); (m.material as THREE.Material).dispose(); } }); this.boneOverlay = null; } return; }
     if (this.boneOverlay) return;
@@ -2848,7 +2892,7 @@ export class CharacterEngine {
     const geo = new THREE.SphereGeometry(0.019, 14, 12);
     for (const h of this.activeHandles()) {
       if (!this.bodyBones.has(h.bone)) continue;
-      const base = h.role === 'pole' ? 0xff3db1 : h.role === 'move' ? 0xcc66ff : h.role === 'aim' ? 0x33cc99 : h.role === 'free' ? 0xffb034 : 0x5b8cff; // elbow/knee pink, hips purple, torso teal, prop orange, hands/feet blue
+      const base = this.nodeStyle.colors[h.role] ?? 0x5b8cff; // per-role colour (settings): elbow/knee pink, hips purple, torso teal, prop orange, hands/feet blue by default
       const m = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color: base, depthTest: false, transparent: true, opacity: 0.8 }));
       m.renderOrder = 1000; m.frustumCulled = false; m.userData = { bone: h.bone, role: h.role, chain: h.chain, base, baseScale: h.role === 'pole' ? 0.66 : 1 };
       g.add(m);
@@ -2864,9 +2908,9 @@ export class CharacterEngine {
       if (m.userData.role === 'aim') wp.copy(this.aimHandlePos(bone)); else bone.getWorldPosition(wp); // aim nodes sit on the body at the spine segment midpoints
       m.position.copy(wp);
       const isSel = name === sel, isHover = name === this.hoverBone, bs = m.userData.baseScale as number, mat = m.material as THREE.MeshBasicMaterial;
-      mat.color.setHex(isSel ? 0xffcc33 : isHover ? 0x66d9ff : (this.boneKeys.has(name) || this.liveEdits.has(name)) ? 0x33cc66 : (m.userData.base as number));
-      mat.opacity = isSel || isHover ? 1 : 0.5; // subtle at rest, solid on hover/select
-      m.scale.setScalar(bs * (isSel ? 1.5 : isHover ? 1.3 : 1));
+      mat.color.setHex(isSel ? 0xffcc33 : isHover ? 0x66d9ff : (m.userData.base as number)); // transient select/hover highlight, else the node's role colour (never a persistent edited-state colour)
+      mat.opacity = isSel || isHover ? 1 : this.nodeStyle.opacity; // subtle at rest (configurable), solid on hover/select
+      m.scale.setScalar(bs * this.nodeStyle.scale * (isSel ? 1.5 : isHover ? 1.3 : 1));
     }
   }
   private handleFromHit(e: { clientX: number; clientY: number }): { bone: string; role: 'ik' | 'pole' | 'aim' | 'move' | 'free'; chain?: string[] } | null {
@@ -2954,7 +2998,16 @@ export class CharacterEngine {
       const pins = pinChains.length ? this.buildPins(pinChains) : undefined;
       this.drag = { mode: 'aim', grab: handle.bone, chain: this.spineChainOf(handle.bone), affected: this.affectedForHandle(handle), l1: 0, l2: 0, planePt: P0.clone(), offset: C0 ? P0.clone().sub(C0) : new THREE.Vector3(), pins, lastX: e.clientX, lastY: e.clientY };
     }
-    if (this.drag) { this.drag.twistDir = this.computeTwistDir(this.bodyBones.get(this.drag.grab)); this.dragBefore = this.snapshotEdits(this.drag.affected); this.emitTwist(this.bodyBones.get(this.drag.grab)); } // lock scroll dir + snapshot for undo; show the rotate gizmo
+    if (this.drag) {
+      const grab = this.drag.grab;
+      const secNames = this.selectedBones.filter((n) => n !== grab && this.bodyBones.has(n) && this.isHandleBone(n) && !this.drag!.affected.includes(n)); // other selected nodes to move in lockstep
+      if (this.selectedBones.includes(grab) && secNames.length) {
+        const pb = this.bodyBones.get(grab)!;
+        this.drag.multi = { pquat: pb.quaternion.clone(), ppos: pb.position.clone(), secs: secNames.map((n) => { const b = this.bodyBones.get(n)!; return { bone: n, quat: b.quaternion.clone(), pos: b.position.clone() }; }) };
+        this.drag.affected = [...new Set([...this.drag.affected, ...secNames])]; // so commit + undo cover the co-moved nodes
+      }
+      this.drag.twistDir = this.computeTwistDir(this.bodyBones.get(grab)); this.dragBefore = this.snapshotEdits(this.drag.affected); this.emitTwist(this.bodyBones.get(grab)); // lock scroll dir + snapshot for undo; show the rotate gizmo
+    }
   }
   /** Build IK pins for a set of limb chains: each records its endpoint's world position + orientation
    *  and a locked bend direction, so the endpoint stays planted while its root is moved elsewhere. */
@@ -3089,6 +3142,7 @@ export class CharacterEngine {
       }
     }
     if (d.pins) for (const p of d.pins) this.applyPin(p); // keep the hands (and feet, for the waist) where they were
+    if (d.multi) this.applyMultiDelta(d); // co-move the other selected nodes by the same local delta
     this.rigs.bodyRig()?.root.updateMatrixWorld(true);
     this.updateBoneHighlight();
     this.emitTwist(this.bodyBones.get(d.grab)); // gizmo tracks the node as it moves
@@ -3113,12 +3167,21 @@ export class CharacterEngine {
       this.solveIk(d.chain!, d.handTarget!, poleDir, d.l1, d.l2);
       const end = this.bodyBones.get(d.chain![2]); if (end?.parent && d.endQuat) { end.quaternion.copy(end.parent.getWorldQuaternion(new THREE.Quaternion()).invert().multiply(d.endQuat)); end.updateMatrixWorld(true); } // hold the hand/foot orientation
     }
+    if (d.multi) this.applyMultiDelta(d); // co-move the other selected nodes by the same local delta
     this.rigs.bodyRig()?.root.updateMatrixWorld(true);
     this.posePropFollow(); // keep a following prop glued to the hand live, not just on release
     this.syncEditRigsToBody(); // clothing rides the arm as it moves, not just on release
     this.updateBoneHighlight();
     this.emitTwist(this.bodyBones.get(d.grab)); // gizmo tracks the node as it moves
   }
+  /** Multi-select edit: apply the grabbed node's total local delta (since drag start) to every co-selected node. */
+  private applyMultiDelta(d: { grab: string; multi?: { pquat: THREE.Quaternion; ppos: THREE.Vector3; secs: { bone: string; quat: THREE.Quaternion; pos: THREE.Vector3 }[] } }) {
+    const pb = this.bodyBones.get(d.grab), m = d.multi; if (!pb || !m) return;
+    const dq = m.pquat.clone().invert().multiply(pb.quaternion); // grabbed node's local rotation delta
+    const dp = pb.position.clone().sub(m.ppos);                  // ...and its local translation delta
+    for (const s of m.secs) { const b = this.bodyBones.get(s.bone); if (!b) continue; b.quaternion.copy(s.quat).multiply(dq); b.position.copy(s.pos).add(dp); b.updateMatrixWorld(true); }
+  }
+  private isHandleBone(name: string): boolean { return this.activeHandles().some((h) => h.bone === name); }
   private commitDrag() {
     const d = this.drag; if (!d) return;
     for (const name of d.affected) {

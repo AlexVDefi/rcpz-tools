@@ -9,6 +9,7 @@ import { PoseEditorPanel } from './PoseEditorPanel';
 type AttachSlot = { slot: string; options: AttachOption[] };
 import { ThumbnailProvider } from './render/thumbnail-provider';
 import { ClipPreview, type PreviewEdit } from './render/clip-preview';
+import { getSettings, subscribeSettings, matchBind, hexToInt, type Settings } from './settings';
 import { FloorLibrary } from './render/floor';
 import { TileLibrary, type TileCategory, type TileSet, type TilePiece } from './render/tiles-lib';
 import { parseMod, resolveIconAssets } from '@shared/icon-core.js';
@@ -306,6 +307,7 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
   };
   const [status, setStatus] = useState('loading body…');
   const [nowPlaying, setNowPlaying] = useState('');
+  const [resetConfirm, setResetConfirm] = useState<{ name: string } | null>(null); // "save edited animation before resetting to idle?" prompt
   const [playing, setPlaying] = useState(true);
   const [tab, setTab] = useState<Tab>('character');
   const [equipTick, setEquipTick] = useState(0);
@@ -357,6 +359,8 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
   useEffect(() => { localStorage.setItem('pz-char-presets', JSON.stringify(presets)); }, [presets]);
   const [presetsOpen, setPresetsOpen] = useState(false);
   const quickSaveRef = useRef<() => void>(() => {}); // Ctrl+S target (kept fresh each render)
+  const settingsRef = useRef<Settings>(getSettings()); // current keybinds for the keydown handler (kept fresh via subscription)
+  useEffect(() => subscribeSettings((st) => { settingsRef.current = st; }), []);
   const pendingPresetRef = useRef<CharPreset | null>(bootChar.current); // restore the autosaved look on first load
   const applyPresetLookRef = useRef<((p: CharPreset) => Promise<void>) | null>(null);
   const initedGenderRef = useRef<string | null>(null); // gender whose body has had its look applied (avoids a re-run wiping it)
@@ -558,6 +562,7 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
   const pose = usePoseEditor({ engineRef, editState, saveAsName, clips, capture: capturePreview, bump: () => setBoneTick((t) => t + 1), toast: setNowPlaying });
   quickSaveRef.current = pose.quickSave;
   const [placeHint, setPlaceHint] = useState<'character' | 'prop' | 'floor' | null>(null); // live target while a prop rides the cursor
+  const [placingProp, setPlacingProp] = useState<string | null>(null); // the prop item riding the cursor, so its grid thumbnail stays highlighted until placed
   const [gizmoMode, setGizmoModeState] = useState<'translate' | 'rotate' | 'scale'>('translate');
   const applyGizmoMode = (m: 'translate' | 'rotate' | 'scale') => { setGizmoModeState(m); engineRef.current?.setGizmoMode(m); };
   const [showGizmo, setShowGizmoFlag] = useState(false); // Blender-style: handles hidden by default, G/R/S transform
@@ -644,22 +649,24 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return;
       const hasProp = kb.current.hasProp, tiles = kb.current.tilesActive, editing = kb.current.editing;
       if (!hasProp && !tiles && !editing) return; // no build/edit context: leave keys alone
-      if (e.ctrlKey || e.metaKey) {
-        const k = e.key.toLowerCase();
-        if (hasProp && k === 'd') { e.preventDefault(); eng.duplicateSelectedProp(); return; } // duplicate selected prop
-        if (editing && k === 's') { e.preventDefault(); quickSaveRef.current(); return; } // Ctrl+S: save the current pose
-        if (editing && k === 'c' && keySelRef.current.size) { e.preventDefault(); eng.copyKeys(parseKeySel(keySelRef.current)); return; } // copy selected keyframes
-        if (editing && k === 'v' && eng.keyClipboardSize()) { e.preventDefault(); const p = eng.pasteKeysAt(eng.currentTick()); setKeySel(new Set(p.map((m) => keyId(m.bone, m.tick)))); setBoneTick((t) => t + 1); return; } // paste at playhead
-        if (k === 'z') { e.preventDefault(); if (e.shiftKey) eng.redo(); else eng.undo(); }
-        else if (k === 'y') { e.preventDefault(); eng.redo(); }
+      const kbd = settingsRef.current.keys; // user-configurable binds
+      // Deselect / cancel: clear a keyframe selection first, else drop a modal transform / placement.
+      if (matchBind(e, kbd.deselect)) { if (editing && keySelRef.current.size) { e.preventDefault(); setKeySel(new Set()); return; } eng.modalCancel(); eng.cancelPropPlacement(); return; }
+      // Delete: selected keyframes, else the selected prop. Backspace stays an alias while Delete is the default bind.
+      if (matchBind(e, kbd.delete) || (kbd.delete?.key === 'Delete' && e.key === 'Backspace' && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey)) {
+        if (editing && keySelRef.current.size) { e.preventDefault(); eng.deleteKeys(parseKeySel(keySelRef.current)); setKeySel(new Set()); setBoneTick((t) => t + 1); return; }
+        if (hasProp) { e.preventDefault(); eng.deleteSelectedProp(); return; }
         return;
       }
-      if (editing && (e.key === 'Delete' || e.key === 'Backspace') && keySelRef.current.size) { e.preventDefault(); eng.deleteKeys(parseKeySel(keySelRef.current)); setKeySel(new Set()); setBoneTick((t) => t + 1); return; } // delete selected keyframes
-      if (editing && e.key === 'Escape' && keySelRef.current.size) { setKeySel(new Set()); return; } // clear keyframe selection
-      if (e.key === 'Escape') { eng.modalCancel(); eng.cancelPropPlacement(); return; } // cancel a modal transform, else bail out of placement
+      if (editing && matchBind(e, kbd.savePose)) { e.preventDefault(); quickSaveRef.current(); return; } // save the current pose
+      if (hasProp && matchBind(e, kbd.duplicate)) { e.preventDefault(); eng.duplicateSelectedProp(); return; } // duplicate selected prop
+      if (editing && matchBind(e, kbd.copyKeys) && keySelRef.current.size) { e.preventDefault(); eng.copyKeys(parseKeySel(keySelRef.current)); return; } // copy selected keyframes
+      if (editing && matchBind(e, kbd.pasteKeys) && eng.keyClipboardSize()) { e.preventDefault(); const p = eng.pasteKeysAt(eng.currentTick()); setKeySel(new Set(p.map((m) => keyId(m.bone, m.tick)))); setBoneTick((t) => t + 1); return; } // paste at playhead
+      if (matchBind(e, kbd.undo)) { e.preventDefault(); eng.undo(); return; }
+      if (matchBind(e, kbd.redo) || (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === 'z')) { e.preventDefault(); eng.redo(); return; } // Ctrl+Shift+Z stays a redo alias
+      if (e.ctrlKey || e.metaKey) return; // an unbound command combo: don't let it fall through to the single-key shortcuts below
       if (editing && e.key.toLowerCase() === 'r' && eng.isDraggingBone()) { e.preventDefault(); eng.cycleTwistAxis(); return; } // R while scroll-rotating a bone: cycle the twist axis
-      if (hasProp) { // a selected prop (any tab): Blender-style G move, R rotate, S scale, X/Y/Z lock axis, Enter confirm, Del delete
-        if (e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); eng.deleteSelectedProp(); return; }
+      if (hasProp) { // a selected prop (any tab): Blender-style G move, R rotate, S scale, X/Y/Z lock axis, Enter confirm
         if (e.key === 'Enter') { e.preventDefault(); eng.modalConfirm(); return; }
         const gk = e.key.toLowerCase();
         if (gk === 'g') { e.preventDefault(); eng.startModalTransform('move'); return; }
@@ -715,12 +722,16 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
     setDressState({ worn: eng.dressWornNow(), shown: eng.dressVisible() }); // seed from the already-loaded body
     eng.onBoneEdit = () => setBoneTick((t) => t + 1); // a gizmo drag changed a bone: refresh the panel readouts
     eng.onPlacementHint = setPlaceHint; // live "will drop on: character/prop/floor" hint while placing
+    eng.onPlacing = setPlacingProp; // highlight the placing item's thumbnail until it drops
     eng.onModalChange = setModalLabel; // Blender-style modal-transform status ("Move X")
     eng.setPropMode(true); // prop clicks enabled on every tab (the engine yields to an active tile brush)
     engineRef.current = eng;
+    const applyEngineSettings = (st: Settings) => { eng.setCameraControls(st.camera); eng.setNodeStyle({ scale: st.nodes.scale, opacity: st.nodes.opacity, colors: Object.fromEntries(Object.entries(st.nodes.colors).map(([k, v]) => [k, hexToInt(v)])) }); };
+    applyEngineSettings(getSettings());
+    const unsubSettings = subscribeSettings(applyEngineSettings); // live camera-control + node-style updates from the settings modal
     const ro = new ResizeObserver(() => eng.resize());
     if (canvasRef.current?.parentElement) ro.observe(canvasRef.current.parentElement);
-    return () => { ro.disconnect(); eng.dispose(); engineRef.current = null; };
+    return () => { unsubSettings(); ro.disconnect(); eng.dispose(); engineRef.current = null; };
   }, [ctx]);
 
   // Mobile: size the whole character view to the visible viewport below the header, tracking the
@@ -1332,7 +1343,7 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
             <AssetGrid<typeof propItems[number] & GridItem>
               items={propItems as (typeof propItems[number] & GridItem)[]}
               facetLabel="categories"
-              active={() => false}
+              active={(it) => it.rec.item === placingProp}
               onPick={(it) => placeProp(it.rec)}
               renderThumb={(it) => <Thumb depKey={`prop:${it.rec.item}`} getUrl={() => thumbs.prop(it.rec)} />} />
           )}
@@ -1361,6 +1372,20 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
   return (
     <div ref={containerRef} style={{ display: 'flex', flexDirection: isMobile ? 'column' : 'row', gap: isMobile ? 8 : 0, height: isMobile ? (mobileViewH || '80vh') : 'calc(100vh - 128px)', minHeight: isMobile ? 0 : 460 }}>
       {importOpen && <ImportModal onClose={() => setImportOpen(false)} onImport={applyImport} />}
+      {resetConfirm && idleClip && (
+        <div style={{ position: 'fixed', inset: 0, background: '#000000aa', zIndex: 400, display: 'flex', alignItems: 'center', justifyContent: 'center' }} onClick={() => setResetConfirm(null)}>
+          <div onClick={(e) => e.stopPropagation()} style={{ width: 430, maxWidth: '92vw', background: 'var(--panel)', border: '1px solid var(--line)', borderRadius: 10, padding: 18 }}>
+            <div style={{ fontWeight: 600, marginBottom: 6 }}>Unsaved animation edits</div>
+            <div style={{ fontSize: 13, color: 'var(--muted)', lineHeight: 1.5, marginBottom: 14 }}>The current animation has unsaved pose edits. Save them as a pose before resetting to the vanilla idle?</div>
+            <input value={resetConfirm.name} onChange={(e) => setResetConfirm({ name: e.target.value })} onKeyDown={(e) => { if (e.key === 'Enter' && resetConfirm.name.trim()) { pose.savePose(resetConfirm.name.trim()); engineRef.current?.forgetClipEdits(idleClip); playClip(idleClip); setResetConfirm(null); } }} placeholder="pose name" style={{ width: '100%', boxSizing: 'border-box', background: '#14141a', color: 'var(--text)', border: '1px solid var(--line)', borderRadius: 6, padding: '8px 10px', fontSize: 13, marginBottom: 14 }} />
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', flexWrap: 'wrap' }}>
+              <button className="secondary" onClick={() => setResetConfirm(null)} style={{ padding: '8px 14px' }}>Cancel</button>
+              <button className="secondary" onClick={() => { engineRef.current?.forgetClipEdits(idleClip); playClip(idleClip); setResetConfirm(null); }} style={{ padding: '8px 14px' }}>Discard & reset</button>
+              <button disabled={!resetConfirm.name.trim()} onClick={() => { pose.savePose(resetConfirm.name.trim()); engineRef.current?.forgetClipEdits(idleClip); playClip(idleClip); setResetConfirm(null); }} style={{ padding: '8px 14px' }}>Save & reset</button>
+            </div>
+          </div>
+        </div>
+      )}
       {presetsOpen && <PresetsModal presets={presets} onClose={() => setPresetsOpen(false)} onSave={savePreset} onLoad={(p) => { void applyPreset(p); setPresetsOpen(false); }} onDelete={deletePreset} onDuplicate={duplicatePreset} />}
       {pose.posesOpen && <PosesModal poses={pose.posePresets} currentClip={editState.clip} clips={clipItems} preview={preview} onClose={() => pose.setPosesOpen(false)} onSave={(n) => pose.savePose(n)} onLoad={(n) => pose.loadPose(n)} onDelete={(n) => pose.deletePose(n)} />}
       {/* Held-browser location popout: a small menu anchored to the card's attach badge. Fixed-position
@@ -1404,7 +1429,12 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
         <div style={{ position: 'absolute', left: isMobile ? 8 : 12, top: isMobile ? 8 : 12, display: 'flex', gap: isMobile ? 6 : 8, alignItems: 'center', maxWidth: isMobile ? 'calc(100% - 185px)' : undefined }}>
           {status && !isMobile && <span style={{ color: 'var(--muted)', background: '#00000099', padding: '4px 8px', borderRadius: 6 }}>{status}</span>}
           <span style={{ color: 'var(--muted)', background: '#00000099', padding: '4px 8px', borderRadius: 6, fontSize: isMobile ? 11.5 : undefined, maxWidth: isMobile ? '100%' : 340, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{nowPlaying || 'pick a clip →'}</span>
-          {idleClip && <button data-tour="idle" className="secondary" title="Reset to idle animation" onClick={() => playClip(idleClip)} style={{ padding: isMobile ? '9px 14px' : '4px 10px', fontSize: isMobile ? 14 : 12, lineHeight: 1, flexShrink: 0 }}>↺ Idle</button>}
+          {(() => { void boneTick; return !editState.active && engineRef.current?.hasCurrentEdits(); })() && (
+            <span title="This animation has unsaved pose edits. Save it from the pose editor, or Idle will offer to save before it resets." style={{ display: 'inline-flex', alignItems: 'center', gap: 5, color: '#ffd23f', background: '#00000099', padding: '4px 8px', borderRadius: 6, fontSize: isMobile ? 11 : 12, whiteSpace: 'nowrap', flexShrink: 0 }}>
+              <span style={{ width: 7, height: 7, borderRadius: 999, background: '#ffd23f', flexShrink: 0 }} />Unsaved edits
+            </span>
+          )}
+          {idleClip && <button data-tour="idle" className="secondary" title="Reset to idle animation" onClick={() => { const e = engineRef.current; if (e?.hasCurrentEdits()) setResetConfirm({ name: (editState.clip || 'anim') + '_Edited' }); else { e?.forgetClipEdits(idleClip); playClip(idleClip); } }} style={{ padding: isMobile ? '9px 14px' : '4px 10px', fontSize: isMobile ? 14 : 12, lineHeight: 1, flexShrink: 0 }}>↺ Idle</button>}
         </div>
         <div style={{ position: 'absolute', right: isMobile ? 8 : 12, top: isMobile ? 8 : 12, display: 'flex', flexDirection: 'column', gap: 8, alignItems: 'flex-end' }}>
           <div style={{ display: 'flex', gap: isMobile ? 6 : 8, alignItems: 'flex-start', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
@@ -1658,7 +1688,7 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
           <div style={{ position: 'absolute', left: marqueeRect.x, top: marqueeRect.y, width: marqueeRect.w, height: marqueeRect.h, border: '1px solid var(--accent)', background: '#5b8cff22', pointerEvents: 'none', zIndex: 6 }} />
         )}
         {twistInfo && (() => {
-          const col: Record<string, string> = { view: 'var(--accent)', x: '#ff5b5b', y: '#5bff8c', z: '#5b8cff' };
+          const col: Record<string, string> = { view: '#ffffff', x: '#ff5b5b', y: '#5bff8c', z: '#5b8cff' }; // Screen is white so it never collides with the blue Z axis
           const c = col[twistInfo.axis];
           const R = 26, min = 0.16;
           const ang = Math.atan2(twistInfo.dir.y, twistInfo.dir.x) * 180 / Math.PI; // orient the ring's edge-on axis along the projected axle
