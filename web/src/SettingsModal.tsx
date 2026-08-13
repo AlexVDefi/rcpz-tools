@@ -61,6 +61,10 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
         <div style={{ display: 'flex', gap: 8, padding: '12px 16px', borderBottom: '1px solid var(--line)' }}>
           {tabBtn('camera', 'Camera')}{tabBtn('keys', 'Keybinds')}{tabBtn('nodes', 'Pose nodes')}
         </div>
+        <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, padding: '10px 16px', borderBottom: '1px solid var(--line)', cursor: 'pointer' }}>
+          <div><div style={lbl}>Developer mode</div><div style={sub}>Show extra developer / debug buttons in the UI (e.g. Export character data)</div></div>
+          <input type="checkbox" checked={s.devMode} onChange={(e) => apply({ ...s, devMode: e.target.checked })} style={{ width: 18, height: 18, accentColor: 'var(--accent)' }} />
+        </label>
 
         <div style={{ padding: '6px 16px 14px', overflow: 'auto' }}>
           {tab === 'camera' && (<>
@@ -111,8 +115,12 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
               <input type="range" min={0.4} max={2.5} step={0.05} value={s.nodes.scale} onChange={(e) => patchNodes({ scale: +e.target.value })} style={{ width: 200 }} />
             </div>
             <div style={row}>
-              <div><div style={lbl}>Node opacity</div><div style={sub}>{Math.round(s.nodes.opacity * 100)}%</div></div>
+              <div><div style={lbl}>Node opacity</div><div style={sub}>Resting nodes - {Math.round(s.nodes.opacity * 100)}%</div></div>
               <input type="range" min={0.1} max={1} step={0.05} value={s.nodes.opacity} onChange={(e) => patchNodes({ opacity: +e.target.value })} style={{ width: 200 }} />
+            </div>
+            <div style={row}>
+              <div><div style={lbl}>Selected node opacity</div><div style={sub}>Selected / hovered nodes - {Math.round(s.nodes.selectedOpacity * 100)}%</div></div>
+              <input type="range" min={0.1} max={1} step={0.05} value={s.nodes.selectedOpacity} onChange={(e) => patchNodes({ selectedOpacity: +e.target.value })} style={{ width: 200 }} />
             </div>
             {NODE_ROLES.map((r) => (
               <div key={r.id} style={row}>

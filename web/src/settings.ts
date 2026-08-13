@@ -9,7 +9,8 @@ export type NodeRole = 'ik' | 'pole' | 'aim' | 'move' | 'free';
 export type Settings = {
   camera: { orbit: CamButton; pan: CamButton; rotateSpeed: number; zoomSpeed: number; invertZoom: boolean };
   keys: Record<string, Bind>;
-  nodes: { scale: number; opacity: number; colors: Record<NodeRole, string> };
+  nodes: { scale: number; opacity: number; selectedOpacity: number; colors: Record<NodeRole, string> };
+  devMode: boolean; // reveal extra developer/debug buttons in the UI
 };
 
 export const KEY_ACTIONS: { id: string; label: string; def: Bind }[] = [
@@ -21,6 +22,11 @@ export const KEY_ACTIONS: { id: string; label: string; def: Bind }[] = [
   { id: 'pasteKeys', label: 'Paste keyframes', def: { key: 'v', ctrl: true } },
   { id: 'delete', label: 'Delete selection', def: { key: 'Delete' } },
   { id: 'deselect', label: 'Deselect / cancel', def: { key: 'Escape' } },
+  { id: 'playPause', label: 'Play / pause clip', def: { key: ' ' } },
+  { id: 'stepPrev', label: 'Previous frame', def: { key: 'ArrowLeft' } },
+  { id: 'stepNext', label: 'Next frame', def: { key: 'ArrowRight' } },
+  { id: 'clipStart', label: 'Go to clip start', def: { key: 'ArrowLeft', shift: true } },
+  { id: 'clipEnd', label: 'Go to clip end', def: { key: 'ArrowRight', shift: true } },
 ];
 
 export const NODE_ROLES: { id: NodeRole; label: string; def: string }[] = [
@@ -34,7 +40,8 @@ export const NODE_ROLES: { id: NodeRole; label: string; def: string }[] = [
 export const DEFAULT_SETTINGS: Settings = {
   camera: { orbit: 'left', pan: 'right', rotateSpeed: 1, zoomSpeed: 1, invertZoom: false },
   keys: Object.fromEntries(KEY_ACTIONS.map((a) => [a.id, { ...a.def }])),
-  nodes: { scale: 1, opacity: 0.5, colors: Object.fromEntries(NODE_ROLES.map((r) => [r.id, r.def])) as Record<NodeRole, string> },
+  nodes: { scale: 1, opacity: 0.5, selectedOpacity: 1, colors: Object.fromEntries(NODE_ROLES.map((r) => [r.id, r.def])) as Record<NodeRole, string> },
+  devMode: false,
 };
 
 const KEY = 'pz-settings';
@@ -48,7 +55,8 @@ function hydrate(raw: unknown): Settings {
   const r = raw as Partial<Settings>;
   if (r.camera) Object.assign(d.camera, r.camera);
   if (r.keys) for (const a of KEY_ACTIONS) if (r.keys[a.id]) d.keys[a.id] = { ...r.keys[a.id] };
-  if (r.nodes) { if (typeof r.nodes.scale === 'number') d.nodes.scale = r.nodes.scale; if (typeof r.nodes.opacity === 'number') d.nodes.opacity = r.nodes.opacity; if (r.nodes.colors) Object.assign(d.nodes.colors, r.nodes.colors); }
+  if (r.nodes) { if (typeof r.nodes.scale === 'number') d.nodes.scale = r.nodes.scale; if (typeof r.nodes.opacity === 'number') d.nodes.opacity = r.nodes.opacity; if (typeof r.nodes.selectedOpacity === 'number') d.nodes.selectedOpacity = r.nodes.selectedOpacity; if (r.nodes.colors) Object.assign(d.nodes.colors, r.nodes.colors); }
+  if (typeof r.devMode === 'boolean') d.devMode = r.devMode;
   return d;
 }
 
@@ -72,14 +80,17 @@ export function matchBind(e: KeyboardEvent, b: Bind | undefined): boolean {
   return !!b.ctrl === (e.ctrlKey || e.metaKey) && !!b.shift === e.shiftKey && !!b.alt === e.altKey;
 }
 
-/** Human-readable label for a bind, e.g. "Ctrl + D" or "Delete". */
+/** Display name for a single key: Space, arrow names, else the key itself (letters upper-cased). */
+const keyLabel = (k: string): string => k === ' ' ? 'Space' : k.startsWith('Arrow') ? k.slice(5) : (k.length === 1 ? k.toUpperCase() : k);
+
+/** Human-readable label for a bind, e.g. "Ctrl + D", "Delete", "Shift + Left". */
 export function bindLabel(b: Bind | undefined): string {
   if (!b) return '(unset)';
   const parts: string[] = [];
   if (b.ctrl) parts.push('Ctrl');
   if (b.shift) parts.push('Shift');
   if (b.alt) parts.push('Alt');
-  parts.push(b.key.length === 1 ? b.key.toUpperCase() : b.key);
+  parts.push(keyLabel(b.key));
   return parts.join(' + ');
 }
 
