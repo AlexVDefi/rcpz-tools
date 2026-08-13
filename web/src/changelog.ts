@@ -4,6 +4,18 @@ export type ChangelogEntry = { date?: string; title: string; items: string[] };
 
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    date: '2026-08-13',
+    title: 'Animation pose editor, advanced exports and more control',
+    items: [
+      'Pose your survivor by hand: grab any joint to move or rotate it, adjust finger and hand-held prop bones, and scrub a timeline to pose at any frame. Save your edits as reusable poses and reload them later.',
+      'Keyboard control: Space plays/pauses, the arrow keys step a frame, and Shift+Arrow jumps to the clip start or end. A new Settings panel lets you rebind every shortcut, remap the camera buttons, and restyle the pose nodes.',
+      'Advanced export options: pick the resolution for PNG, GIF and MP4; choose the MP4 codec (H.264, VP9, and more where your browser supports it) and quality; set the colour count and frame rate for GIFs.',
+      'Show or hide your survivor\'s skirt or dress, and place props through it.',
+      'Posing polish: held props stay glued to the hand as you edit, elbow and knee bends stay steady when you move a hand or foot, clicking a node grabs exactly where you see it, and an edited animation exports exactly as it looks in the editor.',
+      'Developer mode (Settings): reveals extra tools, starting with an "Export character data" button that saves a readable JSON of everything worn and where each mesh, texture and item comes from.',
+    ],
+  },
+  {
     date: '2026-07-24',
     title: 'Zombie skins, body-mod support and a new colour picker',
     items: [
