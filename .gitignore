@@ -20,6 +20,9 @@ tools/modhost/.env
 # Supabase service_role key (backend only) for the modhost .env. Never commit.
 .supabase.env
 
+# Cloudflare Worker MCP config - holds a live Authorization Bearer token. Never commit.
+web/cloud/worker/.mcp.json
+
 # Junction to the live PZ install (vanilla Lua/anims used at runtime). It is the
 # whole game folder, never ours to commit.
 ZomboidLua/
