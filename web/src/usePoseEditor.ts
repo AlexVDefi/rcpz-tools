@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { nativeBridge } from './platform/native-fs';
 import { makeZip } from './anim-edit/zip';
 import type { CharacterEngine } from './render/character-engine';
@@ -24,21 +24,45 @@ export function usePoseEditor({ engineRef, editState, saveAsName, clips, capture
   const [poseName, setPoseName] = useState('');
   const [posesOpen, setPosesOpen] = useState(false); // saved-poses browser modal
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({ bones: true }); // collapsed pose-panel sections (Bones list starts collapsed)
+  const [dirty, setDirty] = useState(false);                      // unsaved pose edits since the last save
+  const [savedName, setSavedName] = useState<string | null>(null); // the pose name this session's edits were saved under (Ctrl+S overwrites it without re-prompting)
+  const [saveOpen, setSaveOpen] = useState(false);                // the "name this pose" modal
+  const [saveName, setSaveName] = useState('');
+
+  // A new clip context resets the save session: a just-loaded pose keeps its name (Ctrl+S overwrites it),
+  // otherwise forget the last-saved name and mark dirty only if the clip already carries edits. Keyed to the
+  // clip (not the active toggle) so saving then leaving the editor doesn't spuriously re-flag "unsaved".
+  const loadedNameRef = useRef<string | null>(null);
+  useEffect(() => {
+    const loaded = loadedNameRef.current; loadedNameRef.current = null;
+    setSavedName(loaded);
+    setDirty(loaded ? false : (engineRef.current?.hasCurrentEdits() ?? false));
+  }, [editState.clip]); // eslint-disable-line react-hooks/exhaustive-deps
+  const markDirty = () => setDirty(true); // any bone edit / retime dirties the pose
 
   const savePose = (name: string) => {
     const n = name.trim(); if (!n) { toast('name the pose first'); return; }
     const d = engineRef.current?.exportClipEdit();
     if (!d) { toast('nothing to save (no edits yet)'); return; }
     setPosePresets((p) => ({ ...p, [n]: { ...d, thumb: capture(), saved: Date.now() } }));
+    setSavedName(n); setDirty(false);
     toast(`saved pose "${n}"`);
   };
   const loadPose = (name: string) => {
     const d = posePresets[name], eng = engineRef.current; if (!d || !eng) return;
+    loadedNameRef.current = name; // survive the clip-change reset if entering the editor changes the clip
     if (!editState.active && eng.canEditClip()) eng.enterEditMode();
     eng.applyClipEdit(d); bump();
+    setSavedName(name); setDirty(false); // a loaded pose is "saved" under its name -> Ctrl+S overwrites it
     toast(`loaded pose "${name}"${d.clip && d.clip !== editState.clip ? ` (made for ${d.clip})` : ''}`);
   };
   const deletePose = (name: string) => setPosePresets((p) => { const n = { ...p }; delete n[name]; return n; });
+  // Ctrl+S / the floppy button. First save of an edited pose prompts for a name; after that it overwrites silently.
+  const requestSave = () => {
+    const eng = engineRef.current; if (!eng?.hasCurrentEdits()) { toast('nothing to save (no edits yet)'); return; }
+    if (savedName && posePresets[savedName]) savePose(savedName);
+    else { setSaveName(savedName || poseName.trim() || saveAsName.trim() || editState.clip || ''); setSaveOpen(true); }
+  };
   const quickSave = () => { if (!editState.active) return; savePose(poseName.trim() || saveAsName.trim() || editState.clip || 'pose'); };
 
   const downloadEditedX = () => {
@@ -74,7 +98,7 @@ export function usePoseEditor({ engineRef, editState, saveAsName, clips, capture
     catch (e) { toast('save failed: ' + (e instanceof Error ? e.message : String(e))); }
   };
 
-  return { posePresets, poseName, setPoseName, posesOpen, setPosesOpen, collapsed, setCollapsed, savePose, loadPose, deletePose, quickSave, downloadEditedX, downloadAllEdited, saveToFolder };
+  return { posePresets, poseName, setPoseName, posesOpen, setPosesOpen, collapsed, setCollapsed, dirty, markDirty, savedName, saveOpen, setSaveOpen, saveName, setSaveName, savePose, loadPose, deletePose, quickSave, requestSave, downloadEditedX, downloadAllEdited, saveToFolder };
 }
 
 export type PoseEditor = ReturnType<typeof usePoseEditor>;

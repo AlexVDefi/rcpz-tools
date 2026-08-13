@@ -37,6 +37,7 @@ const IcoEnds = () => ico(<><line x1="3" y1="3.5" x2="3" y2="12.5" /><line x1="1
 const IcoFit = () => ico(<><path d="M3 6 V3 H6" /><path d="M13 6 V3 H10" /><path d="M3 10 V13 H6" /><path d="M13 10 V13 H10" /></>);
 const IcoFilter = () => ico(<path d="M2.5 3.5 H13.5 L9.3 8.3 V12.5 L6.7 11 V8.3 Z" />);
 const IcoReset = () => ico(<><path d="M12.8 8 a4.8 4.8 0 1 1 -1.4 -3.4" /><path d="M13.6 2.6 V4.8 H11.4" /></>);
+const IcoSliders = () => ico(<><line x1="3" y1="5" x2="13" y2="5" /><circle cx="6" cy="5" r="1.6" fill="currentColor" stroke="none" /><line x1="3" y1="11" x2="13" y2="11" /><circle cx="10" cy="11" r="1.6" fill="currentColor" stroke="none" /></>);
 const IcoCopy = () => ico(<><rect x="5.5" y="5.5" width="7" height="7" rx="1.3" /><path d="M3.5 10.5 V4 A1.3 1.3 0 0 1 4.8 2.7 H10.5" /></>);
 const IcoPaste = () => ico(<><rect x="3.5" y="3" width="9" height="10.5" rx="1.3" /><path d="M6 3 V2.2 H10 V3" /><line x1="6" y1="7.2" x2="10" y2="7.2" /><line x1="6" y1="9.8" x2="10" y2="9.8" /></>);
 const IcoTrash = () => ico(<><path d="M3.5 4.5 H12.5" /><path d="M5.5 4.5 V3.2 H10.5 V4.5" /><path d="M4.7 4.5 L5.2 12.4 A1 1 0 0 0 6.2 13.3 H9.8 A1 1 0 0 0 10.8 12.4 L11.3 4.5" /></>);
@@ -59,11 +60,13 @@ type DopesheetProps = {
   playing: boolean; onTogglePlay: () => void; onReplay: () => void; // transport (folded into the toolbar so it's all one row)
   loop: boolean; onToggleLoop: () => void;
   speed: number; onSpeed: (s: number) => void;
+  isMobile?: boolean;                                           // wrap the toolbar + drop the growing spacers on a narrow screen
 };
 
-export function Dopesheet({ engine, boneTick, bump, keySel, setKeySel, scrubbingRef, playheadRef, trackGeomRef, onToast, playing, onTogglePlay, onReplay, loop, onToggleLoop, speed, onSpeed }: DopesheetProps) {
+export function Dopesheet({ engine, boneTick, bump, keySel, setKeySel, scrubbingRef, playheadRef, trackGeomRef, onToast, playing, onTogglePlay, onReplay, loop, onToggleLoop, speed, onSpeed, isMobile }: DopesheetProps) {
   const [zoom, setZoom] = useState(1);            // horizontal zoom (1 = fit)
-  const [selOnly, setSelOnly] = useState(false);  // only show tracks for the selected bone(s)
+  const [mobMore, setMobMore] = useState(false);  // mobile: reveal the advanced controls (retime/trim/zoom/toggles/speed)
+  const [selOnly, setSelOnly] = useState(true);   // per-bone rows show only the selected bone(s), not the whole chain a handle drives
   const [autoKey, setAutoKey] = useState(() => engine.autoKeyOn());       // posing writes a key at the current time
   const [autoEnds, setAutoEnds] = useState(() => engine.autoEndpointsOn()); // first edit of a bone keys the first + last frame
   const [keyDrag, setKeyDrag] = useState<{ bone: string; from: number; grabFrac: number; curFrac: number } | null>(null); // a keyframe (group) being dragged
@@ -71,6 +74,7 @@ export function Dopesheet({ engine, boneTick, bump, keySel, setKeySel, scrubbing
   const [viewW, setViewW] = useState(0);            // scroll-viewport width, so the timeline can fill the panel and grey the area past the animation end
   const scrollRef = useRef<HTMLDivElement>(null);   // horizontal scroll viewport
   const rulerRef = useRef<HTMLDivElement>(null);    // track area, for mapping cursor x to a tick
+  const fittedRef = useRef(false);                  // fit-to-panel done once the viewport width is known
   const thumbRef = useRef<HTMLDivElement>(null);    // custom slim scrollbar thumb
   const thumbDragRef = useRef<{ startX: number; startLeft: number } | null>(null);
   const panRef = useRef<{ startX: number; startLeft: number } | null>(null); // middle-mouse drag pan
@@ -89,7 +93,9 @@ export function Dopesheet({ engine, boneTick, bump, keySel, setKeySel, scrubbing
     th.style.left = `${(sc.scrollLeft / sw) * 100}%`;
   }, []);
   useLayoutEffect(() => { if (pendingScrollRef.current != null && scrollRef.current) { scrollRef.current.scrollLeft = pendingScrollRef.current; pendingScrollRef.current = null; } updateThumb(); }, [zoom, updateThumb]); // apply a cursor-anchored zoom, then resize the thumb
-  useLayoutEffect(() => { const cw = scrollRef.current?.clientWidth; if (cw && baseWidthRef.current > 0) { pendingScrollRef.current = 0; setZoom(Math.max(0.02, (cw - 2) / baseWidthRef.current)); } }, []); // fit all frames on mount (-2px so it never overflows)
+  // Fit all frames to the panel once the viewport width is known. On mobile the bottom bar has not laid out
+  // when the mount effect first runs (clientWidth 0), so re-run when viewW is measured, then only once.
+  useLayoutEffect(() => { if (fittedRef.current) return; const cw = scrollRef.current?.clientWidth || viewW; if (cw > 2 && baseWidthRef.current > 0) { fittedRef.current = true; pendingScrollRef.current = 0; setZoom(Math.max(0.02, (cw - 2) / baseWidthRef.current)); } }, [viewW]);
   useEffect(() => { // wheel: zoom in/out, anchored to the cursor (Blender-style; native listener so preventDefault works)
     const el = scrollRef.current; if (!el) return;
     const onWheel = (e: WheelEvent) => {
@@ -118,8 +124,8 @@ export function Dopesheet({ engine, boneTick, bump, keySel, setKeySel, scrubbing
   const clampZoom = (z: number) => Math.max(0.02, Math.min(40, +z.toFixed(3)));
   const doFit = () => { const cw = scrollRef.current?.clientWidth; if (cw) { pendingScrollRef.current = 0; setZoom(Math.max(0.02, (cw - 2) / baseWidth)); requestAnimationFrame(updateThumb); } }; // -2px so the timeline never overflows; refresh the thumb even if zoom is unchanged
   const kid = keyId, parseSel = parseKeySel;
-  const selDriven = selOnly ? new Set(eng.affectedForSelection()) : null; // a handle drives a whole chain, so filter by driven bones
-  const tracks = selDriven ? tl.tracks.filter((t) => selDriven.has(t.bone)) : tl.tracks;
+  const selSet = selOnly ? new Set(eng.selectedBoneNames()) : null; // per-bone rows: only the bone(s) actually selected, so moving one bone that drives a chain shows just that bone
+  const tracks = (selSet ? tl.tracks.filter((t) => selSet.has(t.bone)) : tl.tracks).filter((t) => t.keys.length); // only bones with visible (directly-posed) keys get a row; auto-propagated pin keys stay hidden
   const fracAt = (clientX: number) => { const r = rulerRef.current?.getBoundingClientRect(); return r && r.width > 0 ? Math.max(0, Math.min(1, (clientX - r.left - PAD) / usable)) : 0; };
   const snap = (tick: number) => frames.length ? frames.reduce((best, f) => Math.abs(f - tick) < Math.abs(best - tick) ? f : best, frames[0]) : Math.round(tick);
   const tickAt = (clientX: number) => { const t = lo + fracAt(clientX) * span, g = frameStep > 0 ? lo + Math.round((t - lo) / frameStep) * frameStep : Math.round(t); return Math.max(lo, Math.min(hi, g)); }; // scrub snaps to the frame grid across the WHOLE range (incl. the extended hold past the last real frame), not just to real keyframe frames
@@ -129,8 +135,9 @@ export function Dopesheet({ engine, boneTick, bump, keySel, setKeySel, scrubbing
   const labelStep = gridStep * Math.max(1, Math.round(48 / (pxPerFrame * gridStep))); // a frame number roughly every 48px
   const HEAD = 19, LANE = 15, SUM = 15;             // ruler-header (scrub strip), per-bone lane, summary lane heights (px)
   const laneTop = (ti: number) => HEAD + SUM + ti * LANE; // y of bone lane `ti` inside the ruler
-  const summaryTicks = [...new Set(tracks.flatMap((t) => t.keys))].sort((a, b) => a - b); // every frame that has any keyframe
-  const frameIds = (tick: number) => tracks.filter((t) => t.keys.includes(tick)).map((t) => kid(t.bone, tick)); // all bone keys on a frame
+  const summaryTicks = [...new Set(tl.tracks.flatMap((t) => t.keys))].sort((a, b) => a - b); // master row: every frame with a VISIBLE key (hidden pin keys never add phantom frames)
+  const gutterW = isMobile ? 0 : 66; // drop the bone-label column on mobile: the timeline spans full width and nothing pushes it
+  const frameIds = (tick: number) => tl.tracks.filter((t) => t.keys.includes(tick) || t.autoKeys.includes(tick)).map((t) => kid(t.bone, tick)); // whole-frame select/move/delete hits BOTH layers, so the hidden pin keys move + delete with their visible frame
   const SUMMARY = 'sum'; // sentinel keyDrag.bone for a whole-frame (summary) drag
   const fullW = Math.max(innerW, viewW);            // fill the viewport when the clip is shorter than the panel
   const lastX = xOfTick(hi);                        // the clip end (= innerW - PAD); everything to the right of this is greyed
@@ -165,8 +172,13 @@ export function Dopesheet({ engine, boneTick, bump, keySel, setKeySel, scrubbing
         .ds-val-edit{display:inline-block;text-align:center;outline:none;background:rgba(91,140,255,.18);color:#fff}
         .ds-key{transition:transform .08s ease}
         .ds-key:hover{transform:rotate(45deg) scale(1.3)!important;z-index:2}
+        .ds-mob .ds-ico{width:31px;height:31px;border-radius:8px}
+        .ds-mob .ds-seg{height:31px;border-radius:8px}
+        .ds-mob .ds-step{width:28px}
+        .ds-mob .ds-val{font-size:12px}
         .ds-scroll::-webkit-scrollbar{display:none}
       `}</style>
+      {!isMobile && (
       <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8 }}>
         <button type="button" className="ds-ico" title={playing ? 'Pause' : 'Play'} onClick={onTogglePlay}>{playing ? <IcoPause /> : <IcoPlay />}</button>
         <button type="button" className="ds-ico" title="Play from the start" onClick={onReplay}><IcoReplay /></button>
@@ -191,7 +203,7 @@ export function Dopesheet({ engine, boneTick, bump, keySel, setKeySel, scrubbing
         <button type="button" className="ds-ico" data-on={autoEnds || undefined} title={`Auto-ends: ${autoEnds ? 'ON' : 'off'} - a bone's first edit also keys the first + last frame`} onClick={() => { const n = !autoEnds; setAutoEnds(n); eng.setAutoEndpoints(n); }}><IcoEnds /></button>
         <button type="button" className="ds-ico" style={{ color: '#3ec96b' }} title="Add a keyframe for the current pose at the playhead" onClick={() => { eng.addKeyAtCurrent(); bump(); }}><IcoDiamond /></button>
         <span style={{ width: 1, height: 18, background: 'rgba(255,255,255,.1)', margin: '0 1px' }} />
-        <button type="button" className="ds-ico" data-on={selOnly || undefined} title="Show only the selected bone's tracks" onClick={() => setSelOnly((v) => !v)}><IcoFilter /></button>
+        <button type="button" className="ds-ico" data-on={selOnly || undefined} title={selOnly ? "Showing only the selected bone's row (click to show every edited bone)" : 'Showing every edited bone (click to show only the selected one)'} onClick={() => setSelOnly((v) => !v)}><IcoFilter /></button>
         <button type="button" className="ds-ico" title="Fit all frames in view" onClick={doFit}><IcoFit /></button>
         <span className="ds-seg" title="Zoom (or scroll over the timeline)">
           <RepeatButton className="ds-step" title="Zoom out" onStep={() => setZoom((z) => clampZoom(z / 1.15))}><IcoMinus /></RepeatButton>
@@ -204,22 +216,85 @@ export function Dopesheet({ engine, boneTick, bump, keySel, setKeySel, scrubbing
           {[0.25, 0.5, 1, 2].map((s) => <option key={s} value={s}>{s}x</option>)}
         </select>
       </div>
+      )}
+      {isMobile && (() => {
+        const optLbl: React.CSSProperties = { fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.06em', color: 'var(--muted)' };
+        const grp: React.CSSProperties = { display: 'inline-flex', alignItems: 'center', gap: 8 };
+        const tog = (on: boolean, rec = false): React.CSSProperties => ({ display: 'inline-flex', alignItems: 'center', gap: 6, minHeight: 31, padding: '0 12px', fontSize: 12, fontWeight: 500, borderRadius: 999, cursor: 'pointer', border: `1px solid ${on ? (rec ? 'rgba(255,59,59,.55)' : 'var(--accent)') : 'var(--line)'}`, background: on ? (rec ? 'rgba(255,59,59,.16)' : 'var(--accent)') : '#16161d', color: on ? (rec ? '#ff7a6b' : '#fff') : 'var(--text)' });
+        const dot = (on: boolean, rec = false) => <span style={{ width: 10, height: 10, borderRadius: 999, flexShrink: 0, background: on ? (rec ? '#ff5b5b' : '#fff') : 'transparent', border: `2px solid ${on ? (rec ? '#ff5b5b' : '#fff') : 'var(--muted)'}` }} />;
+        return (
+        <div className="ds-mob" style={{ display: 'flex', flexDirection: 'column', gap: 9, marginBottom: 8 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+            <button type="button" className="ds-ico" title={playing ? 'Pause' : 'Play'} onClick={onTogglePlay}>{playing ? <IcoPause /> : <IcoPlay />}</button>
+            <button type="button" className="ds-ico" title="Play from the start" onClick={onReplay}><IcoReplay /></button>
+            <button type="button" className="ds-ico" style={{ color: '#3ec96b' }} title="Add a keyframe at the playhead" onClick={() => { eng.addKeyAtCurrent(); bump(); }}><IcoDiamond /></button>
+            <button type="button" className="ds-ico" data-rec={autoKey || undefined} title={`Auto-key ${autoKey ? 'on' : 'off'}`} onClick={() => { const n = !autoKey; setAutoKey(n); eng.setAutoKey(n); }}><IcoRecord on={autoKey} /></button>
+            <span className="ds-chip" style={{ marginLeft: 2 }}>{frames.length} fr</span>
+            <span style={{ flex: 1 }} />
+            <button type="button" className="ds-ico" data-on={mobMore || undefined} title="More options" onClick={() => setMobMore((v) => !v)}><IcoSliders /></button>
+          </div>
+          {mobMore && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 11, padding: '10px 2px 3px', borderTop: '1px solid rgba(255,255,255,.08)' }}>
+              <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', alignItems: 'center' }}>
+                <span style={grp}><span style={optLbl}>Length</span>
+                  <span className="ds-seg">
+                    <RepeatButton className="ds-step" title="Shorter" onStep={() => { eng.setLengthScale(eng.lengthScaleOf() / 1.06); bump(); }}><IcoMinus /></RepeatButton>
+                    <NumField value={tl.lengthScale} display={`${tl.lengthScale.toFixed(2)}x`} width={52} title="Length multiplier" onCommit={(n) => { eng.setLengthScale(n); bump(); }} />
+                    <RepeatButton className="ds-step" title="Longer" onStep={() => { eng.setLengthScale(eng.lengthScaleOf() * 1.06); bump(); }}><IcoPlus /></RepeatButton>
+                  </span>
+                </span>
+                <span style={grp}><span style={optLbl}>End</span>
+                  <span className="ds-seg">
+                    <RepeatButton className="ds-step" title="Trim a frame" onStep={() => { eng.nudgeClipEnd(-1); bump(); }}><IcoMinus /></RepeatButton>
+                    <NumField value={endFrames} display={`${endFrames} fr`} integer min={2} width={52} title="End frame count" onCommit={setEndFrames} />
+                    <RepeatButton className="ds-step" title="Extend a frame" onStep={() => { eng.nudgeClipEnd(1); bump(); }}><IcoPlus /></RepeatButton>
+                  </span>
+                  {tl.clipEnd != null && <button type="button" className="ds-ico" title="Reset the end to full length" onClick={() => { eng.setClipEnd(null); bump(); }}><IcoReset /></button>}
+                </span>
+              </div>
+              <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', alignItems: 'center' }}>
+                <span style={grp}><span style={optLbl}>Zoom</span>
+                  <span className="ds-seg">
+                    <RepeatButton className="ds-step" title="Zoom out" onStep={() => setZoom((z) => clampZoom(z / 1.15))}><IcoMinus /></RepeatButton>
+                    <span className="ds-val" style={{ width: 46, cursor: 'default' }}>{zoom < 1 ? zoom.toFixed(2) : zoom.toFixed(1)}x</span>
+                    <RepeatButton className="ds-step" title="Zoom in" onStep={() => setZoom((z) => clampZoom(z * 1.15))}><IcoPlus /></RepeatButton>
+                  </span>
+                </span>
+                <button type="button" onClick={doFit} style={tog(false)}>Fit</button>
+                <span style={grp}><span style={optLbl}>Speed</span>
+                  <select value={speed} onChange={(e) => onSpeed(Number(e.target.value))} style={{ height: 31, boxSizing: 'border-box', background: '#16161d', color: 'var(--text)', border: '1px solid var(--line)', borderRadius: 8, padding: '0 6px', fontSize: 12, fontFamily: mono, cursor: 'pointer' }}>
+                    {[0.25, 0.5, 1, 2].map((s) => <option key={s} value={s}>{s}x</option>)}
+                  </select>
+                </span>
+              </div>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                <button type="button" onClick={() => { const n = !autoEnds; setAutoEnds(n); eng.setAutoEndpoints(n); }} style={tog(autoEnds)} title="A bone's first edit also keys the first + last frame">{dot(autoEnds)}Auto-ends</button>
+                <button type="button" onClick={() => setSelOnly((v) => !v)} style={tog(selOnly)} title="Show only the selected bone's row">{dot(selOnly)}Selected only</button>
+                <button type="button" onClick={onToggleLoop} style={tog(loop)} title="Loop playback">{dot(loop)}Loop</button>
+              </div>
+            </div>
+          )}
+        </div>
+        );
+      })()}
       {keySel.size > 0 && (
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8 }}>
           <span className="ds-chip" style={{ borderColor: 'rgba(255,210,63,.45)', color: '#ffd23f' }}>{keySel.size} key{keySel.size === 1 ? '' : 's'} selected</span>
-          <span style={{ flex: 1 }} />
+          {!isMobile && <span style={{ flex: 1 }} />}
           <button type="button" className="ds-ico" title="Copy the selected keyframes" onClick={() => { const n = eng.copyKeys(parseSel(keySel)); onToast(`copied ${n} keyframe${n === 1 ? '' : 's'}`); }}><IcoCopy /></button>
           <button type="button" className="ds-ico" disabled={!eng.keyClipboardSize()} title="Paste copied keyframes at the playhead" onClick={() => { const p = eng.pasteKeysAt(eng.currentTick()); setKeySel(new Set(p.map((m) => kid(m.bone, m.tick)))); bump(); }}><IcoPaste /></button>
           <button type="button" className="ds-ico" title="Delete the selected keyframes" onClick={() => { eng.deleteKeys(parseSel(keySel)); setKeySel(new Set()); bump(); }}><IcoTrash /></button>
           <button type="button" className="ds-ico" title="Clear selection" onClick={() => setKeySel(new Set())}><IcoClose /></button>
         </div>
       )}
-      <div style={{ display: 'flex', gap: 6 }}>
-        <div style={{ width: 66, flexShrink: 0 }}>
+      <div style={{ display: 'flex', gap: gutterW ? 6 : 0 }}>
+        {gutterW > 0 && (
+        <div style={{ width: gutterW, flexShrink: 0 }}>
           <div style={{ height: HEAD }} />
-          {summaryTicks.length > 0 && <div title="Summary - every frame that has any keyframe" style={{ height: SUM, fontSize: 10, fontWeight: 600, letterSpacing: '.03em', color: 'var(--muted)', lineHeight: `${SUM}px`, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>summary</div>}
+          {summaryTicks.length > 0 && <div title="Summary - every frame that has any keyframe" style={{ height: SUM, fontSize: 10, fontWeight: 600, letterSpacing: '.03em', color: 'var(--muted)', lineHeight: `${SUM}px`, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{isMobile ? 'all' : 'summary'}</div>}
           {tracks.map((t) => <div key={t.bone} title={t.bone} style={{ height: LANE, fontSize: 10.5, color: 'var(--muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', lineHeight: `${LANE}px` }}>{t.bone.replace(/^Bip01_?/, '')}</div>)}
         </div>
+        )}
         <div style={{ flex: 1, minWidth: 0 }}>
           <div ref={scrollRef} className="ds-scroll" onScroll={updateThumb} style={{ overflowX: 'scroll', overflowY: 'hidden', scrollbarWidth: 'none' }}>
             <div ref={rulerRef} style={{ position: 'relative', width: `${fullW}px`, minHeight: tracks.length ? undefined : 56, overflow: 'hidden', cursor: 'crosshair', touchAction: 'none' }}
@@ -321,11 +396,11 @@ export function Dopesheet({ engine, boneTick, bump, keySel, setKeySel, scrubbing
               </>);
             })()}
             {keyBox && <div style={{ position: 'absolute', left: Math.min(keyBox.x0, keyBox.x1), top: Math.min(keyBox.y0, keyBox.y1), width: Math.abs(keyBox.x1 - keyBox.x0), height: Math.abs(keyBox.y1 - keyBox.y0), border: '1px solid var(--accent)', background: 'rgba(91,140,255,.14)', pointerEvents: 'none', zIndex: 4 }} />}
-            {!tracks.length && (
-              <div style={{ position: 'absolute', left: 0, right: 0, top: 19, bottom: 0, display: 'grid', placeItems: 'center', pointerEvents: 'none' }}>
+            {!tracks.length && (!isMobile || !summaryTicks.length) && ( // on mobile, don't overlay the "select a bone" hint on top of existing keyframes
+              <div style={{ position: 'absolute', left: 0, right: 0, top: summaryTicks.length ? HEAD + SUM : HEAD, bottom: 0, display: 'grid', placeItems: 'center', pointerEvents: 'none' }}>
                 <span style={{ display: 'inline-flex', alignItems: 'center', gap: 9, fontSize: 11, color: 'var(--muted)', opacity: .85 }}>
                   <span style={{ width: 9, height: 9, transform: 'rotate(45deg)', border: '1.5px solid var(--muted)', borderRadius: 2, opacity: .6 }} />
-                  {selOnly ? 'Select a bone to see its keyframes' : 'Pose a bone, scrub, and pose again to add keyframes'}
+                  {!summaryTicks.length ? 'Pose a bone, scrub, and pose again to add keyframes' : 'Select a bone to see its keyframes (the summary row above holds every frame)'}
                 </span>
               </div>
             )}

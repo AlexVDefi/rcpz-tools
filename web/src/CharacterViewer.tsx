@@ -15,7 +15,7 @@ import { TileLibrary, type TileCategory, type TileSet, type TilePiece } from './
 import { parseMod, resolveIconAssets } from '@shared/icon-core.js';
 import { AssetGrid, type GridItem } from './AssetGrid';
 import { Thumb } from './Thumb';
-import { exportPng, exportGif, exportVideo, download, type BgConfig, type Content } from './render/export-media';
+import { exportPng, exportGif, exportVideo, download, codecSupported, type BgConfig, type Content, type VideoCodec, type VideoQuality } from './render/export-media';
 import { discoverSaves, importCharacter, type SaveEntry, type ParsedChar } from './save/save-import';
 import { hasPermission, requestPermission } from './platform/idb';
 import { pickDirectory, saveDir, loadDir } from './platform/platform';
@@ -162,6 +162,7 @@ const bgStyle = (b: BgConfig): React.CSSProperties =>
 
 type Tab = 'animate' | 'clothing' | 'held' | 'character' | 'build' | 'export';
 type FavKind = 'clothing' | 'held' | 'hair' | 'beard';
+type ExportOpts = { pngRes: number; gifRes: number; gifColors: number; gifFps: number; mp4Res: number; mp4Fps: number; mp4Codec: VideoCodec; mp4Quality: VideoQuality };
 type Light = { ambient: number; keyBright: number; kx: number; ky: number; kz: number };
 type ScenePreset = { bg: BgConfig; turntable: boolean; camPreset: CamPreset; studioAspect: number | null; facing: number | null; floor: string | null; light: Light; grid: boolean; shadow: boolean };
 type CharPreset = {
@@ -308,6 +309,7 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
   const [status, setStatus] = useState('loading body…');
   const [nowPlaying, setNowPlaying] = useState('');
   const [resetConfirm, setResetConfirm] = useState<{ name: string } | null>(null); // "save edited animation before resetting to idle?" prompt
+  const [loadConfirm, setLoadConfirm] = useState<{ clip: Clip; name: string } | null>(null); // "save edits before loading a different animation?" prompt
   const [playing, setPlaying] = useState(true);
   const [tab, setTab] = useState<Tab>('character');
   const [equipTick, setEquipTick] = useState(0);
@@ -344,6 +346,7 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
   const [turntable, setTurntable] = useState(false);
   const [gifMode, setGifMode] = useState<'clip' | 'fixed'>('clip');
   const [mp4Seconds, setMp4Seconds] = useState(10);
+  const [exp, setExp] = useState<ExportOpts>({ pngRes: 1080, gifRes: 512, gifColors: 256, gifFps: 24, mp4Res: 1080, mp4Fps: 30, mp4Codec: 'auto', mp4Quality: 'high' }); // advanced per-format export knobs
   const [viewfinder, setViewfinder] = useState<{ left: number; top: number; width: number; height: number } | null>(null);
   const [exporting, setExporting] = useState<{ label: string; progress: number } | null>(null);
   const [loop, setLoop] = useState(true);
@@ -359,8 +362,18 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
   useEffect(() => { localStorage.setItem('pz-char-presets', JSON.stringify(presets)); }, [presets]);
   const [presetsOpen, setPresetsOpen] = useState(false);
   const quickSaveRef = useRef<() => void>(() => {}); // Ctrl+S target (kept fresh each render)
+  const markDirtyRef = useRef<() => void>(() => {}); // flags the pose dirty from the (set-once) onBoneEdit callback
+  const poseDirtyRef = useRef(false);                // latest unsaved-edits flag for the beforeunload guard
   const settingsRef = useRef<Settings>(getSettings()); // current keybinds for the keydown handler (kept fresh via subscription)
-  useEffect(() => subscribeSettings((st) => { settingsRef.current = st; }), []);
+  const [devMode, setDevMode] = useState(getSettings().devMode); // reactive: reveals developer/debug buttons
+  useEffect(() => subscribeSettings((st) => { settingsRef.current = st; setDevMode(st.devMode); }), []);
+  // Warn before the tab/window closes or reloads with unsaved pose edits (browser dialog; Electron's renderer
+  // honours the same beforeunload cancel, so the desktop window won't quietly discard edits either).
+  useEffect(() => {
+    const onBeforeUnload = (e: BeforeUnloadEvent) => { if (poseDirtyRef.current && engineRef.current?.hasCurrentEdits()) { e.preventDefault(); e.returnValue = ''; } };
+    window.addEventListener('beforeunload', onBeforeUnload);
+    return () => window.removeEventListener('beforeunload', onBeforeUnload);
+  }, []);
   const pendingPresetRef = useRef<CharPreset | null>(bootChar.current); // restore the autosaved look on first load
   const applyPresetLookRef = useRef<((p: CharPreset) => Promise<void>) | null>(null);
   const initedGenderRef = useRef<string | null>(null); // gender whose body has had its look applied (avoids a re-run wiping it)
@@ -489,6 +502,7 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
   type PropRec = { item: string; variant: string; mesh: string | null; hasModelBlock: boolean; displayCategory?: string; textureName: string | null; scale: number };
   const [buildTab, setBuildTab] = useState<'2d' | '3d'>('2d'); // Build sub-tab: 2D tile builder vs 3D-props browser
   const [inspectorOpen, setInspectorOpen] = useState(false);   // selected-prop controls popover (anchored to the Props button)
+  const [propMore, setPropMore] = useState(false);             // mobile prop sheet: reveal texture + attachments
   const propRecords = useMemo<PropRec[]>(() => { try { return (parseMod(index as never).records as PropRec[]).filter((r) => r.variant === 'base' && !!r.mesh && r.hasModelBlock); } catch { return []; } }, [index]);
   // Browser = every held item / weapon (their 3D model, categorised by held group) UNION the world-object props,
   // deduped by name. Held come first so weapons keep their friendly labels + weapon categories.
@@ -560,7 +574,9 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
   const [saveAsName, setSaveAsName] = useState('');
   const capturePreview = (): string | undefined => { try { return engineRef.current?.snapshotFront(260, 340, '#1b1d24'); } catch { return undefined; } };
   const pose = usePoseEditor({ engineRef, editState, saveAsName, clips, capture: capturePreview, bump: () => setBoneTick((t) => t + 1), toast: setNowPlaying });
-  quickSaveRef.current = pose.quickSave;
+  quickSaveRef.current = pose.requestSave;
+  markDirtyRef.current = pose.markDirty; // onBoneEdit (set once) flags the pose dirty through this
+  poseDirtyRef.current = pose.dirty;      // read by the beforeunload guard (registered once)
   const [placeHint, setPlaceHint] = useState<'character' | 'prop' | 'floor' | null>(null); // live target while a prop rides the cursor
   const [placingProp, setPlacingProp] = useState<string | null>(null); // the prop item riding the cursor, so its grid thumbnail stays highlighted until placed
   const [gizmoMode, setGizmoModeState] = useState<'translate' | 'rotate' | 'scale'>('translate');
@@ -571,8 +587,8 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
   const toggleCamLock = (on: boolean) => { setCamLockFlag(on); engineRef.current?.setCameraLock(on); };
   const [selectMode, setSelectModeFlag] = useState(false); // mobile: tap toggles a prop / drag draws a marquee
   const toggleSelectMode = (on: boolean) => { setSelectModeFlag(on); engineRef.current?.setSelectMode(on); };
-  const [stickyDefault, setStickyDefaultFlag] = useState(false); // new props start sticky-armed
-  const [alignDefault, setAlignDefaultFlag] = useState(false);   // new props align to the surface (+ live preview)
+  const [stickyDefault, setStickyDefaultFlag] = useState(true); // new props start sticky-armed
+  const [alignDefault, setAlignDefaultFlag] = useState(true);   // new props align to the surface (+ live preview)
   const toggleStickyDefault = (on: boolean) => { setStickyDefaultFlag(on); engineRef.current?.setStickyDefault(on); };
   const toggleAlignDefault = (on: boolean) => { setAlignDefaultFlag(on); engineRef.current?.setAlignDefault(on); };
   const [modalLabel, setModalLabel] = useState<string | null>(null); // active modal-transform readout ("Move X")
@@ -600,8 +616,8 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
   const pickPiece = (name: string) => { setSelectedTile(name); }; // stay put; the picker is always in reach
   // R / Shift+R step through the open set's pieces; number keys 1-9 jump straight to one. A ref keeps the
   // key handler (registered once) reading the current set/selection without re-binding on every change.
-  const kb = useRef<{ buildMode: 'place' | 'erase'; set: TileSet | null; tile: string | null; hasProp: boolean; tilesActive: boolean; editing: boolean }>({ buildMode, set: selectedSetObj, tile: selectedTile, hasProp: !!selectedProp, tilesActive: tab === 'build' && buildTab === '2d', editing: editState.active });
-  kb.current = { buildMode, set: selectedSetObj, tile: selectedTile, hasProp: !!selectedProp, tilesActive: tab === 'build' && buildTab === '2d', editing: editState.active };
+  const kb = useRef<{ buildMode: 'place' | 'erase'; set: TileSet | null; tile: string | null; hasProp: boolean; tilesActive: boolean; editing: boolean; anim: boolean }>({ buildMode, set: selectedSetObj, tile: selectedTile, hasProp: !!selectedProp, tilesActive: tab === 'build' && buildTab === '2d', editing: editState.active, anim: tab === 'animate' });
+  kb.current = { buildMode, set: selectedSetObj, tile: selectedTile, hasProp: !!selectedProp, tilesActive: tab === 'build' && buildTab === '2d', editing: editState.active, anim: tab === 'animate' };
   const cyclePiece = (dir: number) => {
     const s = kb.current.set; if (!s || s.pieces.length < 2) return;
     const i = s.pieces.findIndex((p) => p.tile.name === kb.current.tile); const n = s.pieces.length;
@@ -648,10 +664,18 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
       const t = e.target as HTMLElement | null;
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return;
       const hasProp = kb.current.hasProp, tiles = kb.current.tilesActive, editing = kb.current.editing;
-      if (!hasProp && !tiles && !editing) return; // no build/edit context: leave keys alone
       const kbd = settingsRef.current.keys; // user-configurable binds
+      // Clip transport (animate tab or pose editor): space play/pause, arrows step a frame, shift+arrows to the ends.
+      if ((kb.current.anim || editing) && !eng.boneModalActive()) {
+        if (matchBind(e, kbd.playPause)) { e.preventDefault(); setPlaying(eng.togglePlay()); return; }
+        if (matchBind(e, kbd.clipStart)) { e.preventDefault(); eng.seekClipEdge(false); return; }
+        if (matchBind(e, kbd.clipEnd)) { e.preventDefault(); eng.seekClipEdge(true); return; }
+        if (matchBind(e, kbd.stepPrev)) { e.preventDefault(); eng.stepFrame(-1); return; }
+        if (matchBind(e, kbd.stepNext)) { e.preventDefault(); eng.stepFrame(1); return; }
+      }
+      if (!hasProp && !tiles && !editing) return; // no build/edit context: leave the remaining keys alone
       // Deselect / cancel: clear a keyframe selection first, else drop a modal transform / placement.
-      if (matchBind(e, kbd.deselect)) { if (editing && keySelRef.current.size) { e.preventDefault(); setKeySel(new Set()); return; } eng.modalCancel(); eng.cancelPropPlacement(); return; }
+      if (matchBind(e, kbd.deselect)) { if (eng.boneModalActive()) { e.preventDefault(); eng.cancelBoneModal(); return; } if (editing && keySelRef.current.size) { e.preventDefault(); setKeySel(new Set()); return; } eng.modalCancel(); eng.cancelPropPlacement(); return; }
       // Delete: selected keyframes, else the selected prop. Backspace stays an alias while Delete is the default bind.
       if (matchBind(e, kbd.delete) || (kbd.delete?.key === 'Delete' && e.key === 'Backspace' && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey)) {
         if (editing && keySelRef.current.size) { e.preventDefault(); eng.deleteKeys(parseKeySel(keySelRef.current)); setKeySel(new Set()); setBoneTick((t) => t + 1); return; }
@@ -666,6 +690,16 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
       if (matchBind(e, kbd.redo) || (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === 'z')) { e.preventDefault(); eng.redo(); return; } // Ctrl+Shift+Z stays a redo alias
       if (e.ctrlKey || e.metaKey) return; // an unbound command combo: don't let it fall through to the single-key shortcuts below
       if (editing && e.key.toLowerCase() === 'r' && eng.isDraggingBone()) { e.preventDefault(); eng.cycleTwistAxis(); return; } // R while scroll-rotating a bone: cycle the twist axis
+      if (editing) { // Blender-style modal transform of the selected pose node(s): G move, R rotate, X/Y/Z lock axis, Enter confirm
+        if (eng.boneModalActive()) {
+          if (e.key === 'Enter') { e.preventDefault(); eng.confirmBoneModal(); return; }
+          const ax = e.key.toLowerCase();
+          if (ax === 'x' || ax === 'y' || ax === 'z') { e.preventDefault(); eng.boneModalAxis(ax); return; }
+        }
+        const gk = e.key.toLowerCase();
+        if (gk === 'g') { e.preventDefault(); eng.startBoneModal('move'); return; }
+        if (gk === 'r' && !eng.isDraggingBone()) { e.preventDefault(); eng.startBoneModal('rotate'); return; }
+      }
       if (hasProp) { // a selected prop (any tab): Blender-style G move, R rotate, S scale, X/Y/Z lock axis, Enter confirm
         if (e.key === 'Enter') { e.preventDefault(); eng.modalConfirm(); return; }
         const gk = e.key.toLowerCase();
@@ -720,13 +754,13 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
     eng.onBoneSelect = setSelectedBones;
     eng.onDressState = setDressState; // skirt/dress toggle reflects worn-garment auto-show
     setDressState({ worn: eng.dressWornNow(), shown: eng.dressVisible() }); // seed from the already-loaded body
-    eng.onBoneEdit = () => setBoneTick((t) => t + 1); // a gizmo drag changed a bone: refresh the panel readouts
+    eng.onBoneEdit = () => { setBoneTick((t) => t + 1); markDirtyRef.current(); }; // a gizmo drag changed a bone: refresh the panel readouts + flag unsaved
     eng.onPlacementHint = setPlaceHint; // live "will drop on: character/prop/floor" hint while placing
     eng.onPlacing = setPlacingProp; // highlight the placing item's thumbnail until it drops
     eng.onModalChange = setModalLabel; // Blender-style modal-transform status ("Move X")
     eng.setPropMode(true); // prop clicks enabled on every tab (the engine yields to an active tile brush)
     engineRef.current = eng;
-    const applyEngineSettings = (st: Settings) => { eng.setCameraControls(st.camera); eng.setNodeStyle({ scale: st.nodes.scale, opacity: st.nodes.opacity, colors: Object.fromEntries(Object.entries(st.nodes.colors).map(([k, v]) => [k, hexToInt(v)])) }); };
+    const applyEngineSettings = (st: Settings) => { eng.setCameraControls(st.camera); eng.setNodeStyle({ scale: st.nodes.scale, opacity: st.nodes.opacity, selectedOpacity: st.nodes.selectedOpacity, colors: Object.fromEntries(Object.entries(st.nodes.colors).map(([k, v]) => [k, hexToInt(v)])) }); };
     applyEngineSettings(getSettings());
     const unsubSettings = subscribeSettings(applyEngineSettings); // live camera-control + node-style updates from the settings modal
     const ro = new ResizeObserver(() => eng.resize());
@@ -796,6 +830,8 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
     finally { setBusy(''); setEquipTick((t) => t + 1); }
   }
   const playClip = (c: Clip) => guard(async () => { const wasEditing = editState.active; const eng = engineRef.current!; await eng.playClip(c); setPlaying(true); setCurrentClipId(c.id); setEditState({ active: false, clip: c.name, editable: !!eng.canEditClip(), bones: [] }); if (wasEditing && eng.canEditClip()) { eng.enterEditMode(); setEditOpen(true); } }); // keep editing when browsing to another clip
+  // Loading a different clip while the current one has unsaved edits: prompt to save first.
+  const tryLoadClip = (clip: Clip) => { const e = engineRef.current; if (e?.hasCurrentEdits() && clip.id !== currentClipId) setLoadConfirm({ clip, name: (editState.clip || 'anim') + '_Edited' }); else playClip(clip); };
   const toggleCloth = (it: { name: string }) => guard(() => engineRef.current!.toggleClothing(it, pendingTints[it.name] ?? null));
   const setClothTint = (name: string, tint: number[] | null) => guard(() => engineRef.current!.setClothingTint(name, tint));
   // The colour shown on a tintable garment's swatch: the live tint if it's worn, else the pending pick.
@@ -909,9 +945,9 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
     const eng = engineRef.current!;
     const aspect = studioAspect ?? eng.getCurrentAspect();
     const content: Content = turntable ? 'turntable' : 'anim';
-    if (kind === 'png') { const [w, h] = evenDims(aspect, 1080); onProgress(1); return { blob: await exportPng(eng, w, h, bg), ext: 'png' }; }
-    if (kind === 'gif') { const [w, h] = evenDims(aspect, 512); return { blob: await exportGif(eng, w, h, bg, { mode: gifMode, seconds: 5, fps: gifMode === 'clip' ? 24 : 15, speed, content, onProgress }), ext: 'gif' }; }
-    const [w, h] = evenDims(aspect, 1080); return exportVideo(eng, w, h, bg, { seconds: mp4Seconds, fps: 30, content, onProgress });
+    if (kind === 'png') { const [w, h] = evenDims(aspect, exp.pngRes); onProgress(1); return { blob: await exportPng(eng, w, h, bg), ext: 'png' }; }
+    if (kind === 'gif') { const [w, h] = evenDims(aspect, exp.gifRes); return { blob: await exportGif(eng, w, h, bg, { mode: gifMode, seconds: 5, fps: exp.gifFps, speed, content, colors: exp.gifColors, onProgress }), ext: 'gif' }; }
+    const [w, h] = evenDims(aspect, exp.mp4Res); return exportVideo(eng, w, h, bg, { seconds: mp4Seconds, fps: exp.mp4Fps, content, codec: exp.mp4Codec, quality: exp.mp4Quality, onProgress });
   };
 
   const runExport = async (kind: 'png' | 'gif' | 'mp4') => {
@@ -924,6 +960,56 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
       download(blob, `pz-character-${stamp}.${ext}`);
     } catch (e) { setNowPlaying('export error: ' + (e instanceof Error ? e.message : String(e))); }
     finally { setExporting(null); }
+  };
+
+  // Developer-mode export: a compact, human-readable JSON of the whole current character + scene - what's
+  // equipped, its meshes/textures/sources, hair/beard/body/skin, the animation and scene. Joins the engine's
+  // live equipped state with the React catalogs (which carry the mod source + mesh/texture names). Deliberately
+  // omits bulky data (per-keyframe pose data, raw texture bytes) so it stays readable.
+  const buildCharacterData = () => {
+    const eng = engineRef.current;
+    const g = eng?.gender ?? gender;
+    const clothingByName = new Map(clothing.map((c) => [c.name, c]));
+    const heldByName = new Map(held.map((h) => [h.name, h]));
+    const disp = (name: string) => { const d = nameToLabel.get(name); return d && d !== name ? d : undefined; };
+    const worn = eng?.clothingState() ?? [];
+    const carried = eng?.heldState() ?? [];
+    const hairStyle = hairSel !== 'None' ? findHairByName(hairSel, g) : null;
+    const beardStyle = beardSel !== 'None' ? findBeardByName(beardSel) : null;
+    const bodySrc = bodySources.find((b) => b.id === bodySourceId) ?? null;
+    const bodyMod = bodySrc ? (bodySrc as { modId?: string | null }).modId ?? null : null;
+    return {
+      exportedAt: new Date().toISOString(),
+      generator: 'PZ Survivor Studio (pz-icon-maker)',
+      character: {
+        gender: g,
+        skinTone: skin,
+        body: bodySrc ? { source: bodySrc.label, mod: bodyMod, id: bodySrc.id } : { source: 'Vanilla (default body)' },
+        uvCompatibility: eng?.uvVerdict() ?? null,
+        hair: hairStyle ? { name: hairStyle.name, model: hairStyle.model ?? null, texture: hairStyle.texture ?? null, source: hairStyle.modName ?? 'Vanilla', color: hairColor } : null,
+        beard: beardStyle ? { name: beardStyle.name, model: beardStyle.model ?? null, texture: beardStyle.texture ?? null, source: beardStyle.modName ?? 'Vanilla', color: beardColor } : null,
+      },
+      clothing: worn.map((w) => { const c = clothingByName.get(w.name); return {
+        name: w.name, display: disp(w.name), source: c?.source ?? c?.modName ?? 'Vanilla', mod: c?.modId ?? null,
+        kind: c?.kind ?? null, bodyLocation: c?.location ?? null, model: (g === 'female' ? c?.femaleModel : c?.maleModel) ?? null,
+        tintable: c?.allowTint ?? false, tint: w.tint, hidden: w.hidden,
+      }; }),
+      held: carried.map((h) => { const it = heldByName.get(h.name); return {
+        name: h.name, display: disp(h.name), hand: h.hand, source: it?.source ?? it?.modName ?? 'Vanilla',
+        mesh: it?.mesh ?? null, texture: it?.texture ?? null, scale: it?.scale ?? null, tags: it?.tags ?? [],
+        attachments: h.attachments?.map((a) => ({ slot: a.slot, option: a.option })) ?? [], hidden: h.hidden,
+      }; }),
+      animation: { clip: editState.clip, editable: editState.editable, hasUnsavedEdits: eng?.hasCurrentEdits() ?? false, editedBones: eng?.editedBoneNames() ?? [] },
+      scene: { camera: camPreset, aspect: studioAspect, turntable, floor: floorSel, background: bg, lighting: light },
+    };
+  };
+  const runCharacterDataExport = () => {
+    try {
+      const json = JSON.stringify(buildCharacterData(), null, 2);
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+      download(new Blob([json], { type: 'application/json' }), `pz-character-data-${stamp}.json`);
+      setNowPlaying('exported character data (JSON)');
+    } catch (e) { setNowPlaying('character data export failed: ' + (e instanceof Error ? e.message : String(e))); }
   };
 
   // ---- online sharing (optional; only when signed in) ----
@@ -1182,7 +1268,7 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
           items={clipItems as (typeof clipItems[number] & GridItem)[]}
           facetLabel="categories"
           active={(it) => it.id === currentClipId}
-          onPick={(it) => playClip(it)}
+          onPick={(it) => tryLoadClip(it)}
           extraControls={(
             <button className="secondary" onClick={() => pose.setPosesOpen(true)}
               title="Browse and apply your custom saved poses"
@@ -1363,7 +1449,7 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
       <div style={{ display: tab === 'export' ? 'contents' : 'none' }}>{(
         <div style={{ padding: 12, overflow: 'auto', height: '100%' }}>
           <ExportSection cloud={cloud}
-            studio={{ camPreset, setCamPreset, studioAspect, setStudioAspect, bg, setBg, turntable, setTurntable, gifMode, setGifMode, mp4Seconds, setMp4Seconds, exporting, runExport }} />
+            studio={{ camPreset, setCamPreset, studioAspect, setStudioAspect, bg, setBg, turntable, setTurntable, gifMode, setGifMode, mp4Seconds, setMp4Seconds, exp, setExp, devMode, onExportCharacterData: runCharacterDataExport, exporting, runExport }} />
         </div>
       )}</div>
     </div>
@@ -1382,6 +1468,20 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
               <button className="secondary" onClick={() => setResetConfirm(null)} style={{ padding: '8px 14px' }}>Cancel</button>
               <button className="secondary" onClick={() => { engineRef.current?.forgetClipEdits(idleClip); playClip(idleClip); setResetConfirm(null); }} style={{ padding: '8px 14px' }}>Discard & reset</button>
               <button disabled={!resetConfirm.name.trim()} onClick={() => { pose.savePose(resetConfirm.name.trim()); engineRef.current?.forgetClipEdits(idleClip); playClip(idleClip); setResetConfirm(null); }} style={{ padding: '8px 14px' }}>Save & reset</button>
+            </div>
+          </div>
+        </div>
+      )}
+      {loadConfirm && (
+        <div style={{ position: 'fixed', inset: 0, background: '#000000aa', zIndex: 400, display: 'flex', alignItems: 'center', justifyContent: 'center' }} onClick={() => setLoadConfirm(null)}>
+          <div onClick={(e) => e.stopPropagation()} style={{ width: 440, maxWidth: '92vw', background: 'var(--panel)', border: '1px solid var(--line)', borderRadius: 10, padding: 18 }}>
+            <div style={{ fontWeight: 600, marginBottom: 6 }}>Unsaved animation edits</div>
+            <div style={{ fontSize: 13, color: 'var(--muted)', lineHeight: 1.5, marginBottom: 14 }}>You have unsaved edits to <b>{editState.clip}</b>. Save them as a pose before loading <b>{loadConfirm.clip.name}</b>?</div>
+            <input value={loadConfirm.name} onChange={(e) => setLoadConfirm((c) => c && { ...c, name: e.target.value })} onKeyDown={(e) => { if (e.key === 'Enter' && loadConfirm.name.trim()) { pose.savePose(loadConfirm.name.trim()); playClip(loadConfirm.clip); setLoadConfirm(null); } }} placeholder="pose name" style={{ width: '100%', boxSizing: 'border-box', background: '#14141a', color: 'var(--text)', border: '1px solid var(--line)', borderRadius: 6, padding: '8px 10px', fontSize: 13, marginBottom: 14 }} />
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', flexWrap: 'wrap' }}>
+              <button className="secondary" onClick={() => setLoadConfirm(null)} style={{ padding: '8px 14px' }}>Cancel</button>
+              <button className="secondary" onClick={() => { playClip(loadConfirm.clip); setLoadConfirm(null); }} style={{ padding: '8px 14px' }}>Discard & load</button>
+              <button disabled={!loadConfirm.name.trim()} onClick={() => { pose.savePose(loadConfirm.name.trim()); playClip(loadConfirm.clip); setLoadConfirm(null); }} style={{ padding: '8px 14px' }}>Save & load</button>
             </div>
           </div>
         </div>
@@ -1429,7 +1529,7 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
         <div style={{ position: 'absolute', left: isMobile ? 8 : 12, top: isMobile ? 8 : 12, display: 'flex', gap: isMobile ? 6 : 8, alignItems: 'center', maxWidth: isMobile ? 'calc(100% - 185px)' : undefined }}>
           {status && !isMobile && <span style={{ color: 'var(--muted)', background: '#00000099', padding: '4px 8px', borderRadius: 6 }}>{status}</span>}
           <span style={{ color: 'var(--muted)', background: '#00000099', padding: '4px 8px', borderRadius: 6, fontSize: isMobile ? 11.5 : undefined, maxWidth: isMobile ? '100%' : 340, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{nowPlaying || 'pick a clip →'}</span>
-          {(() => { void boneTick; return !editState.active && engineRef.current?.hasCurrentEdits(); })() && (
+          {(() => { void boneTick; return !editState.active && pose.dirty && engineRef.current?.hasCurrentEdits(); })() && (
             <span title="This animation has unsaved pose edits. Save it from the pose editor, or Idle will offer to save before it resets." style={{ display: 'inline-flex', alignItems: 'center', gap: 5, color: '#ffd23f', background: '#00000099', padding: '4px 8px', borderRadius: 6, fontSize: isMobile ? 11 : 12, whiteSpace: 'nowrap', flexShrink: 0 }}>
               <span style={{ width: 7, height: 7, borderRadius: 999, background: '#ffd23f', flexShrink: 0 }} />Unsaved edits
             </span>
@@ -1612,7 +1712,7 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
           </div>
         )}
         {/* Selected-prop inspector: same panel style as Scene/Equipped, anchored under the Prop button. */}
-        {selectedProp && inspectorOpen && (() => {
+        {selectedProp && inspectorOpen && !isMobile && (() => {
           const sp = selectedProp;
           const multi = sp.count > 1; // several props selected: shared actions only (texture/attachments are single-prop)
           const secLabel: React.CSSProperties = { fontSize: 10, textTransform: 'uppercase', letterSpacing: '.05em', color: 'var(--muted)', marginBottom: 4 };
@@ -1720,7 +1820,7 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
           />
         )}
         <div ref={bottomBarRef} style={{ position: 'absolute', left: 12, bottom: 12, right: 12, background: '#0e0e13f2', border: '1px solid rgba(255,255,255,.08)', borderRadius: 10, overflow: 'hidden', boxShadow: '0 12px 34px -14px rgba(0,0,0,.7)' }}>
-          {editState.active && !isMobile && (() => {
+          {editState.active && (() => {
             void boneTick; const eng = engineRef.current; if (!eng) return null;
             return (
               <Dopesheet
@@ -1733,13 +1833,14 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
                 playheadRef={playheadRef}
                 trackGeomRef={trackGeomRef}
                 onToast={setNowPlaying}
+                isMobile={isMobile}
                 playing={playing} onTogglePlay={togglePlay} onReplay={() => { engineRef.current?.replay(); setPlaying(true); }}
                 loop={loop} onToggleLoop={() => { const n = !loop; setLoop(n); engineRef.current?.setLoop(n); }}
                 speed={speed} onSpeed={(s) => { setSpeed(s); engineRef.current?.setSpeed(s); }}
               />
             );
           })()}
-          {!(editState.active && !isMobile) && ( // in desktop edit mode the transport lives in the dopesheet toolbar (one row)
+          {!editState.active && ( // the dopesheet toolbar carries the transport while editing; this standalone bar is for plain playback
           <div style={{ display: 'flex', gap: isMobile ? 6 : 8, alignItems: 'center', padding: isMobile ? '6px 8px' : '6px 10px' }}>
           <button className="secondary" onClick={togglePlay} style={{ padding: isMobile ? '4px 10px' : '4px 12px', flexShrink: 0 }}>{playing ? '❚❚' : '▶'}</button>
           <button className="secondary" title="Play from the start" aria-label="Replay from start" onClick={() => { engineRef.current?.replay(); setPlaying(true); }}
@@ -1867,35 +1968,81 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
         </div>
       )}
 
-      {/* Mobile props: a docked bar mirroring the tile bar. Persistent on the 3D-props tab (so Select mode is
-          reachable before anything is picked) and whenever a prop is selected on any tab. Keeps the scene live. */}
+      {/* Mobile 3D-prop controls: one bottom sheet. Persistent on the 3D-props tab (Select mode reachable before
+          anything is picked) and whenever a prop is selected on any tab. Keeps the scene live below it. */}
       {isMobile && !drawerOpen && (tab === 'build' ? buildTab === '3d' : !!selectedProp) && (() => {
-        const barBtn: React.CSSProperties = { flexShrink: 0, padding: '6px 10px', fontSize: 12, borderRadius: 6, border: '1px solid var(--line)', background: 'var(--panel)', color: 'var(--text)', cursor: 'pointer' };
-        const multi = (selectedProp?.count ?? 0) > 1;
+        const sp = selectedProp;
+        const multi = (sp?.count ?? 0) > 1;
+        const slots = sp && !multi ? heldSlots.get(sp.name) : undefined;
+        const cur = (slot: string) => sp?.attachments.find((a) => a.slot === slot)?.partName ?? null;
+        const act = (o: { danger?: boolean; accent?: boolean } = {}): React.CSSProperties => ({ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6, minHeight: 46, padding: '0 12px', fontSize: 13.5, fontWeight: 600, borderRadius: 12, cursor: 'pointer', border: `1px solid ${o.danger ? '#b23b30' : o.accent ? 'var(--accent)' : 'var(--line)'}`, background: o.accent ? 'var(--accent)' : '#16161d', color: o.danger ? '#ff7a6b' : o.accent ? '#fff' : 'var(--text)' });
+        const pill = (on: boolean, disabled = false): React.CSSProperties => ({ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 7, minHeight: 40, padding: '0 16px', fontSize: 13, fontWeight: 500, borderRadius: 999, cursor: disabled ? 'default' : 'pointer', border: `1px solid ${on ? 'var(--accent)' : 'var(--line)'}`, background: on ? 'var(--accent)' : '#16161d', color: on ? '#fff' : (disabled ? 'var(--muted)' : 'var(--text)'), opacity: disabled ? 0.45 : 1 });
+        const dot = (on: boolean) => <span style={{ width: 13, height: 13, borderRadius: 999, flexShrink: 0, background: on ? '#fff' : 'transparent', border: `2px solid ${on ? '#fff' : 'var(--muted)'}` }} />;
+        const secLabel: React.CSSProperties = { fontSize: 10, textTransform: 'uppercase', letterSpacing: '.06em', color: 'var(--muted)', margin: '2px 0 7px' };
+        const chip = (active: boolean): React.CSSProperties => ({ minHeight: 34, padding: '0 12px', fontSize: 12.5, borderRadius: 8, cursor: 'pointer', maxWidth: 150, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', border: `1px solid ${active ? 'var(--accent)' : 'var(--line)'}`, background: active ? 'var(--accent)' : '#16161d', color: active ? '#fff' : 'var(--text)' });
         return (
-          <div style={{ position: 'fixed', left: 10, right: 10, bottom: 'calc(env(safe-area-inset-bottom, 0px) + 66px)', zIndex: 65, display: 'flex', flexDirection: 'column', gap: 8, background: 'var(--panel)', border: '1px solid var(--line)', borderRadius: 12, boxShadow: '0 8px 28px #000a', padding: 8 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <span style={{ flex: 1, minWidth: 0, fontSize: 12, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                {selectedProp ? (multi ? `${selectedProp.count} props selected` : selectedProp.name) : (selectMode ? 'Tap props or drag a box' : 'Tap a prop to select')}
-              </span>
-              {selectedProp && <>
-                <button className="secondary" onClick={() => engineRef.current?.duplicateSelectedProp()} title={multi ? 'Duplicate all selected' : 'Duplicate'} style={barBtn}>dup</button>
-                <button className="secondary" onClick={() => engineRef.current?.deleteSelectedProp()} title={multi ? 'Delete all selected' : 'Delete'} style={{ ...barBtn, color: '#e74c3c', border: '1px solid #c0392b' }}>del</button>
-                <button className="secondary" onClick={() => engineRef.current?.selectProp(null)} title="Deselect" style={barBtn}>done</button>
-              </>}
-              <button className="secondary" onClick={() => { setTab('build'); setBuildTab('3d'); setDrawerOpen(true); }} title="Browse props" style={{ ...barBtn, border: '1px solid var(--accent)', background: 'var(--accent)', color: '#fff' }}>Props</button>
-            </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-              <button className="secondary" onClick={() => toggleSelectMode(!selectMode)} title="Tap props to multi-select, or drag a box around them" style={{ ...barBtn, background: selectMode ? 'var(--accent)' : 'var(--panel)', color: selectMode ? '#fff' : 'var(--text)', border: `1px solid ${selectMode ? 'var(--accent)' : 'var(--line)'}` }}>select</button>
-              <label style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 11, color: camLock ? 'var(--accent)' : 'var(--muted)' }} title="Two fingers pan/zoom the camera instead of transforming the prop"><input type="checkbox" checked={camLock} onChange={(e) => toggleCamLock(e.target.checked)} />cam lock</label>
-              {selectedProp && !multi && <button className="secondary" onClick={() => { setInspectorOpen(true); setSceneOpen(false); setEquipOpen(false); }} title="Texture, attachments, sticky, reset" style={barBtn}>more</button>}
-            </div>
-            <div style={{ fontSize: 10, color: 'var(--muted)', lineHeight: 1.35 }}>
-              {selectMode
-                ? 'Tap props to add or remove, or drag a box. Turn select off to move and pose.'
-                : selectedProp
-                ? <>One finger drags{multi ? ' the group' : ''}. Two fingers twist to rotate, pinch to scale{multi ? ' around the shared centre' : ''}.</>
-                : 'Tap a prop to select it, then one finger drags and two fingers twist/pinch.'}
+          <div style={{ position: 'fixed', left: 8, right: 8, bottom: 'calc(env(safe-area-inset-bottom, 0px) + 66px)', zIndex: 65, background: '#0d0d12f7', backdropFilter: 'blur(6px)', WebkitBackdropFilter: 'blur(6px)', border: '1px solid var(--line)', borderRadius: 18, boxShadow: '0 -8px 34px #000c', padding: '10px 12px 12px', maxHeight: '66vh', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 11 }}>
+            <div style={{ alignSelf: 'center', width: 38, height: 4, borderRadius: 999, background: 'rgba(255,255,255,.18)', marginBottom: 1 }} />
+            {sp ? (<>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <span style={{ display: 'grid', placeItems: 'center', width: 30, height: 30, borderRadius: 8, background: '#5b8cff22', color: 'var(--accent)', flexShrink: 0 }}><BoxIcon size={17} /></span>
+                <span style={{ flex: 1, minWidth: 0, fontSize: 14.5, fontWeight: 600, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{multi ? `${sp.count} props selected` : sp.name}</span>
+                <button className="secondary" onClick={() => { setPropMore(false); engineRef.current?.selectProp(null); }} style={{ ...act(), minHeight: 38, padding: '0 16px' }}>Done</button>
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8 }}>
+                <button className="secondary" onClick={() => engineRef.current?.duplicateSelectedProp()} style={act()}>Duplicate</button>
+                <button className="secondary" onClick={() => engineRef.current?.resetSelectedProp()} style={act()}>Reset</button>
+                <button className="secondary" onClick={() => engineRef.current?.deleteSelectedProp()} style={act({ danger: true })}>Delete</button>
+              </div>
+              <div>
+                <div style={secLabel}>Attach</div>
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                  <button className="secondary" onClick={() => setPropSticky(!sp.sticky)} style={pill(sp.sticky)}>{dot(sp.sticky)}Sticky</button>
+                  <button className="secondary" disabled={!sp.sticky} onClick={() => setPropAlign(!sp.align)} style={pill(sp.align, !sp.sticky)}>{dot(sp.align && sp.sticky)}Align</button>
+                  {(multi || sp.attached) && <button className="secondary" onClick={detachProp} style={{ ...act(), minHeight: 40, padding: '0 16px' }}>{multi ? 'Detach all' : 'Detach'}</button>}
+                </div>
+                {!multi && sp.attached && <div style={{ marginTop: 7, fontSize: 12, color: 'var(--accent)', wordBreak: 'break-all', lineHeight: 1.35 }}>on {sp.attached}</div>}
+                {!multi && !sp.attached && <div style={{ marginTop: 7, fontSize: 11.5, color: 'var(--muted)' }}>{sp.sticky ? 'Drag onto the character or another prop to stick it.' : 'Grounded (drag on the floor).'}</div>}
+              </div>
+              {!multi && (
+                <button className="secondary" onClick={() => setPropMore((v) => !v)} style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, minHeight: 40, borderRadius: 10, border: '1px solid var(--line)', background: '#16161d', color: 'var(--text)', fontSize: 12.5, cursor: 'pointer' }}>
+                  {propMore ? 'Hide' : 'Texture & attachments'} <ChevronIcon dir={propMore ? 'up' : 'down'} size={13} />
+                </button>
+              )}
+              {!multi && propMore && (<>
+                <div>
+                  <div style={secLabel}>Texture</div>
+                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                    <button className="secondary" onClick={() => applyPropTexXf({ ...sp.texXf, flipU: !sp.texXf.flipU })} style={pill(sp.texXf.flipU)}>{dot(sp.texXf.flipU)}Flip U</button>
+                    <button className="secondary" onClick={() => applyPropTexXf({ ...sp.texXf, flipV: !sp.texXf.flipV })} style={pill(sp.texXf.flipV)}>{dot(sp.texXf.flipV)}Flip V</button>
+                    <button className="secondary" onClick={() => applyPropTexXf({ ...sp.texXf, rot: (sp.texXf.rot + 90) % 360 })} style={{ ...act(), minHeight: 40, padding: '0 16px' }}>Rotate {sp.texXf.rot}&deg;</button>
+                  </div>
+                </div>
+                {slots?.length ? (
+                  <div>
+                    <div style={secLabel}>Attachments</div>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                      {slots.map((s) => (
+                        <div key={s.slot} style={{ display: 'flex', alignItems: 'center', gap: 7, flexWrap: 'wrap' }}>
+                          <span style={{ minWidth: 52, fontSize: 12, color: 'var(--muted)' }}>{s.slot}</span>
+                          <button className="secondary" onClick={() => setPropAttach(s.slot, null)} style={chip(cur(s.slot) === null)}>None</button>
+                          {s.options.map((o) => (<button key={o.partName} className="secondary" title={o.partName} onClick={() => setPropAttach(s.slot, o)} style={chip(cur(s.slot) === o.partName)}>{o.partName}</button>))}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
+              </>)}
+              <div style={{ fontSize: 11.5, color: 'var(--muted)', lineHeight: 1.4, borderTop: '1px solid var(--line)', paddingTop: 9 }}>
+                {multi ? 'One finger drags the group. Two fingers twist to rotate, pinch to scale around the shared centre.' : 'One finger drags. Two fingers twist to rotate, pinch to scale.'}
+              </div>
+            </>) : (
+              <div style={{ fontSize: 13, color: 'var(--text)', textAlign: 'center', padding: '4px 0 2px' }}>{selectMode ? 'Tap props to select, or drag a box around them.' : 'Tap a prop to select it.'}</div>
+            )}
+            <div style={{ display: 'flex', gap: 8, alignItems: 'stretch' }}>
+              <button className="secondary" onClick={() => toggleSelectMode(!selectMode)} title="Tap props to multi-select, or drag a box around them" style={{ ...act(selectMode ? { accent: true } : {}), flex: 1, minHeight: 42 }}>Select</button>
+              <button className="secondary" onClick={() => toggleCamLock(!camLock)} title="Two fingers pan/zoom the camera instead of transforming the prop" style={{ ...act(camLock ? { accent: true } : {}), flex: 1, minHeight: 42 }}>{dot(camLock)}Cam lock</button>
+              <button className="secondary" onClick={() => { setTab('build'); setBuildTab('3d'); setDrawerOpen(true); }} title="Browse props" style={{ ...act({ accent: true }), flex: 1.2, minHeight: 42 }}><BoxIcon size={15} />Browse</button>
             </div>
           </div>
         );
@@ -2188,6 +2335,8 @@ interface StudioCtl {
   turntable: boolean; setTurntable: (v: boolean) => void;
   gifMode: 'clip' | 'fixed'; setGifMode: (m: 'clip' | 'fixed') => void;
   mp4Seconds: number; setMp4Seconds: (n: number) => void;
+  exp: ExportOpts; setExp: (u: (e: ExportOpts) => ExportOpts) => void;
+  devMode: boolean; onExportCharacterData: () => void;
   exporting: { label: string; progress: number } | null;
   runExport: (kind: 'png' | 'gif' | 'mp4') => void;
 }
@@ -2268,6 +2417,7 @@ function SceneControls({ floorSel, onPreset, onClear, scene }: {
 // live view), background, and the PNG/GIF/MP4 exporters.
 function ExportSection({ studio, cloud }: { studio: StudioCtl; cloud: CloudCtl }) {
   const s = studio;
+  const [advanced, setAdvanced] = useState(false);
   const busy = !!s.exporting || !!cloud.sharing;
   const label = { color: 'var(--muted)', fontSize: 12, display: 'block', margin: '14px 0 6px' } as const;
   const seg = (on: boolean) => ({ borderRadius: 0, padding: '6px 10px', background: on ? 'var(--accent)' : 'var(--panel)', color: on ? '#fff' : 'var(--muted)', fontSize: 12 }) as const;
@@ -2321,9 +2471,49 @@ function ExportSection({ studio, cloud }: { studio: StudioCtl; cloud: CloudCtl }
         </div>
       </div>
       ); })()}
+      <button className="secondary" onClick={() => setAdvanced((a) => !a)} style={{ marginTop: 8, padding: '5px 10px', fontSize: 11.5, display: 'inline-flex', alignItems: 'center', gap: 6, borderRadius: 6 }}>
+        <span style={{ fontSize: 8, display: 'inline-block', width: 9, transform: advanced ? 'none' : 'rotate(-90deg)', transition: 'transform .12s' }}>▼</span>
+        Advanced export options
+      </button>
+      {advanced && (() => {
+        const e = s.exp; const setE = (patch: Partial<ExportOpts>) => s.setExp((o) => ({ ...o, ...patch }));
+        const sel = { background: '#14141a', color: 'var(--text)', border: '1px solid var(--line)', borderRadius: 6, padding: '5px 7px', fontSize: 12 } as const;
+        const hdr = { fontSize: 10.5, textTransform: 'uppercase', letterSpacing: '.05em', color: 'var(--muted)', margin: '10px 0 2px' } as const;
+        const row = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginTop: 5 } as const;
+        const lab = { fontSize: 11.5, color: 'var(--text)' } as const;
+        const resOpts = (vals: number[]) => vals.map((v) => <option key={v} value={v}>{v}p</option>);
+        return (
+          <div style={{ border: '1px solid var(--line)', borderRadius: 8, padding: '2px 12px 12px', marginTop: 8 }}>
+            <div style={hdr}>PNG (still)</div>
+            <div style={row}><span style={lab}>Resolution</span><select value={e.pngRes} onChange={(ev) => setE({ pngRes: Number(ev.target.value) })} style={sel}>{resOpts([720, 1080, 1440, 2160, 2880, 4320])}</select></div>
+
+            <div style={hdr}>GIF</div>
+            <div style={row}><span style={lab}>Resolution</span><select value={e.gifRes} onChange={(ev) => setE({ gifRes: Number(ev.target.value) })} style={sel}>{resOpts([256, 360, 512, 720])}</select></div>
+            <div style={row}><span style={lab}>Colours</span><select value={e.gifColors} onChange={(ev) => setE({ gifColors: Number(ev.target.value) })} style={sel}>{[32, 64, 128, 256].map((v) => <option key={v} value={v}>{v}</option>)}</select></div>
+            <div style={row}><span style={lab}>Frame rate</span><select value={e.gifFps} onChange={(ev) => setE({ gifFps: Number(ev.target.value) })} style={sel}>{[10, 12, 15, 20, 24, 30].map((v) => <option key={v} value={v}>{v} fps</option>)}</select></div>
+
+            <div style={hdr}>MP4 / video</div>
+            <div style={row}><span style={lab}>Resolution</span><select value={e.mp4Res} onChange={(ev) => setE({ mp4Res: Number(ev.target.value) })} style={sel}>{resOpts([480, 720, 1080, 1440, 2160])}</select></div>
+            <div style={row}><span style={lab}>Frame rate</span><select value={e.mp4Fps} onChange={(ev) => setE({ mp4Fps: Number(ev.target.value) })} style={sel}>{[24, 30, 60].map((v) => <option key={v} value={v}>{v} fps</option>)}</select></div>
+            <div style={row}><span style={lab}>Codec</span><select value={e.mp4Codec} onChange={(ev) => setE({ mp4Codec: ev.target.value as VideoCodec })} style={sel}>
+              {(['auto', 'h264', 'h265', 'vp9'] as VideoCodec[]).map((c) => { const ok = codecSupported(c); const nm = { auto: 'Auto (best available)', h264: 'H.264 / AVC', h265: 'H.265 / HEVC', vp9: 'VP9 (WebM)' }[c]; return <option key={c} value={c} disabled={!ok}>{nm}{ok ? '' : ' - unsupported'}</option>; })}
+            </select></div>
+            <div style={row}><span style={lab}>Quality</span><select value={e.mp4Quality} onChange={(ev) => setE({ mp4Quality: ev.target.value as VideoQuality })} style={sel}>{(['low', 'medium', 'high'] as VideoQuality[]).map((q) => <option key={q} value={q}>{q[0].toUpperCase() + q.slice(1)}</option>)}</select></div>
+            <div style={{ color: 'var(--muted)', fontSize: 10.5, marginTop: 8, lineHeight: 1.5 }}>Codec support depends on your browser (H.265 recording is rarely available); an unavailable pick falls back automatically. Higher resolution, frame rate, quality or colours means larger files and slower exports.</div>
+          </div>
+        );
+      })()}
       <div style={{ color: 'var(--muted)', fontSize: 11, marginTop: 6 }}>
         GIF “Clip loop” captures one full loop of the current animation at your chosen playback speed, for seamless loops. Transparent background applies to PNG + GIF; video always uses the chosen colour. Everything is generated in your browser and saved straight to your device.
       </div>
+
+      {s.devMode && (
+        <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px dashed var(--line)' }}>
+          <label style={{ ...label, marginTop: 0, color: '#ffd23f' }}>Developer</label>
+          <button className="secondary" onClick={s.onExportCharacterData} title="Download a formatted JSON of the whole current character + scene (equipped items, meshes, textures, sources, hair/beard/body, animation)" style={{ padding: '7px 12px' }}>Export character data (JSON)</button>
+          <div style={{ color: 'var(--muted)', fontSize: 11, marginTop: 6 }}>A readable snapshot of every equipped item and its mesh / texture / mod source, plus body, hair, beard, animation and scene. Toggle this section under Settings, Developer mode.</div>
+        </div>
+      )}
 
       {cloudConfigured && <ShareSection cloud={cloud} busy={busy} label={label} />}
     </div>
