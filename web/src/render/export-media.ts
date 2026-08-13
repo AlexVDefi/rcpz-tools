@@ -61,7 +61,7 @@ export async function exportPng(eng: ExportEngine, w: number, h: number, bg: BgC
  *  before the loop point, with the per-frame delay set so it plays at `speed` (the viewer's
  *  playback rate). This yields a seamless loop. mode 'fixed': a `seconds`-long real-time GIF. */
 export async function exportGif(eng: ExportEngine, w: number, h: number, bg: BgConfig,
-  opts: { mode: 'clip' | 'fixed'; seconds: number; fps: number; speed: number; content: Content; onProgress?: (p: number) => void }): Promise<Blob> {
+  opts: { mode: 'clip' | 'fixed'; seconds: number; fps: number; speed: number; content: Content; colors?: number; onProgress?: (p: number) => void }): Promise<Blob> {
   const restore = eng.beginExport(w, h);
   const cap = document.createElement('canvas'); cap.width = w; cap.height = h;
   const ctx = cap.getContext('2d', { willReadFrequently: true })!;
@@ -100,7 +100,8 @@ export async function exportGif(eng: ExportEngine, w: number, h: number, bg: BgC
     // real transparent entry, so every frame shares the same transparent index (no stray black frame).
     const sample = sampleFrames(framesData, w * h);
     const qopts = (transparent ? { format, oneBitAlpha: true } : { format }) as Parameters<typeof quantize>[2];
-    let palette = quantize(sample, 256, qopts);
+    const maxColors = Math.max(2, Math.min(256, Math.round(opts.colors ?? 256))); // fewer colours = smaller file, more banding
+    let palette = quantize(sample, maxColors, qopts);
     let tIndex = -1;
     if (transparent) {
       tIndex = palette.findIndex((c) => c[3] === 0);
@@ -136,22 +137,37 @@ function sampleFrames(frames: Uint8ClampedArray[], perFramePx: number): Uint8Cla
   return out.subarray(0, o << 2);
 }
 
-function pickVideoMime(): string {
-  const cands = ['video/mp4;codecs=avc1.42E01E', 'video/mp4', 'video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm'];
-  for (const c of cands) if (typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported(c)) return c;
+export type VideoCodec = 'auto' | 'h264' | 'h265' | 'vp9';
+export type VideoQuality = 'low' | 'medium' | 'high';
+
+// Candidate mime strings per codec, best first. MediaRecorder support is browser/OS/hardware dependent
+// (H.265/HEVC recording in particular is rare), so we probe isTypeSupported and fall back to auto.
+const CODEC_MIMES: Record<VideoCodec, string[]> = {
+  h264: ['video/mp4;codecs=avc1.640028', 'video/mp4;codecs=avc1.42E01E', 'video/mp4'],
+  h265: ['video/mp4;codecs=hvc1.1.6.L93.B0', 'video/mp4;codecs=hev1.1.6.L93.B0', 'video/mp4;codecs=hvc1', 'video/mp4;codecs=hev1'],
+  vp9: ['video/webm;codecs=vp9', 'video/webm'],
+  auto: ['video/mp4;codecs=avc1.42E01E', 'video/mp4', 'video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm'],
+};
+const supported = (c: string) => typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported(c);
+function pickVideoMime(codec: VideoCodec = 'auto'): string {
+  for (const c of CODEC_MIMES[codec] ?? CODEC_MIMES.auto) if (supported(c)) return c;
+  for (const c of CODEC_MIMES.auto) if (supported(c)) return c; // requested codec unavailable: fall back
   return 'video/webm';
 }
+/** Is a codec actually available in this browser? (For greying out unsupported picks in the UI.) */
+export function codecSupported(codec: VideoCodec): boolean { return codec === 'auto' || (CODEC_MIMES[codec] ?? []).some(supported); }
 
 /** Real-time video capture via MediaRecorder. Always composites over the chosen background
  *  (video codecs here don't carry alpha). Returns the blob + file extension. */
 export async function exportVideo(eng: ExportEngine, w: number, h: number, bg: BgConfig,
-  opts: { seconds: number; fps: number; content: Content; onProgress?: (p: number) => void }): Promise<{ blob: Blob; ext: string }> {
+  opts: { seconds: number; fps: number; content: Content; codec?: VideoCodec; quality?: VideoQuality; onProgress?: (p: number) => void }): Promise<{ blob: Blob; ext: string }> {
   const restore = eng.beginExport(w, h);
   const cap = document.createElement('canvas'); cap.width = w; cap.height = h;
   const ctx = cap.getContext('2d')!;
-  const mime = pickVideoMime();
+  const mime = pickVideoMime(opts.codec ?? 'auto');
   const stream = cap.captureStream(opts.fps);
-  const bitrate = Math.min(24_000_000, Math.round(w * h * opts.fps * 0.15));
+  const qFactor = { low: 0.06, medium: 0.12, high: 0.24 }[opts.quality ?? 'high']; // bits per pixel-second
+  const bitrate = Math.min(60_000_000, Math.round(w * h * opts.fps * qFactor));
   const rec = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: bitrate });
   const chunks: Blob[] = [];
   rec.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
