@@ -4,6 +4,16 @@ export type ChangelogEntry = { date?: string; title: string; items: string[] };
 
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    date: '2026-08-14',
+    title: 'Resizable dopesheet, steadier camera and posing fixes',
+    items: [
+      'Resize the animation dopesheet: drag its top edge to set the height. When you have more bones than fit, the rows now scroll instead of growing the panel - drag the scrollbar, swipe on a touchscreen, or middle-drag to pan up and down (as well as left and right).',
+      'The isometric facing compass stays reachable while the pose editor is open, instead of hiding behind the panel.',
+      'Free orbit and the PZ iso camera are now independent: choosing a facing in the iso view no longer rotates your orbit view, and the orbit button always snaps the character front-on to the camera.',
+      'Add a keyframe for just the bone you have selected (and the limb it drives), rather than for every edited bone at once.',
+    ],
+  },
+  {
     date: '2026-08-13',
     title: 'Animation pose editor, advanced exports and more control',
     items: [
