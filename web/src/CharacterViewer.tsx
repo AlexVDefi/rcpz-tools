@@ -869,21 +869,23 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
   // studio: push camera preset / aspect / turntable into the engine (aspect first so presets reframe)
   useEffect(() => { const e = engineRef.current; if (!e) return; e.setExportAspect(studioAspect); e.applyCameraPreset(camPreset); }, [studioAspect]);
   useEffect(() => {
-    engineRef.current?.applyCameraPreset(camPreset);
-    // the studio portrait presets look straight at the character, so face them South (toward the camera)
-    if (camPreset === 'front' || camPreset === 'portrait') { setFacing(0); engineRef.current?.setFacing(0); }
-  }, [camPreset]);
+    const e = engineRef.current; if (!e) return;
+    e.applyCameraPreset(camPreset);
+    e.setFacing(camPreset === 'iso' ? (facing ?? 0) : 0); // only the iso camera uses the facing compass; every other view faces the character at the camera
+  }, [camPreset]); // eslint-disable-line react-hooks/exhaustive-deps
   // Overlay camera buttons apply imperatively (not just via the camPreset effect): dragging in iso
   // silently drifts the engine back to orbit, so re-picking 'iso' must re-apply even though the React
   // camPreset value is unchanged - a plain setCamPreset('iso') would be a no-op and nothing would happen.
   const applyCam = (p: CamPreset) => {
     setCamPreset(p);
-    const e = engineRef.current; e?.applyCameraPreset(p);
-    if (p === 'front' || p === 'portrait') { setFacing(0); e?.setFacing(0); }
+    const e = engineRef.current; if (!e) return;
+    if (p === 'orbit') { e.setAutoFrame(isMobile); e.recenter(); } // orbit always snaps to the default front view, independent of any iso angle/facing
+    else e.applyCameraPreset(p);
+    e.setFacing(p === 'iso' ? (facing ?? 0) : 0); // iso keeps its own compass facing; orbit/front/portrait face the character at the camera
   };
-  // Re-clicking the orbit button (already in orbit) snaps back to the default centred view - a quick
-  // reset after panning/zooming. Restores auto-framing so mobile gets the tight silhouette fit again.
-  const recenterView = () => { setCamPreset('orbit'); const e = engineRef.current; if (!e) return; e.setAutoFrame(isMobile); e.recenter(); };
+  // The orbit button always snaps back to the default centred front view (a quick reset after panning/
+  // zooming, and a clean exit from iso that ignores its facing/angle). Restores mobile auto-framing.
+  const recenterView = () => applyCam('orbit');
   useEffect(() => { engineRef.current?.setTurntable(turntable); }, [turntable]);
 
   // ---- first-time guided tour ----
@@ -1120,7 +1122,7 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
   const applyScene = (s: ScenePreset) => {
     const eng = engineRef.current;
     setBg(s.bg); setTurntable(s.turntable); setStudioAspect(s.studioAspect); setCamPreset(s.camPreset);
-    setFacing(s.facing); if (s.facing != null) eng?.setFacing(s.facing);
+    setFacing(s.facing); eng?.setFacing(s.camPreset === 'iso' && s.facing != null ? s.facing : 0); // the facing compass only applies under iso; other cameras face the character forward
     setLight({ ...s.light }); (['ambient', 'keyBright', 'kx', 'ky', 'kz'] as const).forEach((k) => eng?.setLight(k, s.light[k]));
     setGrid(s.grid); eng?.setGridVisible(s.grid);
     setShadow(s.shadow); eng?.setShadowVisible(s.shadow);
@@ -1557,7 +1559,7 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
               </button>
             )}
             <div data-tour="camera" style={{ display: 'flex', border: '1px solid var(--line)', borderRadius: 6, overflow: 'hidden', height: isMobile ? 36 : undefined }}>
-              <button className="secondary" title={camMode === 'orbit' ? 'Free orbit (click again to recenter)' : 'Free orbit'} onClick={() => { if (camMode === 'orbit') recenterView(); else applyCam('orbit'); }}
+              <button className="secondary" title={camMode === 'orbit' ? 'Free orbit (click again to recenter, facing the camera)' : 'Free orbit (faces the character at the camera)'} onClick={recenterView}
                 style={{ borderRadius: 0, padding: isMobile ? 0 : '5px 11px', width: isMobile ? 36 : undefined, height: isMobile ? '100%' : undefined, display: isMobile ? 'grid' : undefined, placeItems: isMobile ? 'center' : undefined, fontSize: isMobile ? 20 : 24, lineHeight: 1, ...(isMobile ? { border: 'none' } : null), background: camMode === 'orbit' ? 'var(--accent)' : 'var(--panel)', color: camMode === 'orbit' ? '#fff' : 'var(--text)' }}>⟳</button>
               <button className="secondary" title={camMode === 'iso' && isMobile ? (isoMenuOpen ? 'PZ iso (tap to collapse the compass)' : 'PZ iso (tap to open the compass)') : 'PZ iso'}
                 onClick={() => { if (camMode !== 'iso') { applyCam('iso'); } else if (isMobile) { setIsoMenuOpen((v) => !v); } else { applyCam('iso'); } }}
@@ -1576,7 +1578,7 @@ export function CharacterViewer({ ctx, index, onCharacterName, auth, onRequestSi
           {/* Facing compass: only meaningful under the fixed PZ iso camera, so it appears
               beneath the iso button and hides in free orbit (or when collapsed on mobile). */}
           {camMode === 'iso' && (!isMobile || isoMenuOpen) && (
-            <div title="Facing" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 34px)', gap: 3, background: '#0e0e13cc', border: '1px solid var(--line)', borderRadius: 8, padding: 5 }}>
+            <div title="Facing" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 34px)', gap: 3, background: '#0e0e13cc', border: '1px solid var(--line)', borderRadius: 8, padding: 5, position: 'relative', zIndex: 30, marginRight: (!isMobile && editState.active && editOpen) ? 312 : 0 }}>
               {FACING_GRID.map((cell, i) => cell === null ? <span key={i} /> : (
                 <button key={i} className="secondary" onClick={() => { setFacing(cell[1]); engineRef.current?.setFacing(cell[1]); }}
                   style={{ padding: '6px 0', fontSize: 11, lineHeight: 1, background: facing === cell[1] ? 'var(--accent)' : 'var(--panel)', color: facing === cell[1] ? '#fff' : 'var(--text)' }}>{cell[0]}</button>
