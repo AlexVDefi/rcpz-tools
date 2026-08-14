@@ -77,13 +77,20 @@ export function Dopesheet({ engine, boneTick, bump, keySel, setKeySel, scrubbing
   const fittedRef = useRef(false);                  // fit-to-panel done once the viewport width is known
   const thumbRef = useRef<HTMLDivElement>(null);    // custom slim scrollbar thumb
   const thumbDragRef = useRef<{ startX: number; startLeft: number } | null>(null);
-  const panRef = useRef<{ startX: number; startLeft: number } | null>(null); // middle-mouse drag pan
+  const panRef = useRef<{ startX: number; startLeft: number; startY: number; startTop: number } | null>(null); // middle-mouse drag pan (X + Y)
   const boxRef = useRef<{ x0: number; y0: number } | null>(null);
   const endDragRef = useRef(false);                  // dragging the clip-end marker on the timeline
   const zoomRef = useRef(1);                          // live zoom for the native wheel handler (avoids a stale closure)
   const baseWidthRef = useRef(1);                     // timeline width in px at zoom 1 (px-per-frame * frames)
   const pendingScrollRef = useRef<number | null>(null); // scrollLeft to apply after a wheel-zoom re-render (cursor-anchored)
   zoomRef.current = zoom;
+  const [lanesH, setLanesH] = useState(() => { const v = parseInt(localStorage.getItem('pz-ds-lanes') || '', 10); return Number.isFinite(v) && v >= 60 && v <= 600 ? v : 168; }); // resizable max height of the bone-lane area; overflow scrolls
+  const lanesVpRef = useRef<HTMLDivElement>(null);  // vertical scroll viewport for the per-bone lanes
+  const gutterVpRef = useRef<HTMLDivElement>(null); // the bone-label column, scrolled in lockstep with the lanes
+  const resizeRef = useRef<{ startY: number; startH: number } | null>(null);
+  const syncGutterScroll = useCallback(() => { const vp = lanesVpRef.current, g = gutterVpRef.current; if (vp && g) g.scrollTop = vp.scrollTop; }, []); // labels follow the lanes' vertical scroll
+  useEffect(() => { localStorage.setItem('pz-ds-lanes', String(lanesH)); }, [lanesH]);
+  useLayoutEffect(() => { syncGutterScroll(); }, [lanesH, syncGutterScroll]);
   const updateThumb = useCallback(() => { // size + place the custom thumb from the scroll state; hidden when nothing overflows
     const sc = scrollRef.current, th = thumbRef.current; if (!sc || !th) return;
     const cw = sc.clientWidth, sw = sc.scrollWidth;
@@ -177,7 +184,20 @@ export function Dopesheet({ engine, boneTick, bump, keySel, setKeySel, scrubbing
         .ds-mob .ds-step{width:28px}
         .ds-mob .ds-val{font-size:12px}
         .ds-scroll::-webkit-scrollbar{display:none}
+        .ds-lanes{scrollbar-width:thin;scrollbar-color:rgba(255,255,255,.28) transparent}
+        .ds-lanes::-webkit-scrollbar{width:9px;height:0}
+        .ds-lanes::-webkit-scrollbar-thumb{background:rgba(255,255,255,.24);border-radius:5px;border:2px solid transparent;background-clip:content-box}
+        .ds-lanes::-webkit-scrollbar-thumb:hover{background:rgba(255,255,255,.4);background-clip:content-box}
+        .ds-lanes::-webkit-scrollbar-track{background:transparent}
+        .ds-grip{display:flex;align-items:center;justify-content:center;cursor:ns-resize;touch-action:none}
+        .ds-grip>div{width:34px;height:3px;border-radius:3px;background:rgba(255,255,255,.2);transition:background .12s}
+        .ds-grip:hover>div{background:rgba(255,255,255,.42)}
       `}</style>
+      <div className="ds-grip" title="Drag to resize the dopesheet height" style={{ height: isMobile ? 16 : 9, margin: isMobile ? '-8px -10px 5px' : '-8px -10px 4px', borderTopLeftRadius: 10, borderTopRightRadius: 10 }}
+        onPointerDown={(e) => { e.preventDefault(); (e.currentTarget as Element).setPointerCapture(e.pointerId); resizeRef.current = { startY: e.clientY, startH: lanesH }; }}
+        onPointerMove={(e) => { const r = resizeRef.current; if (!r) return; setLanesH(Math.max(60, Math.min(600, r.startH + (r.startY - e.clientY)))); }}
+        onPointerUp={(e) => { if (!resizeRef.current) return; resizeRef.current = null; try { (e.currentTarget as Element).releasePointerCapture(e.pointerId); } catch { /* not captured */ } }}
+        onPointerCancel={() => { resizeRef.current = null; }}><div /></div>
       {!isMobile && (
       <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8 }}>
         <button type="button" className="ds-ico" title={playing ? 'Pause' : 'Play'} onClick={onTogglePlay}>{playing ? <IcoPause /> : <IcoPlay />}</button>
@@ -292,22 +312,24 @@ export function Dopesheet({ engine, boneTick, bump, keySel, setKeySel, scrubbing
         <div style={{ width: gutterW, flexShrink: 0 }}>
           <div style={{ height: HEAD }} />
           {summaryTicks.length > 0 && <div title="Summary - every frame that has any keyframe" style={{ height: SUM, fontSize: 10, fontWeight: 600, letterSpacing: '.03em', color: 'var(--muted)', lineHeight: `${SUM}px`, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{isMobile ? 'all' : 'summary'}</div>}
-          {tracks.map((t) => <div key={t.bone} title={t.bone} style={{ height: LANE, fontSize: 10.5, color: 'var(--muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', lineHeight: `${LANE}px` }}>{t.bone.replace(/^Bip01_?/, '')}</div>)}
+          <div ref={gutterVpRef} style={{ maxHeight: lanesH, overflowY: 'hidden' }}>
+            {tracks.map((t) => <div key={t.bone} title={t.bone} style={{ height: LANE, fontSize: 10.5, color: 'var(--muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', lineHeight: `${LANE}px` }}>{t.bone.replace(/^Bip01_?/, '')}</div>)}
+          </div>
         </div>
         )}
         <div style={{ flex: 1, minWidth: 0 }}>
           <div ref={scrollRef} className="ds-scroll" onScroll={updateThumb} style={{ overflowX: 'scroll', overflowY: 'hidden', scrollbarWidth: 'none' }}>
-            <div ref={rulerRef} style={{ position: 'relative', width: `${fullW}px`, minHeight: tracks.length ? undefined : 56, overflow: 'hidden', cursor: 'crosshair', touchAction: 'none' }}
+            <div ref={rulerRef} style={{ position: 'relative', width: `${fullW}px`, minHeight: tracks.length ? undefined : 56, overflow: 'hidden', cursor: 'crosshair', touchAction: 'pan-y' }}
             onMouseDown={(e) => e.preventDefault()} // no text selection / focus, and kills middle-click autoscroll
             onPointerDown={(e) => {
-              if (e.button === 1) { (e.currentTarget as Element).setPointerCapture(e.pointerId); panRef.current = { startX: e.clientX, startLeft: scrollRef.current?.scrollLeft ?? 0 }; return; } // middle-drag = pan
+              if (e.button === 1) { (e.currentTarget as Element).setPointerCapture(e.pointerId); panRef.current = { startX: e.clientX, startLeft: scrollRef.current?.scrollLeft ?? 0, startY: e.clientY, startTop: lanesVpRef.current?.scrollTop ?? 0 }; return; } // middle-drag = pan (X + Y)
               if (e.button !== 0) return; (e.currentTarget as Element).setPointerCapture(e.pointerId);
               const r = rulerRef.current!.getBoundingClientRect(); const x = e.clientX - r.left, y = e.clientY - r.top;
               boxRef.current = { x0: x, y0: y }; setKeyBox({ x0: x, y0: y, x1: x, y1: y }); // plain left-drag in the lanes = rubber-band select (scrubbing lives on the header strip)
             }}
             onPointerMove={(e) => {
               if (boxRef.current) { const r = rulerRef.current!.getBoundingClientRect(); setKeyBox({ x0: boxRef.current.x0, y0: boxRef.current.y0, x1: e.clientX - r.left, y1: e.clientY - r.top }); return; }
-              if (panRef.current) { if (!(e.buttons & 4)) { panRef.current = null; return; } if (scrollRef.current) scrollRef.current.scrollLeft = panRef.current.startLeft - (e.clientX - panRef.current.startX); return; }
+              if (panRef.current) { if (!(e.buttons & 4)) { panRef.current = null; return; } if (scrollRef.current) scrollRef.current.scrollLeft = panRef.current.startLeft - (e.clientX - panRef.current.startX); if (lanesVpRef.current) lanesVpRef.current.scrollTop = panRef.current.startTop - (e.clientY - panRef.current.startY); return; }
             }}
             onPointerUp={(e) => {
               if (boxRef.current) {
@@ -316,7 +338,8 @@ export function Dopesheet({ engine, boneTick, bump, keySel, setKeySel, scrubbing
                 if (maxX - minX < 3 && maxY - minY < 3) { if (!e.shiftKey) setKeySel(new Set()); } // a click on empty space clears the selection
                 else {
                   const picked = new Set<string>();
-                  tracks.forEach((t, ti) => { const top = laneTop(ti), bot = top + LANE; if (bot < minY || top > maxY) return; for (const tick of t.keys) { const x = PAD + ((tick - lo) / span) * usable; if (x >= minX && x <= maxX) picked.add(kid(t.bone, tick)); } });
+                  const vScroll = lanesVpRef.current?.scrollTop ?? 0; // lanes scroll independently of the pinned header, so shift each lane's y by the scroll
+                  tracks.forEach((t, ti) => { const top = laneTop(ti) - vScroll, bot = top + LANE; if (bot < minY || top > maxY) return; for (const tick of t.keys) { const x = PAD + ((tick - lo) / span) * usable; if (x >= minX && x <= maxX) picked.add(kid(t.bone, tick)); } });
                   setKeySel((prev) => e.shiftKey ? new Set([...prev, ...picked]) : picked); // shift adds to the selection, otherwise replace
                 }
                 boxRef.current = null; setKeyBox(null);
@@ -344,11 +367,11 @@ export function Dopesheet({ engine, boneTick, bump, keySel, setKeySel, scrubbing
             </div>
             <div title="Drag here to scrub the playhead" style={{ height: HEAD, borderBottom: '1px solid rgba(255,255,255,.12)', background: 'rgba(255,255,255,.04)', cursor: 'ew-resize' }}
               onPointerDown={(e) => {
-                if (e.button === 1) { e.stopPropagation(); (e.currentTarget as Element).setPointerCapture(e.pointerId); panRef.current = { startX: e.clientX, startLeft: scrollRef.current?.scrollLeft ?? 0 }; return; }
+                if (e.button === 1) { e.stopPropagation(); (e.currentTarget as Element).setPointerCapture(e.pointerId); panRef.current = { startX: e.clientX, startLeft: scrollRef.current?.scrollLeft ?? 0, startY: e.clientY, startTop: lanesVpRef.current?.scrollTop ?? 0 }; return; }
                 if (e.button !== 0) return; e.stopPropagation(); (e.currentTarget as Element).setPointerCapture(e.pointerId); scrubbingRef.current = true; eng.seekTick(tickAt(e.clientX));
               }}
               onPointerMove={(e) => {
-                if (panRef.current) { if (!(e.buttons & 4)) { panRef.current = null; return; } if (scrollRef.current) scrollRef.current.scrollLeft = panRef.current.startLeft - (e.clientX - panRef.current.startX); return; }
+                if (panRef.current) { if (!(e.buttons & 4)) { panRef.current = null; return; } if (scrollRef.current) scrollRef.current.scrollLeft = panRef.current.startLeft - (e.clientX - panRef.current.startX); if (lanesVpRef.current) lanesVpRef.current.scrollTop = panRef.current.startTop - (e.clientY - panRef.current.startY); return; }
                 if (scrubbingRef.current) { if (!(e.buttons & 1)) { scrubbingRef.current = false; return; } eng.seekTick(tickAt(e.clientX)); }
               }}
               onPointerUp={(e) => { scrubbingRef.current = false; panRef.current = null; try { (e.currentTarget as Element).releasePointerCapture(e.pointerId); } catch { /* not captured */ } }}
@@ -375,6 +398,7 @@ export function Dopesheet({ engine, boneTick, bump, keySel, setKeySel, scrubbing
                   })}
                 </div>
               )}
+              <div ref={lanesVpRef} className="ds-lanes" onScroll={syncGutterScroll} style={{ maxHeight: lanesH, overflowX: 'hidden', overflowY: 'auto', touchAction: 'pan-y' }}>
               {tracks.map((t, ti) => (
                 <div key={t.bone} style={{ height: LANE, position: 'relative', background: ti % 2 ? 'rgba(255,255,255,.018)' : 'transparent' }}>
                   {t.keys.map((tick) => {
@@ -393,6 +417,7 @@ export function Dopesheet({ engine, boneTick, bump, keySel, setKeySel, scrubbing
                   })}
                 </div>
               ))}
+              </div>
               </>);
             })()}
             {keyBox && <div style={{ position: 'absolute', left: Math.min(keyBox.x0, keyBox.x1), top: Math.min(keyBox.y0, keyBox.y1), width: Math.abs(keyBox.x1 - keyBox.x0), height: Math.abs(keyBox.y1 - keyBox.y0), border: '1px solid var(--accent)', background: 'rgba(91,140,255,.14)', pointerEvents: 'none', zIndex: 4 }} />}
