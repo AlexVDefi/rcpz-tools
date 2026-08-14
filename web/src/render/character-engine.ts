@@ -2498,10 +2498,13 @@ export class CharacterEngine {
   // --- dopesheet API ---
   autoKeyOn(): boolean { return this.autoKey; }
   setAutoKey(on: boolean) { this.autoKey = on; }
-  /** Key the current pose (at the current tick) of every edited AND selected bone - so a freshly selected,
-   *  un-moved bone can be keyed at its rest pose without dragging it first (Add Key button). */
+  /** Key the current pose (at the current tick) of the SELECTED bone(s) and the chain each drives (so a hand
+   *  handle keys its whole arm) - and a freshly selected, un-moved bone can be keyed at its rest pose without
+   *  dragging it first. With nothing selected, fall back to snapshotting every edited bone (the whole pose). */
   addKeyAtCurrent() {
-    const tick = this.currentTick(), names = [...new Set([...this.editedBoneNames(), ...this.selectedBones])].filter((n) => this.bodyBones.has(n));
+    const tick = this.currentTick();
+    const sel = this.affectedForSelection().filter((n) => this.bodyBones.has(n));
+    const names = sel.length ? sel : this.editedBoneNames().filter((n) => this.bodyBones.has(n));
     if (!names.length) return;
     const before = this.snapshotEdits(names);
     for (const name of names) {
