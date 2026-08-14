@@ -132,7 +132,6 @@ export function PoseEditorPanel({ pose, engine, editState, selectedBones, saveAs
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 10, fontSize: 10.5, color: 'var(--muted)' }}>
         <span>{edited.size} bone{edited.size === 1 ? '' : 's'} edited</span>
         {edited.size > 0 && <div style={{ display: 'flex', gap: 6 }}>
-          <button className="secondary" onClick={() => { eng?.mirrorAnimation(); bump(); }} title="Mirror the whole animation left to right (every keyframe)" style={{ padding: '3px 8px', fontSize: 11, borderRadius: 6, border: '1px solid var(--line)' }}>mirror L/R</button>
           <button className="secondary" onClick={() => { eng?.clearBoneEdits(); bump(); }} style={{ padding: '3px 8px', fontSize: 11, borderRadius: 6, border: '1px solid var(--line)' }}>clear all</button>
         </div>}
       </div>
